@@ -14,20 +14,10 @@ permissions:
   contents: write
 
 jobs:
-  publish:
-    # Never hang forever on a sleeping self-hosted runner: fail fast instead.
+  publish-windows:
+    # Never hang forever: fail fast instead of dangling for hours.
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-2025
-            args: --bundles nsis
-            upload_exe: true
-          - os: [self-hosted, mac-arm64]
-            args: ""
-            upload_exe: false
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -36,15 +26,43 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@1.99.0
       - run: npm ci
-      - name: Expose Swift toolchain libs (macOS test harness)
-        if: runner.os == 'macOS'
-        run: echo "DYLD_FALLBACK_LIBRARY_PATH=$(xcode-select --print-path)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx" >> $GITHUB_ENV
+      - run: npm run check
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: ${{ github.ref_name }}
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: false
+          releaseBody: "GigaAM Desktop: локальная транскрибация файлов и живой записи (микрофон/система), GigaAM v3 + Silero VAD полностью офлайн.\n\nWindows x64: установщик NSIS и portable exe (пока без подписи — SmartScreen предупредит).\nmacOS arm64: подписанный и нотаризованный DMG.\n\nМодели (~227 МБ) докачиваются при первом запуске. Подробнее: README.md"
+          args: --bundles nsis
+      - name: Attach portable exe to release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ github.ref_name }} "src-tauri/target/release/gigaam-desktop.exe" --clobber
+
+  publish-macos:
+    # Runs on the self-hosted livikbook runner: only it has the Metal SDK
+    # (Xcode 26+) that screencapturekit/apple-metal requires.
+    # NOTE: never run untrusted PR code here, only tags.
+    timeout-minutes: 45
+    runs-on: [self-hosted, mac-arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.11.1
+          cache: npm
+      - uses: dtolnay/rust-toolchain@1.99.0
+      - run: npm ci
       - run: npm run check
       # Unit tests already run on the Windows job. The macOS test harness
       # cannot start here: its Swift-linked binary fails dyld lookup for
       # libswift_Concurrency (screencapturekit), unrelated to our code.
-      - if: runner.os != 'macOS'
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -61,10 +79,3 @@ jobs:
           prerelease: false
           includeUpdaterJson: false
           releaseBody: "GigaAM Desktop: локальная транскрибация файлов и живой записи (микрофон/система), GigaAM v3 + Silero VAD полностью офлайн.\n\nWindows x64: установщик NSIS и portable exe (пока без подписи — SmartScreen предупредит).\nmacOS arm64: подписанный и нотаризованный DMG.\n\nМодели (~227 МБ) докачиваются при первом запуске. Подробнее: README.md"
-          args: ${{ matrix.args }}
-      - name: Attach portable exe to release
-        if: matrix.upload_exe
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload ${{ github.ref_name }} "src-tauri/target/release/gigaam-desktop.exe" --clobber
