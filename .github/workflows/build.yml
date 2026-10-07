@@ -50,7 +50,9 @@ jobs:
           print(json.dumps(report, indent=2))
           PY
       - uses: actions/upload-artifact@v4
+        # CI artifacts are redundant with release binaries: keep them 2 days.
         with:
+          retention-days: 2
           name: gigaam-desktop-${{ matrix.os }}
           path: |
             src-tauri/target/release/bundle/**
