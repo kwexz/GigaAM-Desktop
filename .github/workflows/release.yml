@@ -2,8 +2,8 @@ name: release
 
 # Publishes a GitHub Release with installers every time a v* tag is pushed:
 #   git tag v0.2.0 && git push origin v0.2.0
-# No signing secrets are configured, so bundles ship unsigned/adhoc
-# (Windows: SmartScreen warning, macOS: Gatekeeper quarantine).
+# macOS ships signed + notarized (Apple secrets); Windows ships unsigned
+# until SignPath OSS signing is wired (SmartScreen will warn).
 
 on:
   push:
@@ -21,8 +21,10 @@ jobs:
         include:
           - os: windows-2025
             args: --bundles nsis
-          - os: "[self-hosted, mac-arm64]"
+            upload_exe: true
+          - os: [self-hosted, mac-arm64]
             args: ""
+            upload_exe: false
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -49,4 +51,11 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: false
+          releaseBody: "GigaAM Desktop: локальная транскрибация файлов и живой записи (микрофон/система), GigaAM v3 + Silero VAD полностью офлайн.\n\nWindows x64: установщик NSIS и portable exe (пока без подписи — SmartScreen предупредит).\nmacOS arm64: подписанный и нотаризованный DMG.\n\nМодели (~227 МБ) докачиваются при первом запуске. Подробнее: README.md"
           args: ${{ matrix.args }}
+      - name: Attach portable exe to release
+        if: matrix.upload_exe
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ github.ref_name }} "src-tauri/target/release/gigaam-desktop.exe" --clobber
