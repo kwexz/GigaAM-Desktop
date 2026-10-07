@@ -122,6 +122,16 @@ stateDiagram-v2
 `session_audio_files`, `mixed_session_audio`, `update_segment_text`.
 Модель: `model_status`, `download_model`, `cancel_model_download`.
 
+## Политика подписи кода
+
+Windows-релизы подписываются. Free code signing provided by [SignPath.io](https://signpath.io),
+certificate by [SignPath Foundation](https://signpath.org).
+
+- Committers and reviewers: соавторы репозитория.
+- Approvers: владельцы репозитория.
+- Каждый релиз подтверждается на подпись вручную; неподписанные локальные сборки —
+  только для разработки.
+
 ## Стек
 
 - UI: Svelte 5 (runes) + SvelteKit + Vite, `adapter-static` (без сервера, без Electron).

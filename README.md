@@ -122,6 +122,15 @@ Recording: `start_live(source, microphone, keep_audio, mic_gain)`, `stop_live`,
 `session_audio_files`, `mixed_session_audio`, `update_segment_text`.
 Model: `model_status`, `download_model`, `cancel_model_download`.
 
+## Code signing policy
+
+Windows releases are signed. Free code signing provided by [SignPath.io](https://signpath.io),
+certificate by [SignPath Foundation](https://signpath.org).
+
+- Committers and reviewers: repository collaborators.
+- Approvers: repository owners.
+- Every release is approved for signing manually; unsigned local builds are for development only.
+
 ## Stack
 
 - UI: Svelte 5 (runes) + SvelteKit + Vite, `adapter-static` (no server, no Electron).
