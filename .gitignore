@@ -52,6 +52,9 @@ desktop.ini
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
+# Apple signing material (private keys - NEVER commit)
+/apple-cert/
+
 # Temp
 *.tmp
 *.temp
