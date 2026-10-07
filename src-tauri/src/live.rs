@@ -374,6 +374,7 @@ fn transcode_raw_to_flac(input: &Path, output: &Path) -> Result<()> {
 /// Device bytes (little-endian f32, s16 or s24, interleaved) into mono f32.
 /// Only the layouts real devices offer are supported; anything else is
 /// rejected loudly instead of being misparsed into "gurgling".
+#[cfg(target_os = "windows")]
 fn bytes_to_mono_f32(raw: &[u8], channels: usize, sample_bytes: usize, float32: bool) -> Vec<f32> {
     let channels = channels.max(1);
     let frame_bytes = sample_bytes * channels;
@@ -392,6 +393,7 @@ fn bytes_to_mono_f32(raw: &[u8], channels: usize, sample_bytes: usize, float32: 
     mono
 }
 
+#[cfg(target_os = "windows")]
 fn sample_to_f32(bytes: &[u8], float32: bool) -> f32 {
     if float32 {
         f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
