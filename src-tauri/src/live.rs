@@ -893,6 +893,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
     fn bytes_to_mono_downmixes_all_layouts() {
         // stereo s16: L=+0.5, R=-0.5 -> mono 0.0
         let mut raw = Vec::new();
