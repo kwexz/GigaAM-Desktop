@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SignPath artifact configuration for GigaAM Desktop (Windows).
+  Paste this into the dashboard: Project -> Signing policy -> Artifact configuration.
+  CI uploads a ZIP with exactly these two files (renamed to fixed names),
+  SignPath signs both in place with Authenticode and returns the ZIP.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="gigaam-desktop.exe">
+      <authenticode-sign description="GigaAM Desktop" description-url="https://github.com/kwexz/GigaAM-Desktop" />
+    </pe-file>
+    <pe-file path="gigaam-desktop-setup.exe">
+      <authenticode-sign description="GigaAM Desktop Setup" description-url="https://github.com/kwexz/GigaAM-Desktop" />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>
