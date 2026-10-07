@@ -38,7 +38,11 @@ jobs:
         if: runner.os == 'macOS'
         run: echo "DYLD_FALLBACK_LIBRARY_PATH=$(xcode-select --print-path)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx" >> $GITHUB_ENV
       - run: npm run check
-      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+      # Unit tests already run on the Windows job. The macOS test harness
+      # cannot start here: its Swift-linked binary fails dyld lookup for
+      # libswift_Concurrency (screencapturekit), unrelated to our code.
+      - if: runner.os != 'macOS'
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
