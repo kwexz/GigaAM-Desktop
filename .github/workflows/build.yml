@@ -6,9 +6,15 @@ on:
 
 jobs:
   check:
+    # NOTE: macOS is intentionally not checked here. The screencapturekit
+    # dependency tree (apple-metal) needs the newest Metal SDK, which only
+    # exists on the self-hosted livikbook runner. macOS is still built,
+    # signed and notarized by the release workflow on every v* tag.
+    # Self-hosted runners must never execute untrusted PR code, so PR checks
+    # stay on GitHub-hosted Windows only.
     strategy:
       matrix:
-        os: [windows-2025, macos-14]
+        os: [windows-2025]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -27,15 +33,6 @@ jobs:
       - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --bin gigaam-desktop
       - if: matrix.os == 'windows-2025'
         run: npm run tauri build -- --bundles nsis -- --locked
-      - if: matrix.os == 'macos-14'
-        run: npm run tauri build -- --target aarch64-apple-darwin -- --locked
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       - name: Measure release artifacts
         shell: bash
         run: |
