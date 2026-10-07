@@ -1,0 +1,58 @@
+# Dependencies
+node_modules
+
+# Models (downloaded at runtime into OS app-data; repo keeps only README)
+/models/*
+!/models/README.md
+
+# Scratch inputs (local test audio, task notes)
+/project-input/
+
+# Rust build
+/src-tauri/target/
+/src-tauri/gen/
+
+# Frontend build
+.output
+.svelte-kit
+/build
+dist/
+coverage/
+
+# Tauri bundles (produced by `tauri build` inside target/)
+*.AppImage
+*.dmg
+*.msi
+*.nsis.zip
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors / IDE
+.idea/
+*.swp
+*.swo
+*~
+*.orig
+*.rej
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Temp
+*.tmp
+*.temp
+.Temp/

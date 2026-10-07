@@ -1,0 +1,62 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [windows-2025, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.11.1
+          cache: npm
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          targets: ${{ matrix.os == 'macos-14' && 'aarch64-apple-darwin' || 'x86_64-pc-windows-msvc' }}
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features inference-spike --bin inference-spike
+      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --bin gigaam-desktop
+      - if: matrix.os == 'windows-2025'
+        run: npm run tauri build -- --bundles nsis -- --locked
+      - if: matrix.os == 'macos-14'
+        run: npm run tauri build -- --target aarch64-apple-darwin -- --locked
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Measure release artifacts
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, json, pathlib, platform
+          root = pathlib.Path('src-tauri/target')
+          files = [p for p in root.rglob('*') if p.is_file() and ('bundle' in p.parts or p.name.startswith('gigaam-desktop'))]
+          report = {
+            'platform': platform.platform(),
+            'file_count': len(files),
+            'total_bytes': sum(p.stat().st_size for p in files),
+            'files': [{'path': str(p), 'bytes': p.stat().st_size, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()} for p in files],
+          }
+          pathlib.Path('release-measurements.json').write_text(json.dumps(report, indent=2))
+          print(json.dumps(report, indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gigaam-desktop-${{ matrix.os }}
+          path: |
+            src-tauri/target/release/bundle/**
+            src-tauri/target/release/gigaam-desktop*
+            src-tauri/target/aarch64-apple-darwin/release/bundle/**
+            release-measurements.json
