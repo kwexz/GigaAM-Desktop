@@ -56,7 +56,7 @@ impl LiveState {
     }
 }
 
-static BUILD_TAG: &str = "b20261006-25";
+static BUILD_TAG: &str = "b20261007-26";
 
 fn now_ms() -> i64 {
     SystemTime::now()
