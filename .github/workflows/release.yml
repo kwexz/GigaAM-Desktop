@@ -21,7 +21,7 @@ jobs:
         include:
           - os: windows-2025
             args: --bundles nsis
-          - os: macos-14
+          - os: "[self-hosted, mac-arm64]"
             args: ""
     runs-on: ${{ matrix.os }}
     steps:
