@@ -94,9 +94,42 @@ impl Store {
             self.connection
                 .execute_batch("ALTER TABLE transcriptions ADD COLUMN audio_path TEXT;")?;
         }
-        if !columns.iter().any(|column| column == "audio_path") {
-            self.connection
-                .execute_batch("ALTER TABLE transcriptions ADD COLUMN audio_path TEXT;")?;
+        // Older live rows predate `audio_path`. Recover the first archived
+        // track so playback remains available after upgrading.
+        let mut statement = self.connection.prepare(
+            "SELECT id FROM transcriptions WHERE kind = 'live' AND (audio_path IS NULL OR audio_path = '')",
+        )?;
+        let ids: Vec<String> = statement
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(statement);
+        if let Some(data_dir) = self
+            .connection
+            .path()
+            .and_then(|path| Path::new(path).parent())
+            .map(Path::to_path_buf)
+        {
+            for id in ids {
+                let directory = data_dir.join("live").join(&id);
+                let recovered = std::fs::read_dir(directory).ok().and_then(|entries| {
+                    entries
+                        .flatten()
+                        .map(|entry| entry.path())
+                        .filter(|path| {
+                            matches!(
+                                path.extension().and_then(|extension| extension.to_str()),
+                                Some("flac" | "wav" | "mp3")
+                            )
+                        })
+                        .min()
+                });
+                if let Some(path) = recovered {
+                    self.connection.execute(
+                        "UPDATE transcriptions SET audio_path = ?2 WHERE id = ?1",
+                        params![id, path.to_string_lossy()],
+                    )?;
+                }
+            }
         }
         Ok(())
     }
@@ -228,12 +261,11 @@ impl Store {
 
     pub fn reset_for_retry(&mut self, id: &str) -> rusqlite::Result<()> {
         let transaction = self.connection.transaction()?;
-        let (status, kind, audio_path): (String, String, Option<String>) =
-            transaction.query_row(
-                "SELECT status, kind, audio_path FROM transcriptions WHERE id = ?1",
-                [id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )?;
+        let (status, kind, audio_path): (String, String, Option<String>) = transaction.query_row(
+            "SELECT status, kind, audio_path FROM transcriptions WHERE id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
         if !matches!(
             status.as_str(),
             "cancelled" | "failed" | "interrupted" | "completed"
@@ -247,9 +279,7 @@ impl Store {
             let audio = audio_path
                 .filter(|path| !path.is_empty())
                 .ok_or(rusqlite::Error::InvalidQuery)?;
-            let size = std::fs::metadata(&audio)
-                .map(|meta| meta.len() as i64)
-                .ok();
+            let size = std::fs::metadata(&audio).map(|meta| meta.len() as i64).ok();
             transaction.execute(
                 "UPDATE transcriptions SET kind = 'file', source_path = ?2,
                         source_size_bytes = COALESCE(?3, source_size_bytes)
@@ -276,6 +306,17 @@ impl Store {
             "UPDATE transcriptions SET duration_seconds = ?2 WHERE id = ?1",
             params![id, duration_seconds],
         )?;
+        Ok(())
+    }
+
+    pub fn rename(&mut self, id: &str, name: &str) -> rusqlite::Result<()> {
+        let changed = self.connection.execute(
+            "UPDATE transcriptions SET source_filename = ?2 WHERE id = ?1",
+            params![id, name],
+        )?;
+        if changed == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
         Ok(())
     }
 
@@ -722,8 +763,7 @@ mod tests {
     #[test]
     fn retry_converts_live_session_into_file_job() {
         let mut store = Store::memory().unwrap();
-        let dir =
-            std::env::temp_dir().join(format!("gigaam-retry-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gigaam-retry-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let audio = dir.join("microphone.flac");
@@ -802,6 +842,18 @@ mod tests {
         assert_eq!(retried.started_ms, None);
         assert_eq!(retried.completed_ms, None);
         assert_eq!(retried.error, None);
+    }
+
+    #[test]
+    fn renames_transcription_without_changing_source_path() {
+        let mut store = Store::memory().unwrap();
+        let original = transcription("rename-me", TranscriptionStatus::Completed);
+        let source_path = original.source_path.clone();
+        store.enqueue(&original).unwrap();
+        store.rename("rename-me", "Встреча команды").unwrap();
+        let renamed = store.get("rename-me").unwrap().unwrap();
+        assert_eq!(renamed.source_filename, "Встреча команды");
+        assert_eq!(renamed.source_path, source_path);
     }
 
     #[test]

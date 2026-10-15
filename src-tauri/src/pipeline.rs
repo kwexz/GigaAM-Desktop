@@ -517,7 +517,13 @@ pub(crate) fn decode_mono_48k(path: &Path) -> Result<Vec<f32>> {
 /// Mix mono 48 kHz tracks sample-by-sample (summed, clamped) into one WAV.
 /// Each track starts at its session offset; shorter tracks and leading gaps
 /// are zero-padded, so the mix preserves the recording chronology.
+#[cfg(test)]
 pub(crate) fn mix_mono_48k_to_wav(inputs: &[(PathBuf, f64)], output: &Path) -> Result<()> {
+    let mixed = mix_mono_48k(inputs)?;
+    write_mono_48k_wav(&mixed, output)
+}
+
+pub(crate) fn mix_mono_48k(inputs: &[(PathBuf, f64)]) -> Result<Vec<f32>> {
     let mut mixed: Vec<f32> = Vec::new();
     for (input, offset_seconds) in inputs {
         let track = decode_mono_48k(input)?;
@@ -529,6 +535,10 @@ pub(crate) fn mix_mono_48k_to_wav(inputs: &[(PathBuf, f64)], output: &Path) -> R
             mixed[at + i] = (mixed[at + i] + sample).clamp(-1.0, 1.0);
         }
     }
+    Ok(mixed)
+}
+
+pub(crate) fn write_mono_48k_wav(samples: &[f32], output: &Path) -> Result<()> {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: 48_000,
@@ -536,7 +546,7 @@ pub(crate) fn mix_mono_48k_to_wav(inputs: &[(PathBuf, f64)], output: &Path) -> R
         sample_format: hound::SampleFormat::Int,
     };
     let mut writer = hound::WavWriter::create(output, spec)?;
-    for sample in mixed {
+    for sample in samples {
         writer.write_sample((sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)?;
     }
     writer.finalize()?;
@@ -713,9 +723,8 @@ impl LiveScanner {
             *self = Self::new()?;
         }
         if base_48k > self.abs0_48k {
-            let drop_16k = (base_48k - self.abs0_48k)
-                .saturating_mul(SAMPLE_RATE)
-                / LIVE_SCAN_INPUT_RATE;
+            let drop_16k =
+                (base_48k - self.abs0_48k).saturating_mul(SAMPLE_RATE) / LIVE_SCAN_INPUT_RATE;
             self.drop_front_16k(drop_16k);
             self.fed_48k = self.fed_48k.max(base_48k);
         }
@@ -772,8 +781,9 @@ impl LiveScanner {
                 .try_extract_array::<f32>()?
                 .to_owned()
                 .into_dimensionality()?;
-            self.vad_context
-                .copy_from_slice(&self.samples_16k[start + VAD_FRAME - VAD_CONTEXT..start + VAD_FRAME]);
+            self.vad_context.copy_from_slice(
+                &self.samples_16k[start + VAD_FRAME - VAD_CONTEXT..start + VAD_FRAME],
+            );
             start += VAD_FRAME;
         }
         Ok(())
@@ -792,10 +802,7 @@ impl LiveScanner {
             .get(frame_offset.min(self.vad_probs.len())..)
             .unwrap_or(&[]);
         let audio_len = len.saturating_sub(quantized.saturating_sub(scan_idx16));
-        (
-            regions_from_probabilities(probs, audio_len),
-            quantized,
-        )
+        (regions_from_probabilities(probs, audio_len), quantized)
     }
 
     /// Drop a 16 kHz prefix from all buffers, keeping sample / probability /
@@ -949,7 +956,7 @@ impl NativeFileProcessor {
         // Scan only the unsettled tail: everything before `scan_from` is
         // either already emitted or VAD-confirmed silence, so re-scanning it
         // every tick would be pure waste that grows with session length.
-        let scan_from = emitted_seconds.max(quiet_seconds).max(abs0_seconds);
+        let scan_from = emitted_seconds.max(abs0_seconds);
         let scanned = scanner.samples_16k();
         let scan_idx = ((scan_from - abs0_seconds) * SAMPLE_RATE as f64) as usize;
         let scan_idx = scan_idx.min(scanned.len());
@@ -962,8 +969,7 @@ impl NativeFileProcessor {
         let scan_base = abs0_seconds + quantized.min(scanned.len()) as f64 / SAMPLE_RATE as f64;
         // Audio before the first region is confirmed silence and never needs
         // re-scanning; the emission cursor separately guards re-emission.
-        let first_start = regions.first().map(|region| region.start).unwrap_or(audio.len());
-        let mut quiet = scan_base + first_start as f64 / SAMPLE_RATE as f64;
+        let mut quiet = quiet_seconds.max(abs0_seconds);
         let mut segments = Vec::new();
         let mut emitted = emitted_seconds;
         for chunk in chunk_speech(&regions, audio.len()) {
@@ -989,7 +995,10 @@ impl NativeFileProcessor {
             );
             emitted = emitted.max(absolute_end);
         }
-        quiet = quiet.max(emitted);
+        // Keep un-emitted audio until a complete region is produced. Advancing
+        // through "quiet" frames here used to discard the start of speech
+        // before Silero had enough following context to close the region.
+        quiet = quiet.min(emitted);
         scanner.discard_before(emitted.max(quiet));
         Ok((segments, emitted, quiet))
     }
@@ -1051,8 +1060,7 @@ mod tests {
 
     #[test]
     fn mixing_sums_tracks_and_pads_shorter() {
-        let dir =
-            std::env::temp_dir().join(format!("gigaam-mix-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gigaam-mix-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let spec = hound::WavSpec {
@@ -1084,17 +1092,15 @@ mod tests {
         assert!((samples[0] - 5_000).abs() <= 2, "first was {}", samples[0]);
         // second half: only track A (B padded with zeros), sine RMS ~7071
         let tail = &samples[24_000..];
-        let rms =
-            (tail.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>() / tail.len() as f64)
-                .sqrt();
+        let rms = (tail.iter().map(|s| (*s as f64) * (*s as f64)).sum::<f64>() / tail.len() as f64)
+            .sqrt();
         assert!(rms > 3_000.0, "tail rms was {rms}");
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn mixing_respects_track_offsets() {
-        let dir =
-            std::env::temp_dir().join(format!("gigaam-mixoff-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gigaam-mixoff-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let spec = hound::WavSpec {
@@ -1116,7 +1122,11 @@ mod tests {
         let samples: Vec<i16> = reader.samples().map(|sample| sample.unwrap()).collect();
         assert_eq!(samples.len(), 24_000 + 4_800);
         assert!(samples[..24_000].iter().all(|sample| *sample == 0));
-        assert!(samples[24_000..].iter().all(|sample| (*sample - 10_000).abs() <= 2));
+        assert!(
+            samples[24_000..]
+                .iter()
+                .all(|sample| (*sample - 10_000).abs() <= 2)
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1290,10 +1300,7 @@ mod tests {
         // frame (512 samples = 1536 input samples) of the capture base, and
         // the sample/probability/absolute-time mapping stays exact.
         assert!((48_000i64 - scanner.abs0_48k() as i64).abs() <= 1536);
-        assert_eq!(
-            before - scanner.samples_16k().len(),
-            scanner.abs0_48k() / 3
-        );
+        assert_eq!(before - scanner.samples_16k().len(), scanner.abs0_48k() / 3);
         scanner.push(&input[48_000..], 48_000).unwrap();
         assert_eq!(scanner.fed_48k(), 96_000);
     }

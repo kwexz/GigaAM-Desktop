@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{BufWriter, Write},
+    io::{BufWriter, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -19,6 +19,51 @@ pub enum LiveSource {
     Microphone,
     System,
     SystemAndMicrophone,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArchiveFormat {
+    Flac,
+    Wav,
+    Mp3,
+}
+
+impl Default for ArchiveFormat {
+    fn default() -> Self {
+        Self::Flac
+    }
+}
+
+impl ArchiveFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Flac => "flac",
+            Self::Wav => "wav",
+            Self::Mp3 => "mp3",
+        }
+    }
+}
+
+fn archive_timestamp(now_ms: i64) -> String {
+    let seconds = now_ms.div_euclid(1000);
+    let days = seconds.div_euclid(86_400);
+    let seconds_of_day = seconds.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    let hour = seconds_of_day / 3_600;
+    let minute = seconds_of_day / 60 % 60;
+    let second = seconds_of_day % 60;
+    format!("{year:04}{month:02}{day:02}-{hour:02}{minute:02}{second:02}")
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -49,6 +94,7 @@ pub struct LiveCapture {
     pub source: LiveSource,
     pub microphone_device: Option<String>,
     pub keep_audio: bool,
+    pub archive_format: ArchiveFormat,
     pub mic_gain: f32,
     pub directory: PathBuf,
     pub microphone_path: PathBuf,
@@ -97,6 +143,7 @@ impl LiveCapture {
         source: LiveSource,
         microphone_device: Option<String>,
         keep_audio: bool,
+        archive_format: ArchiveFormat,
         mic_gain: f32,
         directory: PathBuf,
         log_path: Option<PathBuf>,
@@ -107,6 +154,7 @@ impl LiveCapture {
             source,
             microphone_device,
             keep_audio,
+            archive_format,
             mic_gain: clamp_gain(mic_gain),
             directory,
             microphone_path: PathBuf::new(),
@@ -174,14 +222,21 @@ impl LiveCapture {
         drop(self.system_file.take());
         fs::create_dir_all(&self.directory)?;
         let mut files = Vec::new();
+        let timestamp = archive_timestamp(self.started_ms);
         if self.microphone_path.exists() {
-            let path = self.directory.join("microphone.flac");
-            transcode_raw_to_flac(&self.microphone_path, &path)?;
+            let path = self.directory.join(format!(
+                "microphone-{timestamp}.{}",
+                self.archive_format.extension()
+            ));
+            transcode_raw(&self.microphone_path, &path, self.archive_format)?;
             files.push(path);
         }
         if self.system_path.exists() {
-            let path = self.directory.join("system.flac");
-            transcode_raw_to_flac(&self.system_path, &path)?;
+            let path = self.directory.join(format!(
+                "system-{timestamp}.{}",
+                self.archive_format.extension()
+            ));
+            transcode_raw(&self.system_path, &path, self.archive_format)?;
             files.push(path);
         }
         let _ = fs::remove_file(&self.microphone_path);
@@ -190,9 +245,11 @@ impl LiveCapture {
         // archived tracks can later be mixed back together chronologically.
         // Sessions predating this file mix from zero, as before.
         let mut tracks = Vec::new();
+        let microphone_file = format!("microphone-{timestamp}.{}", self.archive_format.extension());
+        let system_file = format!("system-{timestamp}.{}", self.archive_format.extension());
         for (file, offset) in [
-            ("microphone.flac", self.mic_start_offset),
-            ("system.flac", self.sys_start_offset),
+            (microphone_file.as_str(), self.mic_start_offset),
+            (system_file.as_str(), self.sys_start_offset),
         ] {
             if self.directory.join(file).exists() {
                 tracks.push(serde_json::json!({
@@ -250,8 +307,8 @@ impl LiveCapture {
                 self.sys_packets += 1;
             }
         }
-        let first_packet = (microphone && self.mic_packets == 1)
-            || (!microphone && self.sys_packets == 1);
+        let first_packet =
+            (microphone && self.mic_packets == 1) || (!microphone && self.sys_packets == 1);
         if first_packet {
             if let Some(path) = self.log_path.clone() {
                 debug_log(
@@ -297,8 +354,7 @@ impl LiveCapture {
                 } else {
                     self.sys_start_offset.get_or_insert(offset);
                 }
-                let start =
-                    (offset * 48_000.0) as usize;
+                let start = (offset * 48_000.0) as usize;
                 let end = if microphone {
                     self.microphone_base_sample + self.microphone.len()
                 } else {
@@ -340,13 +396,27 @@ impl LiveCapture {
     }
 }
 
+fn transcode_raw(input: &Path, output: &Path, format: ArchiveFormat) -> Result<()> {
+    match format {
+        ArchiveFormat::Flac => transcode_raw_to_flac(input, output),
+        ArchiveFormat::Wav => transcode_raw_to_wav(input, output),
+        ArchiveFormat::Mp3 => transcode_raw_to_mp3(input, output),
+    }
+}
+
 fn transcode_raw_to_flac(input: &Path, output: &Path) -> Result<()> {
     use std::io::{Read, Write};
     let output_file = fs::File::create(output)
         .with_context(|| format!("transcode: cannot create {}", output.display()))?;
-    let mut writer =
-        FlacByteWriter::<_, LittleEndian>::new(output_file, Options::default(), 48_000, 16, 1, None)
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let mut writer = FlacByteWriter::<_, LittleEndian>::new(
+        output_file,
+        Options::default(),
+        48_000,
+        16,
+        1,
+        None,
+    )
+    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let mut input = std::io::BufReader::new(
         fs::File::open(input)
             .with_context(|| format!("transcode: cannot open {}", input.display()))?,
@@ -369,6 +439,100 @@ fn transcode_raw_to_flac(input: &Path, output: &Path) -> Result<()> {
     writer
         .finalize()
         .map_err(|error| anyhow::anyhow!(error.to_string()))
+}
+
+fn transcode_raw_to_wav(input: &Path, output: &Path) -> Result<()> {
+    let mut input = std::io::BufReader::new(fs::File::open(input)?);
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 48_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(output, spec)?;
+    let mut floats = [0_u8; 16 * 1024];
+    loop {
+        let read = input.read(&mut floats)?;
+        if read == 0 {
+            break;
+        }
+        for chunk in floats[..read].chunks_exact(4) {
+            let sample = f32::from_le_bytes(chunk.try_into().unwrap());
+            writer.write_sample((sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)?;
+        }
+    }
+    writer.finalize()?;
+    Ok(())
+}
+
+fn transcode_raw_to_mp3(input: &Path, output: &Path) -> Result<()> {
+    use shine_rs::{Mp3Encoder, Mp3EncoderConfig, StereoMode};
+
+    let mut input = std::io::BufReader::new(fs::File::open(input)?);
+    let mut output = BufWriter::new(fs::File::create(output)?);
+    let config = Mp3EncoderConfig::new()
+        .sample_rate(48_000)
+        .bitrate(128)
+        .channels(1)
+        .stereo_mode(StereoMode::Mono);
+    let mut encoder =
+        Mp3Encoder::new(config).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let mut floats = [0_u8; 16 * 1024];
+    loop {
+        let read = input.read(&mut floats)?;
+        if read == 0 {
+            break;
+        }
+        let pcm: Vec<i16> = floats[..read]
+            .chunks_exact(4)
+            .map(|chunk| {
+                let sample = f32::from_le_bytes(chunk.try_into().unwrap());
+                (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
+            })
+            .collect();
+        for frame in encoder
+            .encode_interleaved(&pcm)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?
+        {
+            output.write_all(&frame)?;
+        }
+    }
+    output.write_all(
+        &encoder
+            .finish()
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+    )?;
+    output.flush()?;
+    Ok(())
+}
+
+pub(crate) fn encode_mono_48k(samples: &[f32], output: &Path, format: ArchiveFormat) -> Result<()> {
+    match format {
+        ArchiveFormat::Wav => crate::pipeline::write_mono_48k_wav(samples, output),
+        ArchiveFormat::Flac => {
+            let raw = output.with_extension("mix.raw");
+            write_raw_samples(&raw, samples)?;
+            let result = transcode_raw_to_flac(&raw, output);
+            let _ = fs::remove_file(raw);
+            result
+        }
+        ArchiveFormat::Mp3 => {
+            let raw = output.with_extension("mix.raw");
+            write_raw_samples(&raw, samples)?;
+            let result = transcode_raw_to_mp3(&raw, output);
+            let _ = fs::remove_file(raw);
+            result
+        }
+    }
+}
+
+fn write_raw_samples(path: &Path, samples: &[f32]) -> Result<()> {
+    let mut writer = BufWriter::new(fs::File::create(path)?);
+    for sample in samples {
+        writer.write_all(&sample.to_le_bytes())?;
+    }
+    writer.flush()?;
+    Ok(())
 }
 
 /// Device bytes (little-endian f32, s16 or s24, interleaved) into mono f32.
@@ -416,6 +580,7 @@ fn rms_tail(samples: &[f32]) -> f32 {
 #[cfg(target_os = "windows")]
 pub mod platform {
     use super::*;
+    use rubato::{FftFixedIn, Resampler};
     use std::{
         collections::VecDeque,
         sync::{
@@ -425,10 +590,9 @@ pub mod platform {
         thread,
     };
     use wasapi::{
-        AudioClientProperties, DeviceEnumerator, Direction, SampleType, StreamCategory,
-        StreamMode, WaveFormat, initialize_mta,
+        AudioClientProperties, DeviceEnumerator, Direction, SampleType, StreamCategory, StreamMode,
+        WaveFormat, initialize_mta,
     };
-    use rubato::{FftFixedIn, Resampler};
 
     pub fn microphones() -> Result<Vec<String>> {
         let devices = DeviceEnumerator::new()?.get_device_collection(&Direction::Capture)?;
@@ -933,6 +1097,7 @@ mod tests {
             LiveSource::SystemAndMicrophone,
             None,
             false,
+            ArchiveFormat::Flac,
             1.0,
             PathBuf::new(),
             None,
@@ -957,10 +1122,7 @@ mod tests {
             32767.0 / 32768.0
         );
         // mono s24 extremes
-        assert_eq!(
-            bytes_to_mono_f32(&[0x00, 0x00, 0x80], 1, 3, false)[0],
-            -1.0
-        );
+        assert_eq!(bytes_to_mono_f32(&[0x00, 0x00, 0x80], 1, 3, false)[0], -1.0);
         assert_eq!(
             bytes_to_mono_f32(&[0xFF, 0xFF, 0x7F], 1, 3, false)[0],
             8_388_607.0 / 8_388_608.0
@@ -981,6 +1143,7 @@ mod tests {
             LiveSource::SystemAndMicrophone,
             None,
             false,
+            ArchiveFormat::Flac,
             1.0,
             PathBuf::new(),
             None,
@@ -1002,6 +1165,7 @@ mod tests {
             LiveSource::Microphone,
             None,
             false,
+            ArchiveFormat::Flac,
             1.0,
             PathBuf::new(),
             None,
@@ -1022,6 +1186,7 @@ mod tests {
             LiveSource::Microphone,
             None,
             false,
+            ArchiveFormat::Flac,
             2.0,
             PathBuf::new(),
             None,
@@ -1034,6 +1199,7 @@ mod tests {
             LiveSource::Microphone,
             None,
             false,
+            ArchiveFormat::Flac,
             4.0,
             PathBuf::new(),
             None,
@@ -1049,8 +1215,7 @@ mod tests {
 
     #[test]
     fn archive_files_open_once_and_transcode() {
-        let dir =
-            std::env::temp_dir().join(format!("gigaam-live-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gigaam-live-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let mut capture = LiveCapture::new(
             "live".into(),
@@ -1058,6 +1223,7 @@ mod tests {
             LiveSource::Microphone,
             None,
             true,
+            ArchiveFormat::Flac,
             1.0,
             dir.clone(),
             None,
@@ -1082,6 +1248,7 @@ mod tests {
             LiveSource::Microphone,
             None,
             false,
+            ArchiveFormat::Flac,
             1.0,
             PathBuf::new(),
             None,
@@ -1104,6 +1271,7 @@ mod tests {
             LiveSource::Microphone,
             None,
             false,
+            ArchiveFormat::Flac,
             1.0,
             PathBuf::new(),
             None,

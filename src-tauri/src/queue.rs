@@ -24,12 +24,12 @@ struct TrackOffset {
 }
 
 /// Archived tracks of a converted dual live session: the row points at
-/// `mixed.wav`, but per-track transcription keeps microphone/system labels.
+/// a generated `mixed.*`, but per-track transcription keeps microphone/system labels.
 /// Returns (path, track, offset_seconds), or None for ordinary file jobs.
 fn live_tracks_for(source_path: &str) -> Option<Vec<(std::path::PathBuf, SourceTrack, f64)>> {
     use std::path::Path;
     let source = Path::new(source_path);
-    if source.file_name()?.to_str()? != "mixed.wav" {
+    if !source.file_stem()?.to_str()?.eq_ignore_ascii_case("mixed") {
         return None;
     }
     let directory = source.parent()?;
@@ -37,17 +37,14 @@ fn live_tracks_for(source_path: &str) -> Option<Vec<(std::path::PathBuf, SourceT
     let offsets: Vec<TrackOffset> = serde_json::from_str(&listing).ok()?;
     let mut tracks = Vec::new();
     for entry in offsets {
-        if entry.file == "mixed.wav" {
+        if entry.file.starts_with("mixed.") {
             continue;
         }
         let path = directory.join(&entry.file);
-        if path.extension().and_then(|ext| ext.to_str()) != Some("flac") {
-            continue;
-        }
         if !path.exists() {
             continue;
         }
-        let track = if entry.file.contains("microphone") {
+        let track = if entry.file.starts_with("microphone") {
             SourceTrack::Microphone
         } else if entry.file.contains("system") {
             SourceTrack::System
@@ -291,10 +288,7 @@ mod tests {
         assert_eq!(segments[1].source_track, SourceTrack::System);
         assert_eq!(segments[1].start_seconds, 5.0);
         assert_eq!(segments[1].index, 1);
-        assert_eq!(
-            store.get("multi").unwrap().unwrap().total_chunks,
-            Some(2)
-        );
+        assert_eq!(store.get("multi").unwrap().unwrap().total_chunks, Some(2));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

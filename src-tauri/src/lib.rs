@@ -22,7 +22,7 @@ use domain::{
     suppress_microphone_echo,
 };
 use export::ExportFormat;
-use live::{LiveCapture, LiveSource, LiveStatus, clamp_gain};
+use live::{ArchiveFormat, LiveCapture, LiveSource, LiveStatus, clamp_gain};
 use model_manager::{ModelManager, ModelStatus};
 use pipeline::{LiveScanner, NativeFileProcessor};
 use queue::process_next;
@@ -68,6 +68,29 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
+fn live_timestamp(now_ms: i64) -> String {
+    // Convert Unix time to UTC calendar components without pulling a date-time
+    // dependency into the desktop binary.
+    let seconds = now_ms.div_euclid(1000);
+    let days = seconds.div_euclid(86_400);
+    let seconds_of_day = seconds.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    let hour = seconds_of_day / 3_600;
+    let minute = seconds_of_day / 60 % 60;
+    let second = seconds_of_day % 60;
+    format!("{year:04}{month:02}{day:02}-{hour:02}{minute:02}{second:02}")
+}
+
 /// Best-effort debug log for the recording lifecycle.
 /// Written to `<app_data>/gigaam-debug.log`; failures are silently ignored
 /// so logging can never break recording.
@@ -91,7 +114,10 @@ pub(crate) fn debug_log(path: &Path, message: &str) {
 }
 
 pub(crate) fn debug_log_path(app: &tauri::AppHandle) -> Option<PathBuf> {
-    app.path().app_data_dir().ok().map(|dir| dir.join("gigaam-debug.log"))
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join("gigaam-debug.log"))
 }
 
 fn new_id() -> String {
@@ -101,6 +127,16 @@ fn new_id() -> String {
         std::process::id(),
         ID_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     )
+}
+
+fn new_live_id(now: i64) -> String {
+    let timestamp = live_timestamp(now);
+    let sequence = ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    if sequence == 0 {
+        timestamp
+    } else {
+        format!("{timestamp}-{sequence}")
+    }
 }
 
 fn lock_store<'a>(
@@ -389,13 +425,21 @@ fn session_audio_files(
     if id.is_empty() || id.contains(['/', '\\']) || id.contains("..") {
         return Err("invalid transcription ID".into());
     }
+    let record = lock_store(&state)?
+        .get(&id)
+        .map_err(|error| error.to_string())?
+        .ok_or("transcription not found")?;
     let mut files = Vec::new();
     if let Ok(data_dir) = app.path().app_data_dir() {
         let directory = data_dir.join("live").join(&id);
         if let Ok(entries) = std::fs::read_dir(&directory) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|ext| ext.to_str()) == Some("flac") {
+                if matches!(
+                    path.extension().and_then(|ext| ext.to_str()),
+                    Some("flac" | "wav" | "mp3")
+                ) && path.file_stem().and_then(|stem| stem.to_str()) != Some("mixed")
+                {
                     files.push(path.to_string_lossy().into_owned());
                 }
             }
@@ -403,13 +447,13 @@ fn session_audio_files(
         }
     }
     if files.is_empty() {
-        let record = lock_store(&state)?
-            .get(&id)
-            .map_err(|error| error.to_string())?
-            .ok_or("transcription not found")?;
-        if let Some(audio) = record.audio_path.filter(|path| !path.is_empty()) {
+        if let Some(audio) = record.audio_path.clone().filter(|path| !path.is_empty()) {
             files.push(audio);
         }
+    }
+    if files.is_empty() && !record.source_path.is_empty() && Path::new(&record.source_path).exists()
+    {
+        files.push(record.source_path);
     }
     Ok(files)
 }
@@ -427,6 +471,21 @@ fn update_segment_text(
     }
     lock_store(&state)?
         .update_segment_text(&transcription_id, index, text)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn rename_transcription(
+    id: String,
+    name: String,
+    state: tauri::State<'_, Arc<Mutex<Store>>>,
+) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 240 || name.contains(['\r', '\n']) {
+        return Err("name is empty or too long".into());
+    }
+    lock_store(&state)?
+        .rename(&id, name)
         .map_err(|error| error.to_string())
 }
 
@@ -452,7 +511,12 @@ fn mixed_session_audio(id: String, app: tauri::AppHandle) -> Result<String, Stri
         .map_err(|error| error.to_string())?
         .flatten()
         .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("flac"))
+        .filter(|path| {
+            matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("flac" | "wav" | "mp3")
+            ) && path.file_stem().and_then(|stem| stem.to_str()) != Some("mixed")
+        })
         .collect();
     inputs.sort();
     if inputs.is_empty() {
@@ -461,16 +525,23 @@ fn mixed_session_audio(id: String, app: tauri::AppHandle) -> Result<String, Stri
     if inputs.len() == 1 {
         return Ok(inputs[0].to_string_lossy().into_owned());
     }
-    let offsets: std::collections::HashMap<String, f64> = std::fs::read_to_string(directory.join("tracks.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str::<Vec<TrackOffset>>(&text).ok())
-        .map(|tracks| {
-            tracks
-                .into_iter()
-                .map(|track| (track.file, track.offset_seconds.max(0.0)))
-                .collect()
-        })
-        .unwrap_or_default();
+    let offsets: std::collections::HashMap<String, f64> =
+        std::fs::read_to_string(directory.join("tracks.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Vec<TrackOffset>>(&text).ok())
+            .map(|tracks| {
+                tracks
+                    .into_iter()
+                    .map(|track| (track.file, track.offset_seconds.max(0.0)))
+                    .collect()
+            })
+            .unwrap_or_default();
+    let extension = inputs
+        .first()
+        .and_then(|path| path.extension())
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("wav")
+        .to_ascii_lowercase();
     let tracks: Vec<(PathBuf, f64)> = inputs
         .into_iter()
         .map(|path| {
@@ -482,7 +553,7 @@ fn mixed_session_audio(id: String, app: tauri::AppHandle) -> Result<String, Stri
             (path, offset)
         })
         .collect();
-    let output = directory.join("mixed.wav");
+    let output = directory.join(format!("mixed.{extension}"));
     let log_path = debug_log_path(&app);
     let log = |message: &str| {
         if let Some(path) = log_path.as_ref() {
@@ -501,7 +572,14 @@ fn mixed_session_audio(id: String, app: tauri::AppHandle) -> Result<String, Stri
         _ => true,
     };
     if rebuild {
-        if let Err(error) = pipeline::mix_mono_48k_to_wav(&tracks, &output) {
+        let format = match extension.as_str() {
+            "flac" => ArchiveFormat::Flac,
+            "mp3" => ArchiveFormat::Mp3,
+            _ => ArchiveFormat::Wav,
+        };
+        let result = pipeline::mix_mono_48k(&tracks)
+            .and_then(|samples| live::encode_mono_48k(&samples, &output, format));
+        if let Err(error) = result {
             log(&format!("mixed_session_audio failed for {id}: {error}"));
             return Err(error.to_string());
         }
@@ -542,7 +620,8 @@ fn cancel_model_download(models: tauri::State<'_, ModelManager>) {
 fn start_live(
     source: LiveSource,
     microphone: String,
-    keep_audio: bool,
+    archive_format: Option<ArchiveFormat>,
+    live_name: Option<String>,
     mic_gain: f32,
     state: tauri::State<'_, Arc<Mutex<Store>>>,
     live: tauri::State<'_, LiveState>,
@@ -566,8 +645,8 @@ fn start_live(
     {
         return Err("another transcription is active".into());
     }
-    let id = new_id();
     let started_ms = now_ms();
+    let id = new_live_id(started_ms);
     let directory = app
         .path()
         .app_data_dir()
@@ -579,7 +658,8 @@ fn start_live(
         started_ms,
         source,
         (!microphone.is_empty()).then_some(microphone),
-        keep_audio,
+        true,
+        archive_format.unwrap_or_default(),
         mic_gain,
         directory,
         debug_log_path(&app),
@@ -588,10 +668,15 @@ fn start_live(
         .initialize_paths()
         .map_err(|error| error.to_string())?;
     let capture = Arc::new(Mutex::new(capture_state));
+    let source_filename = live_name
+        .filter(|name| {
+            !name.trim().is_empty() && name.chars().count() <= 240 && !name.contains(['\r', '\n'])
+        })
+        .unwrap_or_else(|| format!("Live session {}", live_timestamp(started_ms)));
     let transcription = Transcription {
         id,
         kind: TranscriptionKind::Live,
-        source_filename: "Live session".into(),
+        source_filename,
         source_path: String::new(),
         source_size_bytes: 0,
         source_modified_ms: started_ms,
@@ -665,7 +750,10 @@ fn start_live(
             log("model load FAILED");
             return;
         };
-        log(&format!("model load done in {}s", load_started.elapsed().as_secs()));
+        log(&format!(
+            "model load done in {}s",
+            load_started.elapsed().as_secs()
+        ));
         live_ready.store(true, Ordering::Relaxed);
         if live_gen.load(Ordering::Relaxed) != my_gen {
             log("stale generation after load, exit");
@@ -704,11 +792,7 @@ fn start_live(
                 last_stats = std::time::Instant::now();
                 let capture = capture.lock().unwrap();
                 let avg = |total: u64, n: u64| {
-                    if n == 0 {
-                        0
-                    } else {
-                        total / 1000 / n
-                    }
+                    if n == 0 { 0 } else { total / 1000 / n }
                 };
                 log(&format!(
                     "stats mic_fed={} sys_fed={} mic_raw={} sys_raw={} mic_fmt={} sys_fmt={} mic_pkt={} sys_pkt={} mic_it={} sys_it={} mic_ph={}/{}/{}ms+{}to sys_ph={}/{}/{}ms+{}to mic_gap_ms={} sys_gap_ms={} mic_err={} sys_err={} resyncs={}",
@@ -747,10 +831,7 @@ fn start_live(
             }
             let fed = (mic_scanner.fed_48k(), system_scanner.fed_48k());
             if stopping {
-                if let Err(error) = mic_scanner
-                    .finish()
-                    .and_then(|()| system_scanner.finish())
-                {
+                if let Err(error) = mic_scanner.finish().and_then(|()| system_scanner.finish()) {
                     *live_error.lock().unwrap() = Some(error.to_string());
                     return;
                 }
@@ -775,6 +856,11 @@ fn start_live(
                     &mut system_quiet,
                 ),
             ] {
+                if (track == domain::SourceTrack::Microphone && microphone.is_empty())
+                    || (track == domain::SourceTrack::System && system.is_empty())
+                {
+                    continue;
+                }
                 let next_index = match store.lock().unwrap().segments(&live_id) {
                     Ok(value) => value.len(),
                     Err(error) => {
@@ -783,13 +869,7 @@ fn start_live(
                     }
                 };
                 match processor.transcribe_live_ready(
-                    scanner,
-                    &live_id,
-                    track,
-                    next_index,
-                    *emitted,
-                    *quiet,
-                    stopping,
+                    scanner, &live_id, track, next_index, *emitted, *quiet, stopping,
                 ) {
                     Ok((segments, next_emitted, next_quiet)) => {
                         let mut storage = store.lock().unwrap();
@@ -841,13 +921,13 @@ fn list_microphones() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn set_mic_gain(
-    mic_gain: f32,
-    live: tauri::State<'_, LiveState>,
-) -> Result<(), String> {
+fn set_mic_gain(mic_gain: f32, live: tauri::State<'_, LiveState>) -> Result<(), String> {
     let gain = clamp_gain(mic_gain);
     if let Some(capture) = live.capture.lock().unwrap().as_ref() {
-        capture.lock().map_err(|_| "capture lock is poisoned")?.mic_gain = gain;
+        capture
+            .lock()
+            .map_err(|_| "capture lock is poisoned")?
+            .mic_gain = gain;
     }
     Ok(())
 }
@@ -878,8 +958,7 @@ fn resume_live(live: tauri::State<'_, LiveState>) -> Result<(), String> {
         .as_ref()
         .cloned()
         .ok_or("no active recording")?;
-    let handle =
-        live::platform::start(capture).map_err(|error| error.to_string())?;
+    let handle = live::platform::start(capture).map_err(|error| error.to_string())?;
     *live.handle.lock().unwrap() = Some(handle);
     live.paused.store(false, Ordering::Relaxed);
     Ok(())
@@ -915,8 +994,6 @@ fn stop_live(
         }
     };
     log("stop_live begin");
-    // Any detached inference thread from an earlier session is stale now.
-    live.generation.fetch_add(1, Ordering::Relaxed);
     live.paused.store(false, Ordering::Relaxed);
     if let Some(handle) = live.handle.lock().unwrap().take() {
         handle.stop();
@@ -926,22 +1003,14 @@ fn stop_live(
         let _ = stop.send(());
     }
     if let Some(thread) = live.inference_thread.lock().unwrap().take() {
-        // Never block the UI longer than a few seconds on a busy inference
-        // pass (e.g. stopping mid model-load or mid-chunk): after a timeout
-        // the thread is detached and exits on its own via the stop signal.
+        // Completion is reported only after the final inference flush. The
+        // previous three-second detach left live records visibly incomplete.
         let waited = std::time::Instant::now();
-        while !thread.is_finished() && waited.elapsed() < std::time::Duration::from_secs(3) {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        if thread.is_finished() {
-            log(&format!(
-                "inference joined in {}ms",
-                waited.elapsed().as_millis()
-            ));
-            let _ = thread.join();
-        } else {
-            log("inference detached after 3s timeout (exits on its own)");
-        }
+        let _ = thread.join();
+        log(&format!(
+            "inference final flush joined in {}ms",
+            waited.elapsed().as_millis()
+        ));
     }
     let live_error = live.error.lock().unwrap().take();
     let capture = live
@@ -964,8 +1033,11 @@ fn stop_live(
             } else {
                 let _ = store.fail_if_not_cancelled(&id, &error.to_string(), now_ms());
             }
-            let _ = std::fs::remove_file(capture.directory.join("microphone.flac"));
-            let _ = std::fs::remove_file(capture.directory.join("system.flac"));
+            for extension in ["flac", "wav", "mp3"] {
+                let _ =
+                    std::fs::remove_file(capture.directory.join(format!("microphone.{extension}")));
+                let _ = std::fs::remove_file(capture.directory.join(format!("system.{extension}")));
+            }
             drop(capture);
             *live.capture.lock().unwrap() = None;
             let _ = worker.0.send(());
@@ -1034,9 +1106,6 @@ pub fn run() {
             app.manage(worker);
             app.manage(ModelManager::new(model_dir));
             app.manage(LiveState::new());
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_title(&format!("GigaAM Desktop {BUILD_TAG}"));
-            }
             if let Some(path) = app
                 .path()
                 .app_data_dir()
@@ -1063,6 +1132,7 @@ pub fn run() {
             session_audio_files,
             mixed_session_audio,
             update_segment_text,
+            rename_transcription,
             start_live,
             set_mic_gain,
             pause_live,
@@ -1086,5 +1156,11 @@ mod tests {
     fn generated_ids_are_unique() {
         let ids: HashSet<_> = (0..100).map(|_| super::new_id()).collect();
         assert_eq!(ids.len(), 100);
+    }
+
+    #[test]
+    fn live_timestamp_has_filename_safe_utc_shape() {
+        assert_eq!(super::live_timestamp(0), "19700101-000000");
+        assert_eq!(super::live_timestamp(1_700_000_000_000), "20231114-221320");
     }
 }
