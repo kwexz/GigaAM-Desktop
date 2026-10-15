@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{fmt, str::FromStr};
+use std::{collections::HashMap, fmt, str::FromStr};
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -132,6 +132,96 @@ impl TranscriptSegment {
     }
 }
 
+/// Remove an acoustic copy of system playback from the microphone transcript.
+///
+/// Dual-source recording deliberately keeps both tracks independent. When the
+/// microphone can hear the speakers, ASR may produce the same phrase on both
+/// tracks and incorrectly attribute the copy to the local speaker. The system
+/// track is authoritative in that case. This filter is conservative: text
+/// must be nearly identical and occur at the same time. Different simultaneous
+/// speech (the useful double-talk case) is preserved.
+pub fn suppress_microphone_echo(segments: Vec<TranscriptSegment>) -> Vec<TranscriptSegment> {
+    const TIMING_TOLERANCE_SECONDS: f64 = 0.75;
+
+    let system: Vec<&TranscriptSegment> = segments
+        .iter()
+        .filter(|segment| segment.source_track == SourceTrack::System)
+        .collect();
+    if system.is_empty() {
+        return segments;
+    }
+
+    segments
+        .iter()
+        .filter(|segment| {
+            if segment.source_track != SourceTrack::Microphone {
+                return true;
+            }
+            let candidates: Vec<&TranscriptSegment> = system
+                .iter()
+                .copied()
+                .filter(|candidate| {
+                    segment.start_seconds <= candidate.end_seconds + TIMING_TOLERANCE_SECONDS
+                        && candidate.start_seconds <= segment.end_seconds + TIMING_TOLERANCE_SECONDS
+                })
+                .collect();
+            if candidates
+                .iter()
+                .any(|candidate| echo_text_matches(&segment.text, &candidate.text))
+            {
+                return false;
+            }
+            let combined = candidates
+                .iter()
+                .map(|candidate| candidate.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            !echo_text_matches(&segment.text, &combined)
+        })
+        .cloned()
+        .collect()
+}
+
+fn echo_text_matches(microphone: &str, system: &str) -> bool {
+    let microphone = normalized_words(microphone);
+    let system = normalized_words(system);
+    if microphone.is_empty() || system.is_empty() {
+        return false;
+    }
+    if microphone == system {
+        return true;
+    }
+    // Short generic replies are too easy to say independently. Only exact
+    // short transcripts (handled above) are safe to suppress.
+    if microphone.len() < 3 || system.len() < 3 {
+        return false;
+    }
+
+    let mut counts = HashMap::<&str, usize>::new();
+    for word in &system {
+        *counts.entry(word).or_default() += 1;
+    }
+    let mut overlap = 0usize;
+    for word in &microphone {
+        if let Some(count) = counts.get_mut(word.as_str()) {
+            if *count > 0 {
+                overlap += 1;
+                *count -= 1;
+            }
+        }
+    }
+    let containment = overlap as f64 / microphone.len().min(system.len()) as f64;
+    let dice = 2.0 * overlap as f64 / (microphone.len() + system.len()) as f64;
+    containment >= 0.8 && dice >= 0.72
+}
+
+fn normalized_words(text: &str) -> Vec<String> {
+    text.split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +258,87 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn segment(
+        index: usize,
+        start: f64,
+        end: f64,
+        text: &str,
+        track: SourceTrack,
+    ) -> TranscriptSegment {
+        TranscriptSegment::new(
+            "live",
+            index,
+            start,
+            end,
+            text.into(),
+            track,
+            SegmentState::Final,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn microphone_copy_of_system_phrase_is_suppressed() {
+        let segments = vec![
+            segment(
+                0,
+                1.0,
+                3.0,
+                "Добрый день, начинаем встречу.",
+                SourceTrack::System,
+            ),
+            segment(
+                1,
+                1.1,
+                3.1,
+                "добрый день начинаем встречу",
+                SourceTrack::Microphone,
+            ),
+        ];
+
+        let filtered = suppress_microphone_echo(segments);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].source_track, SourceTrack::System);
+    }
+
+    #[test]
+    fn simultaneous_different_speech_is_preserved() {
+        let segments = vec![
+            segment(
+                0,
+                1.0,
+                3.0,
+                "Давайте откроем следующий документ",
+                SourceTrack::System,
+            ),
+            segment(
+                1,
+                1.1,
+                2.8,
+                "Я сейчас пришлю ссылку в чат",
+                SourceTrack::Microphone,
+            ),
+        ];
+
+        assert_eq!(suppress_microphone_echo(segments).len(), 2);
+    }
+
+    #[test]
+    fn similar_phrase_outside_echo_window_is_preserved() {
+        let segments = vec![
+            segment(0, 1.0, 2.0, "Да это правильный ответ", SourceTrack::System),
+            segment(
+                1,
+                5.0,
+                6.0,
+                "да это правильный ответ",
+                SourceTrack::Microphone,
+            ),
+        ];
+
+        assert_eq!(suppress_microphone_echo(segments).len(), 2);
     }
 
     #[test]

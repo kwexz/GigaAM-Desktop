@@ -13,6 +13,8 @@ for the first model download.
 - File transcription: WAV, MP3, FLAC, OGG, M4A, MP4, MKV, AVI, MOV (Symphonia decoding).
 - Live recording: microphone, system audio (WASAPI loopback), or both tracks at once; microphone
   gain 0.5–10x adjustable even mid-recording; per-track lossless FLAC archive.
+- System + microphone mode suppresses speaker echo using system AEC when Windows/the audio driver
+  supports it, plus a conservative time-aligned transcript guard as a fallback.
 - Silero VAD + chunking + GigaAM v3 E2E CTC (int8) with punctuation.
 - SQLite-backed queue and history: survives restarts, interrupted jobs are marked and retryable;
   search across filenames and transcript text.

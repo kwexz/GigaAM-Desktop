@@ -424,7 +424,10 @@ pub mod platform {
         },
         thread,
     };
-    use wasapi::{DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat, initialize_mta};
+    use wasapi::{
+        AudioClientProperties, DeviceEnumerator, Direction, SampleType, StreamCategory,
+        StreamMode, WaveFormat, initialize_mta,
+    };
     use rubato::{FftFixedIn, Resampler};
 
     pub fn microphones() -> Result<Vec<String>> {
@@ -472,6 +475,10 @@ pub mod platform {
                 let _ = initialize_mta();
                 let result: Result<()> = (|| {
                     let enumerator = DeviceEnumerator::new()?;
+                    let dual_source = matches!(
+                        capture.lock().unwrap().source,
+                        LiveSource::SystemAndMicrophone
+                    );
                     let device = if mic {
                         capture
                             .lock()
@@ -554,6 +561,22 @@ pub mod platform {
                     let mut init_error = None;
                     for mask in [None, Some(0)] {
                         let mut attempt = device.get_iaudioclient()?;
+                        // The Communications category asks Windows/the audio
+                        // driver to apply microphone effects such as AEC.
+                        // Unsupported endpoints fall back to transcript-level
+                        // de-duplication, so category failure is non-fatal.
+                        if mic && dual_source {
+                            let properties = AudioClientProperties::new()
+                                .set_category(StreamCategory::Communications);
+                            if let Err(error) = attempt.set_properties(properties) {
+                                if let Some(path) = capture.lock().unwrap().log_path.clone() {
+                                    debug_log(
+                                        &path,
+                                        &format!("mic AEC category unavailable: {error}"),
+                                    );
+                                }
+                            }
+                        }
                         let format = WaveFormat::new(
                             bytes_per_sample * 8,
                             bits as usize,
@@ -589,6 +612,34 @@ pub mod platform {
                             .map(|error| anyhow::anyhow!(error.to_string()))
                             .unwrap_or_else(|| anyhow::anyhow!("audio client init failed"))
                     })?;
+                    if mic && dual_source {
+                        let aec_result: Result<bool> = (|| {
+                            if !client.is_aec_supported()? {
+                                return Ok(false);
+                            }
+                            let render = enumerator.get_default_device(&Direction::Render)?;
+                            client
+                                .get_aec_control()?
+                                .set_echo_cancellation_render_endpoint(Some(render.get_id()?))?;
+                            Ok(true)
+                        })();
+                        if let Some(path) = capture.lock().unwrap().log_path.clone() {
+                            match aec_result {
+                                Ok(true) => debug_log(
+                                    &path,
+                                    "mic acoustic echo cancellation enabled",
+                                ),
+                                Ok(false) => debug_log(
+                                    &path,
+                                    "mic acoustic echo cancellation unsupported; using transcript guard",
+                                ),
+                                Err(error) => debug_log(
+                                    &path,
+                                    &format!("mic acoustic echo cancellation unavailable: {error}"),
+                                ),
+                            }
+                        }
+                    }
                     if let Some(path) = capture
                         .lock()
                         .unwrap()

@@ -17,7 +17,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use domain::{TranscriptSegment, Transcription, TranscriptionKind, TranscriptionStatus};
+use domain::{
+    TranscriptSegment, Transcription, TranscriptionKind, TranscriptionStatus,
+    suppress_microphone_echo,
+};
 use export::ExportFormat;
 use live::{LiveCapture, LiveSource, LiveStatus, clamp_gain};
 use model_manager::{ModelManager, ModelStatus};
@@ -253,9 +256,10 @@ fn get_segments(
     id: String,
     state: tauri::State<'_, Arc<Mutex<Store>>>,
 ) -> Result<Vec<TranscriptSegment>, String> {
-    lock_store(&state)?
+    let segments = lock_store(&state)?
         .segments(&id)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    Ok(suppress_microphone_echo(segments))
 }
 
 #[tauri::command]
@@ -354,6 +358,7 @@ fn export_transcription(
     let segments = lock_store(&state)?
         .segments(&id)
         .map_err(|error| error.to_string())?;
+    let segments = suppress_microphone_echo(segments);
     let format = match format.as_str() {
         "txt" => ExportFormat::Txt,
         "srt" => ExportFormat::Srt,
