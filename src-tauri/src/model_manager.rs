@@ -15,14 +15,14 @@ use sha2::{Digest, Sha256};
 
 pub const READY_MARKER: &str = ".verified";
 
-struct Artifact {
-    name: &'static str,
-    url: &'static str,
+struct Artifact<'a> {
+    name: &'a str,
+    url: &'a str,
     bytes: u64,
-    sha256: &'static str,
+    sha256: &'a str,
 }
 
-const ARTIFACTS: &[Artifact] = &[
+const ARTIFACTS: &[Artifact<'static>] = &[
     Artifact {
         name: "v3_e2e_ctc.int8.onnx",
         url: "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/322c3b29492673eb7d0b434bfa9dfb8653e34d02/v3_e2e_ctc.int8.onnx?download=true",
@@ -121,6 +121,15 @@ fn download_all(
     status: &Arc<Mutex<ModelStatus>>,
     cancel: &AtomicBool,
 ) -> Result<()> {
+    download_artifacts(directory, status, cancel, ARTIFACTS)
+}
+
+fn download_artifacts(
+    directory: &Path,
+    status: &Arc<Mutex<ModelStatus>>,
+    cancel: &AtomicBool,
+    artifacts: &[Artifact<'_>],
+) -> Result<()> {
     let staging = directory.with_extension("staging");
     let previous = directory.with_extension("previous");
     let _ = fs::remove_dir_all(&staging);
@@ -130,7 +139,7 @@ fn download_all(
         .connect_timeout(std::time::Duration::from_secs(15))
         .timeout(std::time::Duration::from_secs(60 * 30))
         .build()?;
-    for artifact in ARTIFACTS {
+    for artifact in artifacts {
         if cancel.load(Ordering::Relaxed) {
             bail!("model download cancelled");
         }
@@ -176,7 +185,7 @@ fn download_all(
         }
         result?;
     }
-    if !artifacts_valid(&staging) {
+    if !artifacts_valid_for(&staging, artifacts) {
         bail!("staged model generation is incomplete");
     }
     if cancel.load(Ordering::Relaxed) {
@@ -203,12 +212,16 @@ pub fn generation_valid(directory: &Path) -> bool {
 }
 
 fn artifacts_valid(directory: &Path) -> bool {
-    ARTIFACTS
+    artifacts_valid_for(directory, ARTIFACTS)
+}
+
+fn artifacts_valid_for(directory: &Path, artifacts: &[Artifact<'_>]) -> bool {
+    artifacts
         .iter()
         .all(|artifact| verify(&directory.join(artifact.name), artifact).is_ok())
 }
 
-fn verify(path: &Path, artifact: &Artifact) -> Result<()> {
+fn verify(path: &Path, artifact: &Artifact<'_>) -> Result<()> {
     if fs::metadata(path)?.len() != artifact.bytes {
         bail!("size mismatch");
     }
@@ -231,15 +244,198 @@ fn verify(path: &Path, artifact: &Artifact) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        net::TcpListener,
+        sync::mpsc,
+        thread,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn temp_directory(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("gigaam-{name}-{}-{unique}", std::process::id()))
+    }
+
+    fn sha256(bytes: &[u8]) -> String {
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    fn serve_once(body: &'static [u8]) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(body).unwrap();
+        });
+        (format!("http://{address}/artifact"), handle)
+    }
 
     #[test]
     fn partial_file_is_never_installed() {
-        let directory =
-            std::env::temp_dir().join(format!("gigaam-model-test-{}", std::process::id()));
+        let directory = temp_directory("model-partial-test");
         fs::create_dir_all(&directory).unwrap();
         fs::write(directory.join("v3_e2e_ctc.int8.onnx.partial"), b"partial").unwrap();
         assert!(!artifacts_valid(&directory));
         assert!(!directory.join("v3_e2e_ctc.int8.onnx").exists());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn complete_generation_requires_marker_size_and_hash() {
+        let directory = temp_directory("model-generation-test");
+        fs::create_dir_all(&directory).unwrap();
+        let bytes = b"verified artifact";
+        let hash = sha256(bytes);
+        let artifact = Artifact {
+            name: "model.bin",
+            url: "unused",
+            bytes: bytes.len() as u64,
+            sha256: &hash,
+        };
+
+        fs::write(directory.join(artifact.name), bytes).unwrap();
+        assert!(artifacts_valid_for(
+            &directory,
+            std::slice::from_ref(&artifact)
+        ));
+        assert!(!directory.join(READY_MARKER).exists());
+
+        fs::write(directory.join(READY_MARKER), b"verified\n").unwrap();
+        assert!(directory.join(READY_MARKER).is_file());
+        fs::write(directory.join(artifact.name), b"wrong artifact").unwrap();
+        assert!(!artifacts_valid_for(&directory, &[artifact]));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn cancellation_keeps_previous_generation() {
+        let directory = temp_directory("model-cancel-test");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("existing.bin"), b"keep me").unwrap();
+        let status = Arc::new(Mutex::new(ModelStatus {
+            installed: true,
+            downloading: true,
+            downloaded_bytes: 0,
+            total_bytes: 1,
+            error: None,
+        }));
+        let cancel = AtomicBool::new(true);
+        let hash = sha256(b"x");
+        let artifact = Artifact {
+            name: "model.bin",
+            url: "http://127.0.0.1:1/not-used",
+            bytes: 1,
+            sha256: &hash,
+        };
+
+        let error = download_artifacts(&directory, &status, &cancel, &[artifact]).unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(
+            fs::read(directory.join("existing.bin")).unwrap(),
+            b"keep me"
+        );
+        assert!(
+            !directory
+                .with_extension("staging")
+                .join(READY_MARKER)
+                .exists()
+        );
+        let _ = fs::remove_dir_all(&directory);
+        let _ = fs::remove_dir_all(directory.with_extension("staging"));
+    }
+
+    #[test]
+    fn downloads_verifies_and_atomically_replaces_generation() {
+        let directory = temp_directory("model-download-test");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("old.bin"), b"old generation").unwrap();
+        let body = b"new model generation";
+        let hash = sha256(body);
+        let (url, server) = serve_once(body);
+        let artifact = Artifact {
+            name: "model.bin",
+            url: &url,
+            bytes: body.len() as u64,
+            sha256: &hash,
+        };
+        let status = Arc::new(Mutex::new(ModelStatus {
+            installed: false,
+            downloading: true,
+            downloaded_bytes: 0,
+            total_bytes: body.len() as u64,
+            error: None,
+        }));
+
+        download_artifacts(
+            &directory,
+            &status,
+            &AtomicBool::new(false),
+            std::slice::from_ref(&artifact),
+        )
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(fs::read(directory.join("model.bin")).unwrap(), body);
+        assert!(directory.join(READY_MARKER).is_file());
+        assert!(!directory.join("old.bin").exists());
+        assert!(!directory.with_extension("previous").exists());
+        assert!(artifacts_valid_for(&directory, &[artifact]));
+        assert_eq!(status.lock().unwrap().downloaded_bytes, body.len() as u64);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn rejects_download_with_wrong_hash_without_replacing_generation() {
+        let directory = temp_directory("model-hash-test");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("old.bin"), b"old generation").unwrap();
+        let body = b"downloaded bytes";
+        let (url, server) = serve_once(body);
+        let artifact = Artifact {
+            name: "model.bin",
+            url: &url,
+            bytes: body.len() as u64,
+            sha256: &sha256(b"different bytes"),
+        };
+        let status = Arc::new(Mutex::new(ModelStatus {
+            installed: true,
+            downloading: true,
+            downloaded_bytes: 0,
+            total_bytes: body.len() as u64,
+            error: None,
+        }));
+
+        let error = download_artifacts(&directory, &status, &AtomicBool::new(false), &[artifact])
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(error.to_string().contains("integrity verification"));
+        assert_eq!(
+            fs::read(directory.join("old.bin")).unwrap(),
+            b"old generation"
+        );
+        assert!(!directory.join("model.bin").exists());
+        let _ = fs::remove_dir_all(&directory);
+        let _ = fs::remove_dir_all(directory.with_extension("staging"));
+    }
+
+    #[test]
+    fn manager_rejects_parallel_downloads() {
+        let directory = temp_directory("model-parallel-test");
+        let manager = ModelManager::new(directory.clone());
+        manager.status.lock().unwrap().downloading = true;
+        let (sender, _receiver) = mpsc::channel();
+        let error = manager.start(Some(sender)).unwrap_err();
+        assert!(error.to_string().contains("already active"));
         let _ = fs::remove_dir_all(directory);
     }
 }

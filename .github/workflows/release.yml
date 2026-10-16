@@ -27,6 +27,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.99.0
       - run: npm ci
       - run: npm run check
+      - run: npm test
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -37,7 +38,23 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: false
-          releaseBody: "GigaAM Desktop: локальная транскрибация файлов и живой записи (микрофон/система), GigaAM v3 + Silero VAD полностью офлайн.\n\nWindows x64: установщик NSIS и portable exe (пока без подписи — SmartScreen предупредит).\nmacOS arm64: подписанный и нотаризованный DMG.\n\nМодели (~227 МБ) докачиваются при первом запуске. Подробнее: README.md"
+          releaseBody: |
+            ## English
+
+            GigaAM Desktop transcribes imported media and live microphone/system audio locally with GigaAM v3 and Silero VAD. After a one-time verified model download (~227 MB), recognition works offline.
+
+            Windows x64: NSIS installer and portable executable (currently unsigned; SmartScreen may warn).
+            macOS 15+ arm64: signed and notarized DMG/app when the macOS release job completes.
+
+            ## Русский
+
+            GigaAM Desktop локально транскрибирует импортированные медиафайлы и живую запись микрофона/системного звука с GigaAM v3 и Silero VAD. После однократной проверяемой загрузки моделей (~227 МБ) распознавание работает без интернета.
+
+            Windows x64: NSIS-установщик и portable exe (без подписи; SmartScreen может показать предупреждение).
+            macOS 15+ arm64: подписанные и нотаризованные DMG/app после завершения macOS-задачи релиза.
+
+            Documentation: https://github.com/kwexz/GigaAM-Desktop#readme
+            Third-party licenses: https://github.com/kwexz/GigaAM-Desktop/blob/main/docs/THIRD_PARTY_NOTICES.md
           args: --bundles nsis
       - name: Attach portable exe to release
         shell: pwsh
@@ -46,11 +63,10 @@ jobs:
         run: gh release upload ${{ github.ref_name }} "src-tauri/target/release/gigaam-desktop.exe" --clobber
 
   publish-macos:
-    # Runs on the self-hosted livikbook runner: only it has the Metal SDK
-    # (Xcode 26+) that screencapturekit/apple-metal requires.
-    # NOTE: never run untrusted PR code here, only tags.
+    # GitHub-hosted Apple Silicon provides Xcode 26 and avoids dependence on
+    # a privately maintained Mac runner.
     timeout-minutes: 45
-    runs-on: [self-hosted, mac-arm64]
+    runs-on: macos-26
     steps:
       # Keep the Mac awake for the whole job: if the display sleeps,
       # keychains lock and codesign hangs forever on an approval prompt.
@@ -64,6 +80,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.99.0
       - run: npm ci
       - run: npm run check
+      - run: npm test
       # Unit tests already run on the Windows job. The macOS test harness
       # cannot start here: its Swift-linked binary fails dyld lookup for
       # libswift_Concurrency (screencapturekit), unrelated to our code.
@@ -82,4 +99,20 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: false
-          releaseBody: "GigaAM Desktop: локальная транскрибация файлов и живой записи (микрофон/система), GigaAM v3 + Silero VAD полностью офлайн.\n\nWindows x64: установщик NSIS и portable exe (пока без подписи — SmartScreen предупредит).\nmacOS arm64: подписанный и нотаризованный DMG.\n\nМодели (~227 МБ) докачиваются при первом запуске. Подробнее: README.md"
+          releaseBody: |
+            ## English
+
+            GigaAM Desktop transcribes imported media and live microphone/system audio locally with GigaAM v3 and Silero VAD. After a one-time verified model download (~227 MB), recognition works offline.
+
+            Windows x64: NSIS installer and portable executable (currently unsigned; SmartScreen may warn).
+            macOS 15+ arm64: signed and notarized DMG/app when the macOS release job completes.
+
+            ## Русский
+
+            GigaAM Desktop локально транскрибирует импортированные медиафайлы и живую запись микрофона/системного звука с GigaAM v3 и Silero VAD. После однократной проверяемой загрузки моделей (~227 МБ) распознавание работает без интернета.
+
+            Windows x64: NSIS-установщик и portable exe (без подписи; SmartScreen может показать предупреждение).
+            macOS 15+ arm64: подписанные и нотаризованные DMG/app после завершения macOS-задачи релиза.
+
+            Documentation: https://github.com/kwexz/GigaAM-Desktop#readme
+            Third-party licenses: https://github.com/kwexz/GigaAM-Desktop/blob/main/docs/THIRD_PARTY_NOTICES.md

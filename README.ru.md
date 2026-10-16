@@ -1,178 +1,105 @@
 # GigaAM Desktop
 
-> 🇬🇧 English docs: [README.md](README.md)
+> 🇬🇧 [English documentation](README.md)
 
-Локальная транскрибация аудио/видео и живая запись (микрофон / системный звук / оба сразу).
-Tauri 2 + Svelte 5 + Rust, весь инференс на устройстве через ONNX Runtime, сеть нужна только для
-первой загрузки моделей.
+Десктопное приложение для **локального распознавания русской речи**: импорт аудио/видео и живая запись микрофона и системного звука. Распознавание выполняется на устройстве с GigaAM v3, Silero VAD и ONNX Runtime; после однократной загрузки моделей транскрибация работает без интернета.
 
-![GigaAM Desktop: история, общий плеер, потрековый транскрипт с инлайн-правкой](docs/screenshot.jpg)
+**Статус:** активная разработка, версия до 1.0 · **Платформы:** Windows x64; macOS 15+ на Apple Silicon, если macOS-файл присутствует в релизе · **[Скачать последний релиз](https://github.com/kwexz/GigaAM-Desktop/releases/latest)**
 
-## Возможности
+В релизе публикуются установщик и portable-файл для Windows x64. Подписанный и нотаризованный пакет macOS arm64 доступен только тогда, когда он перечислен в конкретном релизе: задачи двух платформ завершаются независимо. Windows-сборки намеренно не подписаны и могут вызвать SmartScreen. Linux не поддерживается.
 
-- Транскрибация файлов: WAV, MP3, FLAC, OGG, M4A, MP4, MKV, AVI, MOV (декодирование — Symphonia).
-- Живая запись: микрофон, системный звук (WASAPI loopback) или оба трека одновременно; усиление
-  микрофона 0.5–10× настраивается прямо во время записи; сохранение lossless FLAC по трекам.
-- В режиме «система + микрофон» подавляется эхо динамиков: используется системный AEC (если его
-  поддерживает Windows/аудиодрайвер) и страховочная сверка совпадающих по времени реплик.
-- VAD Silero + чанкинг + GigaAM v3 E2E CTC (int8) с пунктуацией.
-- История и очередь на SQLite: переживает перезапуск, недописанное помечается «Прервано» и
-  перезапускается; поиск по именам и тексту.
-- Экспорт: TXT, SRT, WebVTT, JSON (в имя файла добавляется таймстемп записи).
-  Копирование транскрипта, показ исходника в проводнике.
-- Повтор распознавания для любой записи, включая уже готовые. Ретрай dual-записи
-  транскрибирует каждый архивный трек отдельно, сохраняя подписи микрофона/системы.
-- Действия с репликами: play/пауза из колонки времени, правка текста инлайн,
-  копирование всего текста. Удаление с диалогом подтверждения и клавишей `Del`.
-- Пауза/продолжение живой записи с замороженным таймером.
+![GigaAM Desktop: история, общий плеер записи и редактируемый потрековый транскрипт](docs/screenshot.jpg)
 
-## Быстрый старт
+## Что реализовано
+
+- Импорт WAV, MP3, FLAC, OGG, M4A, MP4, MKV, AVI и MOV через диалог или drag-and-drop.
+- Запись микрофона, системного звука или обоих источников отдельными треками; пауза/продолжение, настройка усиления микрофона и архив FLAC, WAV или MP3.
+- Локальный пайплайн Silero VAD, чанкинга и int8 GigaAM v3 E2E CTC через ONNX Runtime — с пунктуацией и нормализацией текста.
+- Очередь и поиск по истории в SQLite; прерванные задания помечаются и перезапускаются.
+- Воспроизведение с таймкода реплики, инлайн-правка, копирование полного текста и повторное распознавание.
+- Экспорт TXT, SRT, WebVTT и JSON с сохранением меток микрофона/системы.
+- Переключение интерфейса между русским и английским.
+
+## Демонстрация за 60 секунд
+
+1. Запустите приложение и один раз нажмите **Загрузить**, чтобы установить зафиксированные модели (~227 МБ).
+2. Нажмите **Открыть** или перетащите медиафайл. Он пройдёт очередь и появится в истории с репликами и таймкодами.
+3. Нажмите таймкод для воспроизведения, исправьте реплику прямо в списке и найдите запись по имени или тексту.
+4. Нажмите **Записать**, выберите микрофон, системный звук или оба источника и остановите запись. В dual-сессии треки сохраняются отдельно с метками **Я** и **Система**.
+5. Выберите TXT, SRT, WebVTT или JSON и нажмите **Экспорт**.
+
+Скриншот выше показывает реальное приложение, а шаги раздела дают воспроизводимый сценарий самостоятельной проверки. Макеты и неподтверждённые показатели не используются.
+
+## Как попробовать релиз
+
+1. Скачайте файл для своей ОС в [GitHub Releases](https://github.com/kwexz/GigaAM-Desktop/releases/latest).
+2. Запустите приложение. Windows SmartScreen может показать предупреждение, потому что текущий исполняемый файл не подписан.
+3. Нажмите **Загрузить** в баннере модели. Приложение скачает зафиксированные артефакты, проверит размер и SHA-256 и атомарно установит их.
+4. После исчезновения баннера сеть не нужна ни для файловой, ни для live-транскрибации.
+
+Пути к моделям:
+
+- Windows: `%APPDATA%\ru.gigaam.desktop\models`
+- macOS: `~/Library/Application Support/ru.gigaam.desktop/models`
+
+Источники, хэши, поведение при повторной загрузке и ручная проверка описаны в [документе о моделях](docs/MODEL.md).
+
+## Сборка из исходников
+
+Требования:
+
+- Node.js **24.11.1** и npm 11 — версии из CI
+- Rust **1.99.0**, зафиксированный в `rust-toolchain.toml`
+- [системные зависимости Tauri 2](https://v2.tauri.app/start/prerequisites/)
+- Windows: Visual Studio Build Tools с C++ workload и WebView2
+- macOS: macOS 15+, Apple Silicon и Xcode 26+ для текущей зависимости ScreenCaptureKit
 
 ```powershell
-npm install
-npm run tauri dev     # dev-режим: Vite HMR для UI, автопересборка Rust
+npm ci
+npm run tauri dev
 ```
+
+Для первого распознавания или записи всё равно потребуется загрузить модели, как описано выше. Релизные пакеты собираются командами:
 
 ```powershell
-npm run check         # svelte-check
-cargo test -p gigaam-desktop --lib   # Rust unit-тесты
-npm run tauri build   # NSIS-установщик + portable exe в src-tauri/target/release
+npm run tauri build -- --bundles nsis -- --locked   # Windows: NSIS + release exe
 ```
 
-При первом старте приложение скачивает ~227 МБ моделей в
-`%APPDATA%\ru.gigaam.desktop\models` с проверкой размера и SHA-256.
-
-## Как это работает
-
-### Файл: очередь → чанки → сегменты
-
-```mermaid
-flowchart LR
-    UI[UI: Открыть/Drop] --> ENQ[enqueue_files]
-    ENQ --> Q[(SQLite: queued)]
-    START[start_transcription] --> CLAIM[claim_next: один активный job]
-    CLAIM --> DEC[Symphonia decode → mono]
-    DEC --> RS[Rubato → 16 кГц]
-    RS --> VAD[Silero VAD → speech regions]
-    VAD --> CH[chunk_speech ≤ 22 с]
-    CH --> ASR[GigaAM ONNX → CTC decode]
-    ASR --> SEG[(transcript_segments)]
-    SEG --> DONE[completed]
+```bash
+npm run tauri build -- --bundles dmg,app -- --locked # macOS: DMG + app
 ```
 
-### Живая запись
+Локальный macOS-пакет не равнозначен подписанному и нотаризованному артефакту release workflow. Расширенные инструкции и диагностика — в [руководстве разработчика](docs/DEVELOPMENT.ru.md).
 
-```mermaid
-flowchart LR
-    MIC[WASAPI mic 48 кГц] --> CAP[LiveCapture: gain, таймлайн, FLAC-архив]
-    SYS[WASAPI loopback 48 кГц] --> CAP
-    CAP --> SC[LiveScanner: стриминговый ресемплер в 16 кГц]
-    SC --> SVAD[стриминговый Silero VAD: только новые фреймы]
-    SVAD --> LCH[чанки по мере завершения]
-    LCH --> LASR[GigaAM ONNX, лимит 2 потока]
-    LASR --> SEG[(transcript_segments live)]
+`npm test` запускает сфокусированные UI interaction tests; Rust-тесты покрывают очередь, SQLite recovery, экспорт, обработку аудио, проверку моделей и streaming pipeline.
+
+## Проверка проекта
+
+Это те же основные проверки, которые выполняет `.github/workflows/build.yml`:
+
+```powershell
+npm ci
+npm run check
+npm test
+npm run build
+cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+cargo test --locked --manifest-path src-tauri/Cargo.toml --features inference-spike --bin inference-spike
+cargo check --locked --manifest-path src-tauri/Cargo.toml --bin gigaam-desktop
 ```
 
-Инференс идёт тиками по 1 с. Пересканируется только неподтверждённый хвост
-(«тихий курсор»): отданное аудио и VAD-подтверждённая тишина повторно не обрабатываются.
-Отработанное выгружается из памяти (`discard_before`), окно сканирования всегда маленькое.
+GitHub Actions для каждого push и pull request собирает Windows NSIS и неподписанный macOS app на GitHub-hosted runners. Теги `v*` публикуют Windows-пакеты и запускают подписанную/нотаризованную macOS-сборку на GitHub-hosted Apple Silicon runner с Apple credentials из secrets репозитория.
 
-Dual-сессии хранят потрековые FLAC-архивы плюс `tracks.json` со стартовыми оффсетами.
-Проигрывание идёт наложенным WAV, собранным по запросу (`mixed_session_audio`); ретрай
-dual-записи транскрибирует каждый архивный трек отдельно и сливает сегменты по времени,
-сохраняя подписи микрофона/системы (в UI — «Я» / «Система»).
+## Инженерные материалы
 
-```mermaid
-stateDiagram-v2
-    [*] --> Подготовка: ● Запись
-    Подготовка --> ЗагрузкаМодели: start_live ok
-    ЗагрузкаМодели --> ИдётЗапись: model_ready
-    ИдётЗапись --> Пауза: Пауза
-    Пауза --> ИдётЗапись: Продолжить
-    ИдётЗапись --> Остановка: Стоп (join ≤ 3 с, дальше поток отстыковывается)
-    Остановка --> [*]: completed + FLAC
-```
+В проекте реализованы персистентная однопоточная очередь, инкрементальная запись сегментов, streaming VAD с ограниченным окном, синхронизированный захват двух треков, микширование по запросу, проверка моделей и восстановление прерванных заданий.
 
-Диагностика записи — `%APPDATA%\ru.gigaam.desktop\gigaam-debug.log`:
-фазы старта/стопа, время загрузки модели, медленные тики, статистика
-(`mic_fed/sys_fed`, вставки тишины `gap_ms`, битые пакеты `err`, ресинки часов).
+- [Архитектура и потоки данных](docs/ARCHITECTURE.ru.md) — сохранённые схемы, live-пайплайн, хранилище, команды и структура кода
+- [Разработка и проверки](docs/DEVELOPMENT.ru.md) — зависимости, сборки, тесты, CI/release и диагностика
+- [Модели и офлайн-режим](docs/MODEL.md) — зафиксированные артефакты и цикл установки
+- [Сторонние компоненты и лицензии](docs/THIRD_PARTY_NOTICES.md) — атрибуция моделей и runtime-зависимостей
 
-## Модели (зафиксированы, проверяются по SHA-256)
+## Лицензия и атрибуция
 
-| Артефакт | Размер | SHA-256 |
-| --- | ---: | --- |
-| `v3_e2e_ctc.int8.onnx` (GigaAM v3 E2E CTC, rev `322c3b2`, HF `istupakov/gigaam-v3-onnx`) | 224 893 347 | `2e3fcb7a…1d0cfc9d28e` |
-| `v3_e2e_ctc_vocab.txt` (257 токенов, blank 256) | 2 007 | `142de757…e6085273731` |
-| `silero_vad.onnx` (официальный, rev `1e261b0`) | 2 327 524 | `1a153a22…79d8788e3` |
+Оригинальный исходный код репозитория доступен по [лицензии MIT](LICENSE). Эта лицензия **не перелицензирует** сторонние модели, библиотеки и SDK платформ. GigaAM, ONNX-конверсия, Silero VAD, ONNX Runtime, Symphonia, `shine-rs`, Tauri и остальные зависимости сохраняют собственные лицензии — см. [сторонние компоненты и лицензии](docs/THIRD_PARTY_NOTICES.md). В частности, используемый для MP3-архива `shine-rs` заявляет LGPL-2.0.
 
-Полные хэши и ревизии — в `src-tauri/src/model_manager.rs` (`ARTIFACTS`).
-
-## Параметры VAD и чанкинга (`src-tauri/src/pipeline.rs`)
-
-Порог речи 0.5, порог тишины 0.35, минимум речи 200 мс, минимум тишины 100 мс,
-паддинг регионов 120 мс. Регионы склеиваются до ~22 с, пауза после ~15 с — preferred
-граница, непрерывная речь режется не позже 22 с (жёсткий лимит 30 с).
-Фрейм VAD 512 сэмплов, контекст 64, частота 16 кГц.
-
-## Tauri-команды (вызывает UI)
-
-Файлы: `enqueue_files`, `start_transcription`, `list_queue`, `list_history`,
-`search_history`, `get_segments`, `cancel_transcription`, `retry_transcription`,
-`remove_queue_item`, `delete_history`, `export_transcription`, `save_export`.
-Запись: `start_live(source, microphone, keep_audio, mic_gain)`, `stop_live`,
-`pause_live`, `resume_live`, `live_status`, `list_microphones`, `set_mic_gain`,
-`session_audio_files`, `mixed_session_audio`, `update_segment_text`.
-Модель: `model_status`, `download_model`, `cancel_model_download`.
-
-## Политика подписи кода
-
-Windows-релизы подписываются. Free code signing provided by [SignPath.io](https://signpath.io),
-certificate by [SignPath Foundation](https://signpath.org).
-
-- Committers and reviewers: соавторы репозитория.
-- Approvers: владельцы репозитория.
-- Каждый релиз подтверждается на подпись вручную; неподписанные локальные сборки —
-  только для разработки.
-
-## Стек
-
-- UI: Svelte 5 (runes) + SvelteKit + Vite, `adapter-static` (без сервера, без Electron).
-- Десктоп: Tauri 2 — системный WebView, single instance, asset protocol, плагины
-  dialog/fs/opener.
-- Ядро: Rust — `std`-потоки + `mpsc` (без async-рантайма на горячих путях).
-- Аудио: WASAPI через вендорный `wasapi` (Windows), ScreenCaptureKit (macOS),
-  декод Symphonia, ресемпл Rubato, WAV через `hound`, архив `flac-codec`.
-- Инференс: ONNX Runtime через `ort` (статическая линковка), без Python.
-- Хранилище: `rusqlite` (встроенный SQLite, один файл).
-- I18n: переключатель RU/EN в приложении, без фреймворков.
-
-## Компактность
-
-- NSIS-установщик ≈ 9 МБ, portable exe ≈ 38 МБ (ONNX Runtime слинкован статически).
-- Не поставляются Chromium/Node/Python; сетевых загрузок в рантайме нет, кроме моделей ниже.
-- Модели (~227 МБ) качаются один раз в OS app-data с проверкой размера и SHA-256.
-- Транскрипты — в одном SQLite-файле; аудио — потрековые FLAC + микс по запросу.
-
-## Хранилище
-
-SQLite `%APPDATA%\ru.gigaam.desktop\gigaam.sqlite3`: таблицы `transcriptions`
-(метаданные, статус, прогресс чанков, путь аудио) и `transcript_segments`
-(индекс, тайминги, текст, трек, спикер). Статусы:
-`queued → preparing → transcribing → completed`, плюс
-`cancelled / failed / interrupted`. Сегменты пишутся инкрементально, каскадно
-удаляются только вместе с записью истории.
-
-## Структура кода
-
-- `src/routes/+page.svelte` — весь UI.
-- `src-tauri/src/domain.rs` — типы транскрипций/сегментов.
-- `storage.rs` — SQLite, очередь, переходы статусов.
-- `pipeline.rs` — декод, ресемпл, VAD, чанкинг, ONNX, CTC; `LiveScanner`.
-- `queue.rs` — координатор файловых задач (одна активная, слияние потрекового ретрая).
-- `live.rs` — WASAPI-захват (Windows, `vendor/wasapi`), ScreenCaptureKit (macOS),
-  FLAC-архив, усиление микрофона.
-- `lib.rs` — команды, воркер файлов, поток live-инференса.
-- `model_manager.rs` — скачивание и проверка моделей.
-- `export.rs` — TXT/SRT/VTT/JSON.
-- `src-tauri/src/bin/inference_spike.rs` — стенд разового прогона файла
-  (`--features inference-spike`).
+GigaAM Desktop — независимый клиент и не позиционируется как официальное приложение GigaAM.

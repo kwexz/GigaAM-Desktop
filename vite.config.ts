@@ -1,6 +1,7 @@
 import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
-import { defineConfig } from 'vite';
+import { svelteTesting } from '@testing-library/svelte/vite';
+import { defineConfig } from 'vitest/config';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
@@ -21,6 +22,7 @@ export default defineConfig({
 		__BUILD_ID__: JSON.stringify(`${buildDate}-${buildNumber}`)
 	},
 	plugins: [
+		svelteTesting(),
 		sveltekit({
 			compilerOptions: {
 				// Force runes mode for the project, except for libraries. Can be removed in svelte 6.
@@ -30,5 +32,11 @@ export default defineConfig({
 
 			adapter: adapter({ fallback: 'index.html' })
 		})
-	]
+	],
+	test: {
+		environment: 'jsdom',
+		setupFiles: ['./src/test/setup.ts'],
+		include: ['src/**/*.test.ts'],
+		clearMocks: true
+	}
 });

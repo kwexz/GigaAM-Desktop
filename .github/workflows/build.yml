@@ -5,17 +5,8 @@ on:
   pull_request:
 
 jobs:
-  check:
-    # NOTE: macOS is intentionally not checked here. The screencapturekit
-    # dependency tree (apple-metal) needs the newest Metal SDK, which only
-    # exists on the self-hosted livikbook runner. macOS is still built,
-    # signed and notarized by the release workflow on every v* tag.
-    # Self-hosted runners must never execute untrusted PR code, so PR checks
-    # stay on GitHub-hosted Windows only.
-    strategy:
-      matrix:
-        os: [windows-2025]
-    runs-on: ${{ matrix.os }}
+  check-windows:
+    runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,15 +15,15 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@1.99.0
         with:
-          targets: ${{ matrix.os == 'macos-14' && 'aarch64-apple-darwin' || 'x86_64-pc-windows-msvc' }}
+          targets: x86_64-pc-windows-msvc
       - run: npm ci
       - run: npm run check
+      - run: npm test
       - run: npm run build
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features inference-spike --bin inference-spike
       - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --bin gigaam-desktop
-      - if: matrix.os == 'windows-2025'
-        run: npm run tauri build -- --bundles nsis -- --locked
+      - run: npm run tauri build -- --bundles nsis -- --locked
       - name: Measure release artifacts
         shell: bash
         run: |
@@ -53,9 +44,37 @@ jobs:
         # CI artifacts are redundant with release binaries: keep them 2 days.
         with:
           retention-days: 2
-          name: gigaam-desktop-${{ matrix.os }}
+          name: gigaam-desktop-windows-2025
           path: |
             src-tauri/target/release/bundle/**
             src-tauri/target/release/gigaam-desktop*
-            src-tauri/target/aarch64-apple-darwin/release/bundle/**
             release-measurements.json
+
+  check-macos:
+    # GitHub-hosted Apple Silicon includes Xcode 26 and can safely execute PR code.
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.11.1
+          cache: npm
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          targets: aarch64-apple-darwin
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      # The macOS test harness currently cannot locate libswift_Concurrency
+      # after linking ScreenCaptureKit, so compile tests without executing them.
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --no-run
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features inference-spike --bin inference-spike --no-run
+      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --bin gigaam-desktop
+      - run: npm run tauri build -- --bundles app -- --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          retention-days: 2
+          name: gigaam-desktop-macos-26-arm64
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/**

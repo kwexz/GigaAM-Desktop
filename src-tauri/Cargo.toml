@@ -4,7 +4,7 @@ version = "0.1.2"
 description = "Local GigaAM transcription desktop application"
 authors = []
 license = "MIT"
-repository = ""
+repository = "https://github.com/kwexz/GigaAM-Desktop"
 edition = "2024"
 rust-version = "1.90"
 

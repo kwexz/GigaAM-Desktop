@@ -1,176 +1,105 @@
 # GigaAM Desktop
 
-> 🇷🇺 Документация на русском: [README.ru.md](README.ru.md)
+> 🇷🇺 [Документация на русском](README.ru.md)
 
-Local audio/video transcription and live recording (microphone / system audio / both at once).
-Tauri 2 + Svelte 5 + Rust, all inference on-device via ONNX Runtime; network is only needed
-for the first model download.
+Desktop application for **local Russian speech transcription**: import audio or video, or record a microphone and system audio live. Recognition runs on-device with GigaAM v3, Silero VAD, and ONNX Runtime; after the one-time model download, transcription works without an internet connection.
 
-![GigaAM Desktop: history, mixed player, per-track transcript with inline editing](docs/screenshot.jpg)
+**Project status:** actively developed, pre-1.0 · **Platforms:** Windows x64; macOS 15+ on Apple Silicon when a macOS asset is present in the release · **[Download the latest release](https://github.com/kwexz/GigaAM-Desktop/releases/latest)**
 
-## Features
+Release assets include a Windows x64 installer and portable executable. A signed and notarized macOS arm64 package is available only when it is listed in that release; release jobs for the two platforms complete independently. Windows builds are intentionally unsigned and may trigger SmartScreen. Linux is not supported.
 
-- File transcription: WAV, MP3, FLAC, OGG, M4A, MP4, MKV, AVI, MOV (Symphonia decoding).
-- Live recording: microphone, system audio (WASAPI loopback), or both tracks at once; microphone
-  gain 0.5–10x adjustable even mid-recording; per-track lossless FLAC archive.
-- System + microphone mode suppresses speaker echo using system AEC when Windows/the audio driver
-  supports it, plus a conservative time-aligned transcript guard as a fallback.
-- Silero VAD + chunking + GigaAM v3 E2E CTC (int8) with punctuation.
-- SQLite-backed queue and history: survives restarts, interrupted jobs are marked and retryable;
-  search across filenames and transcript text.
-- Export: TXT, SRT, WebVTT, JSON (filenames get a recording timestamp). Copy transcript,
-  reveal source file in Explorer.
-- Re-run recognition for any record, including completed ones. Retrying a dual live
-  session re-transcribes each archived track separately, keeping microphone/system labels.
-- Per-replica actions: play/pause from the timestamp column, inline text editing,
-  full-text copy. Delete with confirmation dialog and the `Del` key.
-- Pause/resume live recording with the elapsed timer frozen.
+![GigaAM Desktop showing history, a mixed recording player, and an editable per-track transcript](docs/screenshot.jpg)
 
-## Quick start
+## What is implemented
+
+- Import WAV, MP3, FLAC, OGG, M4A, MP4, MKV, AVI, and MOV files or drag them into the app.
+- Record the microphone, system audio, or both as separate tracks; pause/resume, adjust microphone gain, and archive audio as FLAC, WAV, or MP3.
+- Run Silero VAD, chunking, and int8 GigaAM v3 E2E CTC locally through ONNX Runtime, with punctuation and text normalization.
+- Keep a durable SQLite queue and searchable history; interrupted jobs are marked and can be retried.
+- Play from any transcript timestamp, edit individual segments, copy the full transcript, and re-run recognition.
+- Export TXT, SRT, WebVTT, or JSON while preserving microphone/system track labels.
+- Switch the application UI between Russian and English.
+
+## 60-second demo
+
+1. Start the app and click **Download** once to install the pinned models (~227 MB).
+2. Click **Open** or drop a media file. The item moves through the queue and appears in history with timestamped segments.
+3. Click a segment timestamp to play from that point; edit a segment inline and search the history by filename or transcript text.
+4. Click **Record**, select microphone, system audio, or both, and then stop the recording. A dual-source session keeps separate tracks labelled **Me** and **System**.
+5. Select TXT, SRT, WebVTT, or JSON and click **Export**.
+
+The screenshot above is the repository's real application visual. The steps above are also a reproducible hands-on evaluation path; no mock screens or benchmark claims are used.
+
+## Try a release
+
+1. Download the asset for your OS from [GitHub Releases](https://github.com/kwexz/GigaAM-Desktop/releases/latest).
+2. Launch the app. On Windows, SmartScreen may warn because the current executable is unsigned.
+3. Click **Download** in the model banner. The app downloads pinned artifacts, verifies their byte size and SHA-256, and installs them atomically.
+4. After the model banner disappears, disconnecting from the network does not affect file or live transcription.
+
+Model locations:
+
+- Windows: `%APPDATA%\ru.gigaam.desktop\models`
+- macOS: `~/Library/Application Support/ru.gigaam.desktop/models`
+
+See [Model download and offline use](docs/MODEL.md) for hashes, sources, retry behaviour, and manual verification.
+
+## Build from source
+
+Prerequisites:
+
+- Node.js **24.11.1** and npm 11 (the versions used by CI)
+- Rust **1.99.0** (pinned by `rust-toolchain.toml`)
+- [Tauri 2 system prerequisites](https://v2.tauri.app/start/prerequisites/)
+- Windows: Visual Studio Build Tools with the C++ workload and WebView2
+- macOS: macOS 15+, Apple Silicon, and Xcode 26+ for the current ScreenCaptureKit dependency
 
 ```powershell
-npm install
-npm run tauri dev     # dev mode: Vite HMR for the UI, automatic Rust rebuilds
+npm ci
+npm run tauri dev
 ```
+
+The first transcription or recording still needs the model download described above. Build release packages with:
 
 ```powershell
-npm run check         # svelte-check
-cargo test -p gigaam-desktop --lib   # Rust unit tests
-npm run tauri build   # NSIS installer + portable exe under src-tauri/target/release
+npm run tauri build -- --bundles nsis -- --locked   # Windows: NSIS + release executable
 ```
 
-On first launch the app downloads ~227 MB of models into
-`%APPDATA%\ru.gigaam.desktop\models`, verifying size and SHA-256.
-
-## How it works
-
-### File: queue → chunks → segments
-
-```mermaid
-flowchart LR
-    UI[UI: Open/Drop] --> ENQ[enqueue_files]
-    ENQ --> Q[(SQLite: queued)]
-    START[start_transcription] --> CLAIM[claim_next: single active job]
-    CLAIM --> DEC[Symphonia decode → mono]
-    DEC --> RS[Rubato → 16 kHz]
-    RS --> VAD[Silero VAD → speech regions]
-    VAD --> CH[chunk_speech ≤ 22 s]
-    CH --> ASR[GigaAM ONNX → CTC decode]
-    ASR --> SEG[(transcript_segments)]
-    SEG --> DONE[completed]
+```bash
+npm run tauri build -- --bundles dmg,app -- --locked # macOS: DMG + app
 ```
 
-### Live recording
+Local macOS packages are not equivalent to the signed and notarized artifacts produced by the release workflow. More setup and troubleshooting details are in [Development and verification](docs/DEVELOPMENT.md).
 
-```mermaid
-flowchart LR
-    MIC[WASAPI mic 48 kHz] --> CAP[LiveCapture: gain, timeline, FLAC archive]
-    SYS[WASAPI loopback 48 kHz] --> CAP
-    CAP --> SC[LiveScanner: streaming resampler to 16 kHz]
-    SC --> SVAD[streaming Silero VAD: new frames only]
-    SVAD --> LCH[chunks as they finalize]
-    LCH --> LASR[GigaAM ONNX, capped at 2 threads]
-    LASR --> SEG[(transcript_segments live)]
+`npm test` runs the focused UI interaction suite; Rust tests cover the queue, SQLite recovery, export, audio processing, model verification, and streaming pipeline.
+
+## Verify the project
+
+These are the same substantive checks used by `.github/workflows/build.yml`:
+
+```powershell
+npm ci
+npm run check
+npm test
+npm run build
+cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+cargo test --locked --manifest-path src-tauri/Cargo.toml --features inference-spike --bin inference-spike
+cargo check --locked --manifest-path src-tauri/Cargo.toml --bin gigaam-desktop
 ```
 
-Inference runs in 1 s ticks. Only the unsettled tail is re-scanned (the "quiet cursor"):
-emitted audio and VAD-confirmed silence are never processed twice. Settled audio is
-evicted from memory (`discard_before`), so the scan window stays small.
+GitHub Actions builds the Windows NSIS bundle and an unsigned macOS app on GitHub-hosted runners for every push and pull request. Tagged `v*` commits publish Windows packages and use a GitHub-hosted Apple Silicon runner plus repository Apple credentials for signed/notarized macOS packages.
 
-Dual sessions keep per-track FLAC archives plus `tracks.json` with track start offsets.
-Playback uses a mixed WAV built on demand (`mixed_session_audio`); retrying a dual
-session transcribes each archived track separately and merges segments by time,
-preserving the microphone/system labels shown as Я / Система.
+## Engineering notes
 
-```mermaid
-stateDiagram-v2
-    [*] --> Preparing: ● Record
-    Preparing --> LoadingModel: start_live ok
-    LoadingModel --> Recording: model_ready
-    Recording --> Paused: Pause
-    Paused --> Recording: Resume
-    Recording --> Stopping: Stop (join ≤ 3 s, then the thread detaches)
-    Stopping --> [*]: completed + FLAC
-```
+The implementation includes a persistent single-worker queue, incremental segment commits, streaming VAD with a bounded scan window, time-aligned dual-track capture, on-demand audio mixing, model integrity checks, and recovery of interrupted jobs.
 
-Recording diagnostics live in `%APPDATA%\ru.gigaam.desktop\gigaam-debug.log`:
-start/stop phases, model load time, slow ticks, periodic stats
-(`mic_fed/sys_fed`, inserted silence `gap_ms`, bad packets `err`, clock resyncs).
+- [Architecture and data flow](docs/ARCHITECTURE.md) — preserved diagrams, live pipeline, storage, commands, and code layout
+- [Development and verification](docs/DEVELOPMENT.md) — prerequisites, builds, tests, CI/release behaviour, and troubleshooting
+- [Models and offline operation](docs/MODEL.md) — pinned artifacts and installation lifecycle
+- [Third-party components and licenses](docs/THIRD_PARTY_NOTICES.md) — model and runtime attribution
 
-## Models (pinned, SHA-256 verified)
+## License and attribution
 
-| Artifact | Size | SHA-256 |
-| --- | ---: | --- |
-| `v3_e2e_ctc.int8.onnx` (GigaAM v3 E2E CTC, rev `322c3b2`, HF `istupakov/gigaam-v3-onnx`) | 224,893,347 | `2e3fcb7a…1d0cfc9d28e` |
-| `v3_e2e_ctc_vocab.txt` (257 tokens, blank 256) | 2,007 | `142de757…e6085273731` |
-| `silero_vad.onnx` (official, rev `1e261b0`) | 2,327,524 | `1a153a22…79d8788e3` |
+The repository's original source code is licensed under the [MIT License](LICENSE). That license does **not** relicense third-party models, libraries, or platform SDKs. GigaAM, the ONNX conversion, Silero VAD, ONNX Runtime, Symphonia, `shine-rs`, Tauri, and other dependencies retain their own licenses; see [Third-party components and licenses](docs/THIRD_PARTY_NOTICES.md). In particular, `shine-rs`, used for MP3 archive encoding, declares LGPL-2.0.
 
-Full hashes and revisions live in `src-tauri/src/model_manager.rs` (`ARTIFACTS`).
-
-## VAD and chunking parameters (`src-tauri/src/pipeline.rs`)
-
-Speech threshold 0.5, silence threshold 0.35, minimum speech 200 ms, minimum silence 100 ms,
-region padding 120 ms. Regions merge up to ~22 s, a pause after ~15 s is the preferred
-boundary, continuous speech is cut no later than 22 s (hard limit 30 s).
-VAD frame 512 samples, context 64, sample rate 16 kHz.
-
-## Tauri commands (called by the UI)
-
-Files: `enqueue_files`, `start_transcription`, `list_queue`, `list_history`,
-`search_history`, `get_segments`, `cancel_transcription`, `retry_transcription`,
-`remove_queue_item`, `delete_history`, `export_transcription`, `save_export`.
-Recording: `start_live(source, microphone, keep_audio, mic_gain)`, `stop_live`,
-`pause_live`, `resume_live`, `live_status`, `list_microphones`, `set_mic_gain`,
-`session_audio_files`, `mixed_session_audio`, `update_segment_text`.
-Model: `model_status`, `download_model`, `cancel_model_download`.
-
-## Code signing policy
-
-Windows releases are signed. Free code signing provided by [SignPath.io](https://signpath.io),
-certificate by [SignPath Foundation](https://signpath.org).
-
-- Committers and reviewers: repository collaborators.
-- Approvers: repository owners.
-- Every release is approved for signing manually; unsigned local builds are for development only.
-
-## Stack
-
-- UI: Svelte 5 (runes) + SvelteKit + Vite, `adapter-static` (no server, no Electron).
-- Desktop: Tauri 2 — system WebView, single instance, asset protocol, dialog/fs/opener plugins.
-- Core: Rust — `std` threads + `mpsc` (no async runtime in the hot paths).
-- Audio: WASAPI via vendored `wasapi` (Windows), ScreenCaptureKit (macOS),
-  Symphonia decode, Rubato resampling, `hound` WAV I/O, `flac-codec` archiving.
-- Inference: ONNX Runtime via `ort` (statically linked), no Python.
-- Storage: `rusqlite` (bundled SQLite, one file).
-- I18n: RU/EN in-app toggle, no framework.
-
-## Compactness
-
-- NSIS installer ≈ 9 MB, portable exe ≈ 38 MB (ONNX Runtime statically linked).
-- No Chromium/Node/Python shipped; no runtime downloads except the models below.
-- Models (~227 MB) download once into OS app-data, verified by size + SHA-256.
-- Transcripts live in one SQLite file; audio stays as per-track FLAC + on-demand mix.
-
-## Storage
-
-SQLite at `%APPDATA%\ru.gigaam.desktop\gigaam.sqlite3`: `transcriptions`
-(metadata, status, chunk progress, audio path) and `transcript_segments`
-(index, timings, text, track, speaker). States:
-`queued → preparing → transcribing → completed`, plus
-`cancelled / failed / interrupted`. Segments are written incrementally and cascade
-only with their history record.
-
-## Code layout
-
-- `src/routes/+page.svelte` — the whole UI.
-- `src-tauri/src/domain.rs` — transcription/segment types.
-- `storage.rs` — SQLite, queue, status transitions.
-- `pipeline.rs` — decode, resample, VAD, chunking, ONNX, CTC; `LiveScanner`.
-- `queue.rs` — file-job coordinator (single active job, multi-track retry merge).
-- `live.rs` — WASAPI capture (Windows, `vendor/wasapi`), ScreenCaptureKit (macOS),
-  FLAC archive, microphone gain.
-- `lib.rs` — commands, file worker, live inference thread.
-- `model_manager.rs` — model download and verification.
-- `export.rs` — TXT/SRT/VTT/JSON.
-- `src-tauri/src/bin/inference_spike.rs` — single-file benchmark harness
-  (`--features inference-spike`).
+GigaAM Desktop is an independent client and is not presented as an official GigaAM application.
