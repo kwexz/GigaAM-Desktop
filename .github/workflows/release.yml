@@ -19,8 +19,8 @@ jobs:
     timeout-minutes: 45
     runs-on: windows-2025
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24.11.1
           cache: npm
@@ -46,12 +46,12 @@ jobs:
             Windows x64: NSIS installer and portable executable (currently unsigned; SmartScreen may warn).
             macOS 15+ arm64: signed and notarized DMG/app when the macOS release job completes.
 
-            ## Русский
+            ## Р СѓСЃСЃРєРёР№
 
-            GigaAM Desktop локально транскрибирует импортированные медиафайлы и живую запись микрофона/системного звука с GigaAM v3 и Silero VAD. После однократной проверяемой загрузки моделей (~227 МБ) распознавание работает без интернета.
+            GigaAM Desktop Р»РѕРєР°Р»СЊРЅРѕ С‚СЂР°РЅСЃРєСЂРёР±РёСЂСѓРµС‚ РёРјРїРѕСЂС‚РёСЂРѕРІР°РЅРЅС‹Рµ РјРµРґРёР°С„Р°Р№Р»С‹ Рё Р¶РёРІСѓСЋ Р·Р°РїРёСЃСЊ РјРёРєСЂРѕС„РѕРЅР°/СЃРёСЃС‚РµРјРЅРѕРіРѕ Р·РІСѓРєР° СЃ GigaAM v3 Рё Silero VAD. РџРѕСЃР»Рµ РѕРґРЅРѕРєСЂР°С‚РЅРѕР№ РїСЂРѕРІРµСЂСЏРµРјРѕР№ Р·Р°РіСЂСѓР·РєРё РјРѕРґРµР»РµР№ (~227 РњР‘) СЂР°СЃРїРѕР·РЅР°РІР°РЅРёРµ СЂР°Р±РѕС‚Р°РµС‚ Р±РµР· РёРЅС‚РµСЂРЅРµС‚Р°.
 
-            Windows x64: NSIS-установщик и portable exe (без подписи; SmartScreen может показать предупреждение).
-            macOS 15+ arm64: подписанные и нотаризованные DMG/app после завершения macOS-задачи релиза.
+            Windows x64: NSIS-СѓСЃС‚Р°РЅРѕРІС‰РёРє Рё portable exe (Р±РµР· РїРѕРґРїРёСЃРё; SmartScreen РјРѕР¶РµС‚ РїРѕРєР°Р·Р°С‚СЊ РїСЂРµРґСѓРїСЂРµР¶РґРµРЅРёРµ).
+            macOS 15+ arm64: РїРѕРґРїРёСЃР°РЅРЅС‹Рµ Рё РЅРѕС‚Р°СЂРёР·РѕРІР°РЅРЅС‹Рµ DMG/app РїРѕСЃР»Рµ Р·Р°РІРµСЂС€РµРЅРёСЏ macOS-Р·Р°РґР°С‡Рё СЂРµР»РёР·Р°.
 
             Documentation: https://github.com/kwexz/GigaAM-Desktop#readme
             Third-party licenses: https://github.com/kwexz/GigaAM-Desktop/blob/main/docs/THIRD_PARTY_NOTICES.md
@@ -72,8 +72,8 @@ jobs:
       # keychains lock and codesign hangs forever on an approval prompt.
       - name: Prevent sleep during the job (macOS)
         run: (caffeinate -dimsu -t 2700 &)
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24.11.1
           cache: npm
@@ -107,12 +107,12 @@ jobs:
             Windows x64: NSIS installer and portable executable (currently unsigned; SmartScreen may warn).
             macOS 15+ arm64: signed and notarized DMG/app when the macOS release job completes.
 
-            ## Русский
+            ## Р СѓСЃСЃРєРёР№
 
-            GigaAM Desktop локально транскрибирует импортированные медиафайлы и живую запись микрофона/системного звука с GigaAM v3 и Silero VAD. После однократной проверяемой загрузки моделей (~227 МБ) распознавание работает без интернета.
+            GigaAM Desktop Р»РѕРєР°Р»СЊРЅРѕ С‚СЂР°РЅСЃРєСЂРёР±РёСЂСѓРµС‚ РёРјРїРѕСЂС‚РёСЂРѕРІР°РЅРЅС‹Рµ РјРµРґРёР°С„Р°Р№Р»С‹ Рё Р¶РёРІСѓСЋ Р·Р°РїРёСЃСЊ РјРёРєСЂРѕС„РѕРЅР°/СЃРёСЃС‚РµРјРЅРѕРіРѕ Р·РІСѓРєР° СЃ GigaAM v3 Рё Silero VAD. РџРѕСЃР»Рµ РѕРґРЅРѕРєСЂР°С‚РЅРѕР№ РїСЂРѕРІРµСЂСЏРµРјРѕР№ Р·Р°РіСЂСѓР·РєРё РјРѕРґРµР»РµР№ (~227 РњР‘) СЂР°СЃРїРѕР·РЅР°РІР°РЅРёРµ СЂР°Р±РѕС‚Р°РµС‚ Р±РµР· РёРЅС‚РµСЂРЅРµС‚Р°.
 
-            Windows x64: NSIS-установщик и portable exe (без подписи; SmartScreen может показать предупреждение).
-            macOS 15+ arm64: подписанные и нотаризованные DMG/app после завершения macOS-задачи релиза.
+            Windows x64: NSIS-СѓСЃС‚Р°РЅРѕРІС‰РёРє Рё portable exe (Р±РµР· РїРѕРґРїРёСЃРё; SmartScreen РјРѕР¶РµС‚ РїРѕРєР°Р·Р°С‚СЊ РїСЂРµРґСѓРїСЂРµР¶РґРµРЅРёРµ).
+            macOS 15+ arm64: РїРѕРґРїРёСЃР°РЅРЅС‹Рµ Рё РЅРѕС‚Р°СЂРёР·РѕРІР°РЅРЅС‹Рµ DMG/app РїРѕСЃР»Рµ Р·Р°РІРµСЂС€РµРЅРёСЏ macOS-Р·Р°РґР°С‡Рё СЂРµР»РёР·Р°.
 
             Documentation: https://github.com/kwexz/GigaAM-Desktop#readme
             Third-party licenses: https://github.com/kwexz/GigaAM-Desktop/blob/main/docs/THIRD_PARTY_NOTICES.md
