@@ -18,7 +18,7 @@ test('synthetic microphone/display streams can be captured and stopped independe
 		Object.defineProperty(navigator.mediaDevices, 'getDisplayMedia', { value: stream });
 		addEventListener('pagehide', () => contexts.forEach((context) => void context.close()));
 	});
-	await page.goto('/');
+	await page.goto('/capture-harness.html');
 	const result = await page.evaluate(async () => {
 		const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
 		const display = await navigator.mediaDevices.getDisplayMedia({ audio: true });
