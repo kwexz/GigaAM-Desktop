@@ -1033,6 +1033,11 @@ fn stop_live_blocking(
     worker: tauri::State<'_, WorkerHandle>,
     app: tauri::AppHandle,
 ) -> Result<Vec<String>, String> {
+    struct NotifyWorkerOnExit(Sender<()>);
+    impl Drop for NotifyWorkerOnExit {
+        fn drop(&mut self) { let _ = self.0.send(()); }
+    }
+    let _notify = NotifyWorkerOnExit(worker.0.clone());
     let log_path = debug_log_path(&app);
     let log = |message: &str| {
         if let Some(path) = log_path.as_ref() {
