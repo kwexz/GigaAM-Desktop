@@ -29,3 +29,5 @@
 - Manual successful debug run: 16.165 seconds audio, 3 speech regions, 1 ASR chunk, model load 1220 ms, VAD 87 ms, preprocessing 889 ms, inference 472 ms, RTF 0.0898, RSS after inference 299.6 MiB. Not a release performance claim or live test.
 - Deterministic CC0 stereo signal/corrupt fixtures generated using `node scripts/generate-signal-fixtures.mjs`; SHA-256/provenance in `tests/fixtures/signals.json`. Optional ten-minute signal generation via `--long`; signals are not Russian speech golden fixtures.
 - Independent review launch failed before execution: configured review model `opencode-omniroute/cx/gpt-6.1-sol-max` unavailable. No review completion claimed.
+- `cargo test --locked --manifest-path src-tauri/Cargo.toml --test signal_fixtures`: 2 tests passed (independent stereo channels/silence/duration and corrupt WAV rejection). `.gitattributes` marks WAV binary to preserve byte-level fixture hashes across Windows checkouts.
+- Dependency re-audit after update: `npm audit --json` exit 0; all severity counts zero. Vite resolved version is 8.3.5.
