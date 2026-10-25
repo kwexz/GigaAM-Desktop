@@ -320,8 +320,10 @@ fn cancel_transcription(
         .cloned();
     let active_live = active_capture.is_some_and(|capture| capture.lock().unwrap().id == id);
     if active_live {
-        if live.finalizing.load(Ordering::SeqCst) { return Ok(()); }
-        let _ = stop_live_blocking(state, live, worker, app)?;
+        if live.finalizing.swap(true, Ordering::SeqCst) { return Ok(()); }
+        let result = stop_live_blocking(state, live, worker, app.clone());
+        app.state::<LiveState>().finalizing.store(false, Ordering::SeqCst);
+        let _ = result?;
     }
     Ok(())
 }
@@ -632,6 +634,9 @@ fn start_live(
     live: tauri::State<'_, LiveState>,
     app: tauri::AppHandle,
 ) -> Result<LiveStatus, String> {
+    if live.finalizing.load(Ordering::SeqCst) {
+        return Err("previous recording is finalizing".into());
+    }
     if live.capture.lock().unwrap().is_some() {
         return Err("recording already active".into());
     }
@@ -989,7 +994,7 @@ fn live_status(live: tauri::State<'_, LiveState>) -> Option<LiveStatus> {
 #[tauri::command]
 async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     // Native joins and archive encoding must never execute on the webview
-    // command thread. Persistent detached finalization is a separate step.
+    // command thread. The session remains guarded until durable completion.
     tauri::async_runtime::spawn_blocking(move || {
         let live = app.state::<LiveState>();
         if live.finalizing.swap(true, Ordering::SeqCst) { return Err("recording is already finalizing".into()); }
@@ -998,8 +1003,13 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
         let _guard = FinalizingGuard(&live.finalizing);
         let capture = live.capture.lock().map_err(|_| "capture lock poisoned")?.as_ref().cloned().ok_or("no active recording")?;
         let id = capture.lock().map_err(|_| "capture lock poisoned")?.id.clone();
-        app.state::<Arc<Mutex<Store>>>().lock().map_err(|_| "store lock poisoned")?
-            .begin_live_finalization(&id, now_ms()).map_err(|error| error.to_string())?;
+        // Stop device ingress even if writing finalization metadata fails.
+        // Otherwise an error could leave an invisible recording running.
+        if let Some(handle) = live.handle.lock().unwrap().take() {
+            handle.stop();
+        }
+        let persistence_start = app.state::<Arc<Mutex<Store>>>().lock().map_err(|_| "store lock poisoned")?
+            .begin_live_finalization(&id, now_ms()).map_err(|error| error.to_string());
         let result = stop_live_blocking(
             app.state::<Arc<Mutex<Store>>>(),
             app.state::<LiveState>(),
@@ -1009,6 +1019,7 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
         let status_result = app.state::<Arc<Mutex<Store>>>().lock().map_err(|_| "store lock poisoned")?
             .finish_live_finalization(&id, result.is_ok(), now_ms()).map_err(|error| error.to_string());
         status_result?;
+        persistence_start?;
         result
     })
     .await
@@ -1051,8 +1062,7 @@ fn stop_live_blocking(
         .capture
         .lock()
         .unwrap()
-        .as_ref()
-        .cloned()
+        .take()
         .ok_or("no active recording")?;
     let mut capture = capture.lock().map_err(|_| "capture lock is poisoned")?;
     let id = capture.id.clone();
