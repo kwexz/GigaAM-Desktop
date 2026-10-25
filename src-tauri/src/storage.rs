@@ -760,6 +760,23 @@ mod tests {
     }
 
     #[test]
+    fn live_archive_metadata_rolls_back_on_injected_write_failure() {
+        let mut store = Store::memory().unwrap();
+        store.enqueue(&transcription("tx", TranscriptionStatus::Queued)).unwrap();
+        store.transition("tx", TranscriptionStatus::Preparing, 1, None).unwrap();
+        store.transition("tx", TranscriptionStatus::Transcribing, 2, None).unwrap();
+        store.connection.execute_batch(
+            "CREATE TRIGGER injected_disk_failure BEFORE UPDATE OF audio_path ON transcriptions
+             BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END;"
+        ).unwrap();
+        assert!(store.complete_live_archive("tx", 12.0, Some("preserved.wav"), 3).is_err());
+        let item = store.get("tx").unwrap().unwrap();
+        assert_eq!(item.status, TranscriptionStatus::Transcribing);
+        assert!(item.audio_path.is_none());
+        assert!(item.duration_seconds.is_none());
+    }
+
+    #[test]
     fn live_archive_completion_is_atomic_and_honors_cancellation() {
         let mut store = Store::memory().unwrap();
         store.enqueue(&transcription("tx", TranscriptionStatus::Queued)).unwrap();
