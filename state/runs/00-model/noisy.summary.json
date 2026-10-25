@@ -1,0 +1,9 @@
+{
+  "status": "verified",
+  "exit_code": 0,
+  "elapsed_ms": 7701,
+  "phrases_matched": 3,
+  "segments": 2,
+  "model": "pinned GigaAM v3 int8 + Silero",
+  "scope": "file inference, not live E2E"
+}
