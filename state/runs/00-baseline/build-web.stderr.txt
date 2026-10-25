@@ -1,0 +1,3 @@
+adapter_fallback_overwrites
+Overwriting `build\index.html` with fallback page. Consider using a different name for the fallback.
+https://svelte.dev/e/kit/adapter_fallback_overwrites

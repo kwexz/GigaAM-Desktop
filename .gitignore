@@ -18,6 +18,8 @@ node_modules
 /build
 dist/
 coverage/
+/test-results/
+/playwright-report/
 
 # Tauri bundles (produced by `tauri build` inside target/)
 *.AppImage

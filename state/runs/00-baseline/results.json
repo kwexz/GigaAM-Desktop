@@ -1,0 +1,62 @@
+[
+  {
+    "name": "install",
+    "command": "npm.cmd ci",
+    "started_utc": "2026-10-25T17:38:40.3885311Z",
+    "elapsed_ms": 10175,
+    "exit_code": 0,
+    "status": "verified",
+    "stdout": "state\\runs\\00-baseline\\install.stdout.txt",
+    "stderr": "state\\runs\\00-baseline\\install.stderr.txt"
+  },
+  {
+    "name": "check",
+    "command": "npm.cmd run check",
+    "started_utc": "2026-10-25T17:38:50.6034298Z",
+    "elapsed_ms": 4614,
+    "exit_code": 0,
+    "status": "verified",
+    "stdout": "state\\runs\\00-baseline\\check.stdout.txt",
+    "stderr": "state\\runs\\00-baseline\\check.stderr.txt"
+  },
+  {
+    "name": "unit-web",
+    "command": "npm.cmd test",
+    "started_utc": "2026-10-25T17:38:55.2286670Z",
+    "elapsed_ms": 7588,
+    "exit_code": 0,
+    "status": "verified",
+    "stdout": "state\\runs\\00-baseline\\unit-web.stdout.txt",
+    "stderr": "state\\runs\\00-baseline\\unit-web.stderr.txt"
+  },
+  {
+    "name": "build-web",
+    "command": "npm.cmd run build",
+    "started_utc": "2026-10-25T17:39:02.8215722Z",
+    "elapsed_ms": 5562,
+    "exit_code": 0,
+    "status": "verified",
+    "stdout": "state\\runs\\00-baseline\\build-web.stdout.txt",
+    "stderr": "state\\runs\\00-baseline\\build-web.stderr.txt"
+  },
+  {
+    "name": "unit-rust",
+    "command": "cargo test --locked --manifest-path src-tauri/Cargo.toml --lib",
+    "started_utc": "2026-10-25T17:39:08.3887665Z",
+    "elapsed_ms": 5094,
+    "exit_code": 0,
+    "status": "verified",
+    "stdout": "state\\runs\\00-baseline\\unit-rust.stdout.txt",
+    "stderr": "state\\runs\\00-baseline\\unit-rust.stderr.txt"
+  },
+  {
+    "name": "integration-rust",
+    "command": "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+    "started_utc": "2026-10-25T17:39:13.4874104Z",
+    "elapsed_ms": 1133,
+    "exit_code": 0,
+    "status": "verified",
+    "stdout": "state\\runs\\00-baseline\\integration-rust.stdout.txt",
+    "stderr": "state\\runs\\00-baseline\\integration-rust.stderr.txt"
+  }
+]
