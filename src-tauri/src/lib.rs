@@ -1114,15 +1114,12 @@ fn stop_live_blocking(
         let _ = worker.0.send(());
         return Ok(files);
     }
-    store
-        .set_duration(&id, duration)
-        .map_err(|error| error.to_string())?;
-    store
-        .set_audio_path(&id, files.first().map(String::as_str))
-        .map_err(|error| error.to_string())?;
-    store
-        .transition(&id, TranscriptionStatus::Completed, now_ms(), None)
-        .map_err(|error| error.to_string())?;
+    if let Err(error) = store.complete_live_archive(&id, duration, files.first().map(String::as_str), now_ms()) {
+        let message = format!("Audio archive saved but final metadata commit failed: {error}");
+        let _ = store.fail_if_not_cancelled(&id, &message, now_ms());
+        let _ = worker.0.send(());
+        return Err(message);
+    }
     drop(capture);
     *live.capture.lock().unwrap() = None;
     let _ = worker.0.send(());

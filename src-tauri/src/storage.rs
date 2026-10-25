@@ -11,6 +11,17 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn complete_live_archive(&mut self, id: &str, duration: f64, audio_path: Option<&str>, now_ms: i64) -> rusqlite::Result<()> {
+        let transaction = self.connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE transcriptions SET duration_seconds=?2,audio_path=?3,status='completed',completed_ms=?4,error=NULL
+             WHERE id=?1 AND status='transcribing' AND cancel_requested=0",
+            params![id, duration, audio_path, now_ms],
+        )?;
+        if changed != 1 { return Err(rusqlite::Error::QueryReturnedNoRows); }
+        transaction.commit()
+    }
+
     pub fn begin_live_finalization(&mut self, id: &str, now_ms: i64) -> rusqlite::Result<()> {
         self.connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS live_finalizations (
@@ -746,6 +757,19 @@ mod tests {
         assert_eq!(store.search("после").unwrap()[0].id, "tx");
         assert!(store.update_segment_text("tx", 7, "мимо").is_err());
         assert!(store.update_segment_text("нет", 0, "мимо").is_err());
+    }
+
+    #[test]
+    fn live_archive_completion_is_atomic_and_honors_cancellation() {
+        let mut store = Store::memory().unwrap();
+        store.enqueue(&transcription("tx", TranscriptionStatus::Queued)).unwrap();
+        store.transition("tx", TranscriptionStatus::Preparing, 1, None).unwrap();
+        store.transition("tx", TranscriptionStatus::Transcribing, 2, None).unwrap();
+        store.request_cancel("tx", 2).unwrap();
+        assert!(store.complete_live_archive("tx", 3.0, Some("audio.wav"), 3).is_err());
+        let item = store.get("tx").unwrap().unwrap();
+        assert_eq!(item.status, TranscriptionStatus::Transcribing);
+        assert!(item.audio_path.is_none());
     }
 
     #[test]
