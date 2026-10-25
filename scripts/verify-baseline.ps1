@@ -24,6 +24,8 @@ try {
         $arguments = $check.Arguments
         $stdout = Join-Path $EvidenceDirectory ($check.Name + '.stdout.txt')
         $stderr = Join-Path $EvidenceDirectory ($check.Name + '.stderr.txt')
+        $null = Get-Command $program -ErrorAction Stop
+        $LASTEXITCODE = 127
         $ErrorActionPreference = 'Continue'
         & $program @arguments 1> $stdout 2> $stderr
         $exitCode = $LASTEXITCODE

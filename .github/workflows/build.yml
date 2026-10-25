@@ -19,8 +19,18 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test
+      - run: npx playwright install chromium
+      - run: npm run test:web
+      - name: Browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-test-failure
+          path: test-results/
+          retention-days: 2
       - run: npm run build
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --test signal_fixtures
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features inference-spike --bin inference-spike
       - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --bin gigaam-desktop
       - run: npm run tauri build -- --bundles nsis -- --locked

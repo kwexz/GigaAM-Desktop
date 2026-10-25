@@ -12,6 +12,8 @@ $stdout = Join-Path $EvidenceDirectory 'stdout.txt'
 $stderr = Join-Path $EvidenceDirectory 'stderr.txt'
 $watch = [Diagnostics.Stopwatch]::StartNew()
 $previousEncoding = [Console]::OutputEncoding
+$null = Get-Command cargo -ErrorAction Stop
+$LASTEXITCODE = 127
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $ErrorActionPreference = 'Continue'
 & cargo run --locked --manifest-path src-tauri/Cargo.toml --features inference-spike --bin inference-spike -- $AudioPath (Join-Path $ModelDirectory 'v3_e2e_ctc.int8.onnx') (Join-Path $ModelDirectory 'v3_e2e_ctc_vocab.txt') (Join-Path $ModelDirectory 'silero_vad.onnx') 1> $stdout 2> $stderr
