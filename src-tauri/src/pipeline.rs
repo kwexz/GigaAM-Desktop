@@ -350,6 +350,26 @@ mod baseline_fixture_tests {
     }
 
     #[test]
+    fn live_non_frame_trim_preserves_probability_identity_and_context() {
+        let mut scanner = LiveScanner::new().unwrap();
+        scanner.samples_16k = (0..VAD_FRAME * 8).map(|i| i as f32).collect();
+        scanner.vad_probs = (0..6).map(|i| i as f32 / 10.0).collect();
+        scanner.vad_context.fill(0.25);
+        scanner.vad_state.fill(0.5);
+        scanner.drop_front_16k(VAD_FRAME * 4 + 123);
+        assert_eq!(scanner.samples_16k[0], (VAD_FRAME * 4) as f32);
+        assert_eq!(scanner.vad_probs, vec![0.4, 0.5]);
+        assert_eq!(scanner.abs0_48k, VAD_FRAME * 4 * 3);
+        assert_eq!(scanner.vad_abs0_16k + scanner.vad_probs.len() * VAD_FRAME, VAD_FRAME * 2);
+        assert!(scanner.vad_context.iter().all(|v| *v == 0.25));
+        assert!(scanner.vad_state.iter().all(|v| *v == 0.5));
+        scanner.drop_front_16k(VAD_FRAME + 123);
+        assert_eq!(scanner.vad_probs, vec![0.5]);
+        assert_eq!(scanner.abs0_48k, VAD_FRAME * 5 * 3);
+        assert_eq!(scanner.samples_16k[0], (VAD_FRAME * 5) as f32);
+    }
+
+    #[test]
     fn production_decoder_downmixes_both_channels_and_preserves_duration() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/dual-tones.wav");
         let (mono, duration) = load_wav(&path).unwrap();
