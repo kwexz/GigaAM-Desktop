@@ -1,5 +1,5 @@
 param(
-    [string]$AudioPath = 'artifacts/verification/00/generated-speech/speech.wav',
+    [string]$AudioPath = 'tests/fixtures/besarab-clean.wav',
     [string]$ModelDirectory = "$env:APPDATA/ru.gigaam.desktop/models",
     [string]$ManifestPath = '',
     [string]$EvidenceDirectory = 'artifacts/verification/00/model'
@@ -27,7 +27,9 @@ $text = Get-Content -Raw -Encoding $(if ($PSVersionTable.PSVersion.Major -le 5) 
 $position = $text.IndexOf('segments=')
 if ($position -lt 0) { throw 'Inference output has no segments' }
 $segments = $text.Substring($position + 9) | ConvertFrom-Json
-if (-not $ManifestPath) { $ManifestPath = Join-Path (Split-Path $AudioPath) 'manifest.json' }
+if (-not $ManifestPath) {
+    $ManifestPath = if ((Split-Path $AudioPath -Leaf) -like 'besarab-*') { Join-Path (Split-Path $AudioPath) 'besarab.json' } else { Join-Path (Split-Path $AudioPath) 'manifest.json' }
+}
 $manifest = Get-Content -Raw -Encoding UTF8 $ManifestPath | ConvertFrom-Json
 if (@($manifest.phrases).Count -lt 3) { throw 'At least three expected phrases are required' }
 if (@($segments).Count -eq 0) { throw 'Expected nonempty speech segments' }

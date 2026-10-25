@@ -4,7 +4,7 @@
 - `phase_state`: `in_progress`
 - `last_verified_commit`: `none`
 - `current_branch`: `feature/gigaam-desktop-web-autonomy`
-- `blocking_issue`: `00 acceptance incomplete: redistributable speech golden fixtures and remaining harness/CI review pending. Edge browser harness and PS5 baseline/model tests verified; both VPS aliases accessible.`
+- `blocking_issue`: `00 acceptance incomplete: final harness measurement/evidence consolidation and review pending. Licensed natural speech clean/noisy assertions verified; Edge recording/OPFS harness and PS5 tests verified; both VPS smokes passed.`
 - `last_update_utc`: `2026-10-25`
 
 ## Источник истины

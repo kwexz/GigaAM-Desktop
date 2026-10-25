@@ -26,6 +26,11 @@
     {
       "name": "besarab-noisy.wav",
       "sha256": "7146bbbe8e35f245484ebd21f18012850ef3c16d07b84037fb10b90c0dd4b5e4"
+    },
+    {
+      "name": "besarab-dual.wav",
+      "sha256": "04a532b1bc8f9f5c753f3e111041af26b97d046f3597ed01e7a8bb261075aef5"
     }
-  ]
+  ],
+  "dual": "Stereo derivative: original left, same speech right delayed by 1000 ms; not independent speakers"
 }
