@@ -1,4 +1,5 @@
 pub mod domain;
+pub mod finalization;
 pub mod capture_recovery;
 pub mod export;
 pub mod live;
@@ -999,10 +1000,8 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let live = app.state::<LiveState>();
         let _lifecycle = live.lifecycle.lock().map_err(|_| "live lifecycle lock poisoned")?;
-        if live.finalizing.swap(true, Ordering::SeqCst) { return Err("recording is already finalizing".into()); }
-        struct FinalizingGuard<'a>(&'a AtomicBool);
-        impl Drop for FinalizingGuard<'_> { fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); } }
-        let _guard = FinalizingGuard(&live.finalizing);
+        let _guard = finalization::FinalizationClaim::acquire(&live.finalizing)
+            .ok_or("recording is already finalizing")?;
         let capture = live.capture.lock().map_err(|_| "capture lock poisoned")?.as_ref().cloned().ok_or("no active recording")?;
         let id = capture.lock().map_err(|_| "capture lock poisoned")?.id.clone();
         // Stop device ingress even if writing finalization metadata fails.
