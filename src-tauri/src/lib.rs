@@ -316,7 +316,7 @@ fn cancel_transcription(
         .as_ref()
         .is_some_and(|capture| capture.lock().unwrap().id == id);
     if active_live {
-        let _ = stop_live(state, live, worker, app)?;
+        let _ = stop_live_blocking(state, live, worker, app)?;
     }
     Ok(())
 }
@@ -981,7 +981,22 @@ fn live_status(live: tauri::State<'_, LiveState>) -> Option<LiveStatus> {
 }
 
 #[tauri::command]
-fn stop_live(
+async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    // Native joins and archive encoding must never execute on the webview
+    // command thread. Persistent detached finalization is a separate step.
+    tauri::async_runtime::spawn_blocking(move || {
+        stop_live_blocking(
+            app.state::<Arc<Mutex<Store>>>(),
+            app.state::<LiveState>(),
+            app.state::<WorkerHandle>(),
+            app.clone(),
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn stop_live_blocking(
     state: tauri::State<'_, Arc<Mutex<Store>>>,
     live: tauri::State<'_, LiveState>,
     worker: tauri::State<'_, WorkerHandle>,
