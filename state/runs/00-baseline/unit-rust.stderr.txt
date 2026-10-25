@@ -1,2 +1,2 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.66s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.69s
      Running unittests src\lib.rs (src-tauri\target\debug\deps\gigaam_desktop_lib-5023096d186180b7.exe)

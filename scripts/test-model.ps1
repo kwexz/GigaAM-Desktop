@@ -4,13 +4,16 @@ param(
     [string]$EvidenceDirectory = 'artifacts/verification/00/model'
 )
 $ErrorActionPreference = 'Stop'
-& "$PSScriptRoot/verify-models.ps1" -ModelDirectory $ModelDirectory
 New-Item -ItemType Directory -Force $EvidenceDirectory | Out-Null
+@{ status = 'in_progress'; started_utc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $EvidenceDirectory 'summary.json')
+& "$PSScriptRoot/verify-models.ps1" -ModelDirectory $ModelDirectory
 $stdout = Join-Path $EvidenceDirectory 'stdout.txt'
 $stderr = Join-Path $EvidenceDirectory 'stderr.txt'
 $watch = [Diagnostics.Stopwatch]::StartNew()
+$ErrorActionPreference = 'Continue'
 & cargo run --locked --manifest-path src-tauri/Cargo.toml --features inference-spike --bin inference-spike -- $AudioPath (Join-Path $ModelDirectory 'v3_e2e_ctc.int8.onnx') (Join-Path $ModelDirectory 'v3_e2e_ctc_vocab.txt') (Join-Path $ModelDirectory 'silero_vad.onnx') 1> $stdout 2> $stderr
 $code = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
 $watch.Stop()
 if ($code -ne 0) { throw "Inference failed: exit=$code; see $stderr" }
 $text = Get-Content -Raw $stdout

@@ -333,6 +333,31 @@ fn load_wav(path: &Path) -> Result<(Vec<f32>, Duration)> {
     load_media(path)
 }
 
+#[cfg(test)]
+mod baseline_fixture_tests {
+    use super::*;
+
+    #[test]
+    fn production_decoder_downmixes_both_channels_and_preserves_duration() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/dual-tones.wav");
+        let (mono, duration) = load_wav(&path).unwrap();
+        assert_eq!(duration, Duration::from_secs(6));
+        assert_eq!(mono.len(), 96_000);
+        let mut reader = hound::WavReader::open(path).unwrap();
+        let interleaved: Vec<i16> = reader.samples().collect::<Result<_, _>>().unwrap();
+        for (sample, pair) in mono.iter().zip(interleaved.chunks_exact(2)) {
+            let expected = (pair[0] as f32 + pair[1] as f32) / 65536.0;
+            assert!((sample - expected).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn production_decoder_rejects_corrupted_input() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/corrupt.wav");
+        assert!(load_wav(&path).is_err());
+    }
+}
+
 fn load_pcm_wav(path: &Path) -> Result<(Vec<f32>, Duration)> {
     let mut reader = hound::WavReader::open(path)
         .with_context(|| format!("failed to open {}", path.display()))?;

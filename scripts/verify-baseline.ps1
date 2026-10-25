@@ -5,6 +5,9 @@ $root = Split-Path $PSScriptRoot -Parent
 Push-Location $root
 try {
     New-Item -ItemType Directory -Force $EvidenceDirectory | Out-Null
+    '[]' | Set-Content -Encoding utf8 (Join-Path $EvidenceDirectory 'results.json')
+    # Do not run concurrently with tauri/playwright/npm processes: Windows may
+    # lock native dependency files while npm ci replaces node_modules.
     $checks = @(
         @{ Name = 'install'; Program = 'npm.cmd'; Arguments = @('ci') },
         @{ Name = 'check'; Program = 'npm.cmd'; Arguments = @('run', 'check') },
@@ -21,8 +24,10 @@ try {
         $arguments = $check.Arguments
         $stdout = Join-Path $EvidenceDirectory ($check.Name + '.stdout.txt')
         $stderr = Join-Path $EvidenceDirectory ($check.Name + '.stderr.txt')
+        $ErrorActionPreference = 'Continue'
         & $program @arguments 1> $stdout 2> $stderr
         $exitCode = $LASTEXITCODE
+        $ErrorActionPreference = 'Stop'
         $watch.Stop()
         $results += [ordered]@{
             name = $check.Name
