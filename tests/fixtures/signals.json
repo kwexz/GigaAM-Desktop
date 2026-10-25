@@ -15,5 +15,13 @@
       "sha256": "f50547f55ae8919ce00512678ee9a68064038bf9c154a48590af836793716480",
       "description": "Intentionally invalid audio"
     }
-  ]
+  ],
+  "long_generated": {
+    "name": "long-tones.wav",
+    "duration_seconds": 600,
+    "channels": 1,
+    "sample_rate": 16000,
+    "command": "node scripts/generate-signal-fixtures.mjs --long",
+    "sha256": "c486e8525d879f5f01420822673a8409a848f681911df92fadfa069588f5cfcc"
+  }
 }

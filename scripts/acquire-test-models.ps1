@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)][switch]$AllowDownload,
-    [string]$ModelDirectory = 'artifacts/verification/00/models'
+    [string]$ModelDirectory = "$env:APPDATA/ru.gigaam.desktop/models"
 )
 $ErrorActionPreference = 'Stop'
 if (-not $AllowDownload) { throw 'Explicit -AllowDownload required (227 MB)' }

@@ -7,6 +7,7 @@ test('synthetic microphone/display streams can be captured and stopped independe
 		const contexts: AudioContext[] = [];
 		const stream = async () => {
 			const context = new AudioContext();
+			await context.resume();
 			contexts.push(context);
 			const oscillator = context.createOscillator();
 			const destination = context.createMediaStreamDestination();
@@ -24,10 +25,21 @@ test('synthetic microphone/display streams can be captured and stopped independe
 		const display = await navigator.mediaDevices.getDisplayMedia({ audio: true });
 		const microphoneTrack = mic.getAudioTracks()[0];
 		const displayTrack = display.getAudioTracks()[0];
+		const recorder = new MediaRecorder(mic);
+		const chunks: Blob[] = [];
+		const recorded = new Promise<Blob>((resolve) => {
+			recorder.ondataavailable = (event) => chunks.push(event.data);
+			recorder.onstop = () => resolve(new Blob(chunks, { type: recorder.mimeType }));
+		});
+		recorder.start();
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+		recorder.stop();
+		const blob = await recorded;
 		microphoneTrack.stop();
 		const independent = displayTrack.readyState;
 		displayTrack.stop();
-		return { independent, mic: microphoneTrack.readyState, display: displayTrack.readyState };
+		return { independent, mic: microphoneTrack.readyState, display: displayTrack.readyState, bytes: blob.size };
 	});
-	expect(result).toEqual({ independent: 'live', mic: 'ended', display: 'ended' });
+	expect(result.bytes).toBeGreaterThan(100);
+	expect(result).toMatchObject({ independent: 'live', mic: 'ended', display: 'ended' });
 });
