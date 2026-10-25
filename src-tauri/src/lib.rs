@@ -1,4 +1,5 @@
 pub mod domain;
+pub mod capture_recovery;
 pub mod export;
 pub mod live;
 pub mod model_manager;
@@ -42,6 +43,7 @@ struct LiveState {
     model_ready: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
     paused: Arc<AtomicBool>,
+    finalizing: AtomicBool,
 }
 
 impl LiveState {
@@ -55,6 +57,7 @@ impl LiveState {
             model_ready: Arc::new(AtomicBool::new(false)),
             generation: Arc::new(AtomicU64::new(0)),
             paused: Arc::new(AtomicBool::new(false)),
+            finalizing: AtomicBool::new(false),
         }
     }
 }
@@ -309,13 +312,15 @@ fn cancel_transcription(
     lock_store(&state)?
         .request_cancel(&id, now_ms())
         .map_err(|error| error.to_string())?;
-    let active_live = live
+    let active_capture = live
         .capture
         .lock()
         .unwrap()
         .as_ref()
-        .is_some_and(|capture| capture.lock().unwrap().id == id);
+        .cloned();
+    let active_live = active_capture.is_some_and(|capture| capture.lock().unwrap().id == id);
     if active_live {
+        if live.finalizing.load(Ordering::SeqCst) { return Ok(()); }
         let _ = stop_live_blocking(state, live, worker, app)?;
     }
     Ok(())
@@ -966,12 +971,13 @@ fn resume_live(live: tauri::State<'_, LiveState>) -> Result<(), String> {
 
 #[tauri::command]
 fn live_status(live: tauri::State<'_, LiveState>) -> Option<LiveStatus> {
-    let mut status = live
+    let capture = live
         .capture
         .lock()
         .unwrap()
         .as_ref()
-        .map(|capture| capture.lock().unwrap().status())?;
+        .cloned()?;
+    let mut status = capture.lock().unwrap().status();
     if let Some(error) = live.error.lock().unwrap().clone() {
         status.error = Some(error);
     }
@@ -985,12 +991,25 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     // Native joins and archive encoding must never execute on the webview
     // command thread. Persistent detached finalization is a separate step.
     tauri::async_runtime::spawn_blocking(move || {
-        stop_live_blocking(
+        let live = app.state::<LiveState>();
+        if live.finalizing.swap(true, Ordering::SeqCst) { return Err("recording is already finalizing".into()); }
+        struct FinalizingGuard<'a>(&'a AtomicBool);
+        impl Drop for FinalizingGuard<'_> { fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); } }
+        let _guard = FinalizingGuard(&live.finalizing);
+        let capture = live.capture.lock().map_err(|_| "capture lock poisoned")?.as_ref().cloned().ok_or("no active recording")?;
+        let id = capture.lock().map_err(|_| "capture lock poisoned")?.id.clone();
+        app.state::<Arc<Mutex<Store>>>().lock().map_err(|_| "store lock poisoned")?
+            .begin_live_finalization(&id, now_ms()).map_err(|error| error.to_string())?;
+        let result = stop_live_blocking(
             app.state::<Arc<Mutex<Store>>>(),
             app.state::<LiveState>(),
             app.state::<WorkerHandle>(),
             app.clone(),
-        )
+        );
+        let status_result = app.state::<Arc<Mutex<Store>>>().lock().map_err(|_| "store lock poisoned")?
+            .finish_live_finalization(&id, result.is_ok(), now_ms()).map_err(|error| error.to_string());
+        status_result?;
+        result
     })
     .await
     .map_err(|error| error.to_string())?

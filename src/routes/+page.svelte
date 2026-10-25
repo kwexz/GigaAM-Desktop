@@ -18,6 +18,7 @@
 	let locale = $state<'ru' | 'en'>('ru');
 	let segmentRequest = 0;
 	let recording = $state(false);
+	let finalizing = $state(false);
 	let modelReady = $state(true);
 	let uiNow = $state(Date.now());
 	let paused = $state(false);
@@ -301,16 +302,24 @@
 	}
 
 	async function toggleRecording() {
-		if (busy) return;
+		if (busy || finalizing) return;
 		busy = true;
 		error = '';
 		try {
 			if (!model.installed) { await invoke('download_model'); return; }
 			if (recording) {
+				finalizing = true;
+				recording = false;
+				paused = false;
+				busy = false;
 				try {
 					await invoke('stop_live');
 				} catch {
 					error = locale === 'ru' ? 'Не удалось остановить запись.' : 'Could not stop recording.';
+					const status = await invoke<{ recording: boolean } | null>('live_status').catch(() => null);
+					recording = status?.recording ?? false;
+				} finally {
+					finalizing = false;
 				}
 				recording = false;
 				modelReady = true;
@@ -356,7 +365,7 @@
 	}
 	function endSidebarResize() { resizingSidebar = false; }
 	async function startRecording() {
-		if (!recording) await toggleRecording();
+		if (!recording && !finalizing) await toggleRecording();
 	}
 	async function stopRecording() {
 		if (recording) await toggleRecording();

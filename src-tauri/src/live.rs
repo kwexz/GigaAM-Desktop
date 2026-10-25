@@ -637,6 +637,9 @@ pub mod platform {
             let capture = capture.clone();
             threads.push(thread::spawn(move || {
                 let _ = initialize_mta();
+                let mut reconnect_attempts = 0;
+                loop {
+                if stop_flag.load(Ordering::Relaxed) { break; }
                 let result: Result<()> = (|| {
                     let enumerator = DeviceEnumerator::new()?;
                     let dual_source = matches!(
@@ -948,11 +951,27 @@ pub mod platform {
                     Ok(())
                 })();
                 if let Err(error) = result {
+                    let message = error.to_string();
+                    let invalidated = message.contains("88890004") || message.contains("88890026")
+                        || message.to_ascii_lowercase().contains("device_invalidated");
+                    let explicitly_selected = mic && capture.lock().unwrap().microphone_device.is_some();
+                    if let crate::capture_recovery::RecoveryAction::RetryAfter(delay) =
+                        crate::capture_recovery::device_recovery_action(invalidated, reconnect_attempts, explicitly_selected)
+                    {
+                        reconnect_attempts += 1;
+                        if let Some(path) = capture.lock().unwrap().log_path.clone() {
+                            debug_log(&path, &format!("capture reconnecting mic={mic} attempt={reconnect_attempts}"));
+                        }
+                        thread::sleep(delay);
+                        continue;
+                    }
                     let mut state = capture.lock().unwrap();
                     if let Some(path) = state.log_path.clone() {
                         debug_log(&path, &format!("capture thread error (mic={mic}): {error}"));
                     }
                     state.set_error(error);
+                }
+                break;
                 }
             }));
         }

@@ -11,6 +11,30 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn begin_live_finalization(&mut self, id: &str, now_ms: i64) -> rusqlite::Result<()> {
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS live_finalizations (
+                transcription_id TEXT PRIMARY KEY REFERENCES transcriptions(id) ON DELETE CASCADE,
+                state TEXT NOT NULL CHECK(state IN ('finalizing','completed','failed')),
+                updated_ms INTEGER NOT NULL
+            );",
+        )?;
+        self.connection.execute(
+            "INSERT INTO live_finalizations(transcription_id,state,updated_ms) VALUES (?1,'finalizing',?2)
+             ON CONFLICT(transcription_id) DO UPDATE SET state='finalizing',updated_ms=excluded.updated_ms",
+            params![id, now_ms],
+        )?;
+        Ok(())
+    }
+
+    pub fn finish_live_finalization(&mut self, id: &str, success: bool, now_ms: i64) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "UPDATE live_finalizations SET state=?2,updated_ms=?3 WHERE transcription_id=?1",
+            params![id, if success { "completed" } else { "failed" }, now_ms],
+        )?;
+        Ok(())
+    }
+
     pub fn open(path: impl AsRef<Path>) -> rusqlite::Result<Self> {
         let connection = Connection::open(path)?;
         let mut store = Self { connection };
@@ -528,6 +552,17 @@ impl Store {
     }
 
     pub fn recover_interrupted(&mut self, now_ms: i64) -> rusqlite::Result<usize> {
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS live_finalizations (
+                transcription_id TEXT PRIMARY KEY REFERENCES transcriptions(id) ON DELETE CASCADE,
+                state TEXT NOT NULL CHECK(state IN ('finalizing','completed','failed')),
+                updated_ms INTEGER NOT NULL
+            );",
+        )?;
+        self.connection.execute(
+            "UPDATE live_finalizations SET state='failed',updated_ms=?1 WHERE state='finalizing'",
+            [now_ms],
+        )?;
         self.connection.execute(
             "UPDATE transcriptions SET status = 'interrupted', completed_ms = ?1,
                     error = 'Application stopped during transcription'
@@ -711,6 +746,18 @@ mod tests {
         assert_eq!(store.search("после").unwrap()[0].id, "tx");
         assert!(store.update_segment_text("tx", 7, "мимо").is_err());
         assert!(store.update_segment_text("нет", 0, "мимо").is_err());
+    }
+
+    #[test]
+    fn finalization_state_survives_and_is_failed_on_recovery() {
+        let mut store = Store::memory().unwrap();
+        store.enqueue(&transcription("tx", TranscriptionStatus::Queued)).unwrap();
+        store.begin_live_finalization("tx", 1).unwrap();
+        let state: String = store.connection.query_row("SELECT state FROM live_finalizations WHERE transcription_id='tx'", [], |row| row.get(0)).unwrap();
+        assert_eq!(state, "finalizing");
+        store.recover_interrupted(2).unwrap();
+        let state: String = store.connection.query_row("SELECT state FROM live_finalizations WHERE transcription_id='tx'", [], |row| row.get(0)).unwrap();
+        assert_eq!(state, "failed");
     }
 
     #[test]
