@@ -1,10 +1,10 @@
 # GigaAM Desktop — состояние автономного плана
 
 - `current_phase`: `01`
-- `phase_state`: `pending`
+- `phase_state`: `in_progress`
 - `last_verified_commit`: `aab7936925bf08ece7ff93177e57bacfbab3c1c5`
 - `current_branch`: `feature/gigaam-desktop-web-autonomy`
-- `blocking_issue`: `none; phase 00 passed with explicit platform/network not-run boundaries`
+- `blocking_issue`: `01 in progress: VAD cursor regression fixed/tested; asynchronous Stop and hotplug acceptance pending`
 - `last_update_utc`: `2026-10-25`
 
 ## Источник истины
@@ -16,7 +16,7 @@
 | NN | Этап | Статус | Commit | Основной результат |
 |---|---|---|---|---|
 | 00 | Baseline & harness | passed | aab7936 | Baseline, real model clean/noisy metrics, browser recording/OPFS harness, VPS static smokes |
-| 01 | Live bugfixes | pending | — | — |
+| 01 | Live bugfixes | in_progress | — | Red/green trim regression; real-model chunk-fed microphone/system test passed |
 | 02 | Streaming core | pending | — | — |
 | 03 | Universal contracts | pending | — | — |
 | 04 | Browser capture & storage | pending | — | — |

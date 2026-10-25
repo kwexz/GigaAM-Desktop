@@ -338,6 +338,18 @@ mod baseline_fixture_tests {
     use super::*;
 
     #[test]
+    fn live_vad_cursor_remains_relative_after_trim() {
+        let mut scanner = LiveScanner::new().unwrap();
+        scanner.samples_16k = vec![0.0; VAD_FRAME * 8];
+        scanner.set_test_probs(6);
+        scanner.drop_front_16k(VAD_FRAME * 4);
+        let next_relative = scanner.vad_abs0_16k + scanner.vad_probs.len() * VAD_FRAME;
+        assert_eq!(next_relative, VAD_FRAME * 2);
+        let (_, start) = scanner.vad_regions(0, scanner.samples_16k.len());
+        assert_eq!(start, 0);
+    }
+
+    #[test]
     fn production_decoder_downmixes_both_channels_and_preserves_duration() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/dual-tones.wav");
         let (mono, duration) = load_wav(&path).unwrap();
@@ -843,7 +855,9 @@ impl LiveScanner {
         }
         self.samples_16k.drain(..drop);
         self.vad_probs.drain(..frames);
-        self.vad_abs0_16k += drop;
+        // Both samples and retained probabilities are now relative to the
+        // trimmed buffer; advancing this relative origin skipped new frames.
+        self.vad_abs0_16k = self.vad_abs0_16k.saturating_sub(drop16);
         self.abs0_48k += drop * LIVE_SCAN_INPUT_RATE / SAMPLE_RATE;
     }
 
