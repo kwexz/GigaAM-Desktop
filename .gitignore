@@ -20,6 +20,8 @@ dist/
 coverage/
 /test-results/
 /playwright-report/
+/artifacts/verification/
+/tests/fixtures/long-tones.wav
 
 # Tauri bundles (produced by `tauri build` inside target/)
 *.AppImage

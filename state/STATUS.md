@@ -4,7 +4,7 @@
 - `phase_state`: `in_progress`
 - `last_verified_commit`: `none`
 - `current_branch`: `feature/gigaam-desktop-web-autonomy`
-- `blocking_issue`: `00 acceptance incomplete: speech fixtures/model harness pending; Playwright Chromium download timed out; ismhost DNS unavailable`
+- `blocking_issue`: `00 acceptance incomplete: redistributable golden fixtures/model harness pending; Chromium installation in progress. Correct VPS alias is ismvphost, access verified.`
 - `last_update_utc`: `2026-10-25`
 
 ## Источник истины

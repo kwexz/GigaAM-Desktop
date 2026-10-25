@@ -17,3 +17,15 @@
 - `not-run`: macOS GUI/build, physical-device E2E, native Windows packaged build, real GigaAM/Silero integration metrics, licensed multi-phrase Russian golden fixtures, license inventory, independent review. All remain required work; no phase checkpoint created.
 - `npm audit --json`: existing Vite dependency reports one high-severity affected package (including Windows launch-editor advisories); no automatic audit fix applied.
 - Resume phase 00 only: finish required module/CI inventory, fixtures/provenance, model harness, browser installation/E2E and review. Do not read phase 01 until core gates pass.
+
+### Continuation
+
+- User corrected SSH alias: `ismvphost`, not `ismhost`. Read-only access verified: uid 1000, 1 CPU, 956 MiB RAM / 294 MiB available, no swap, 1.5 GiB disk available at observation. Docker executable present; no inference or deployment run. Existing listeners include 80/443/22 and loopback 3000/8080/8090; do not reuse them.
+- Updated Vite within the existing declared version range via `npm update vite`; npm reports zero vulnerabilities. Repeated baseline runner: all six commands exited 0; logs refreshed in `state/runs/00-baseline/`.
+- Existing local model files verified against all three pinned SHA-256 values using `scripts/verify-models.ps1`; no model download necessary.
+- `cargo check --locked --manifest-path src-tauri/Cargo.toml --bin gigaam-desktop`: exit 0. Inference-spike binary test target: exit 0, zero tests (compilation only, not inference evidence).
+- Locally generated three-phrase speech using installed Microsoft Irina voice, with original CC0 text; audio kept in ignored artifacts directory pending redistribution-license verification. This does not yet satisfy portable licensed golden-fixture acceptance.
+- Real file inference subsequently passed via `pwsh -NoProfile -File scripts/test-model.ps1`: all three expected phrases asserted, segment timeline checked, all model checksums verified. Raw output and machine summary: `artifacts/verification/00/model/`. Initial generator trial emitted silence due to prompt culture; fixed by explicit ru-RU prompt culture and rerun successfully. This initial trial is not counted as successful model evidence.
+- Manual successful debug run: 16.165 seconds audio, 3 speech regions, 1 ASR chunk, model load 1220 ms, VAD 87 ms, preprocessing 889 ms, inference 472 ms, RTF 0.0898, RSS after inference 299.6 MiB. Not a release performance claim or live test.
+- Deterministic CC0 stereo signal/corrupt fixtures generated using `node scripts/generate-signal-fixtures.mjs`; SHA-256/provenance in `tests/fixtures/signals.json`. Optional ten-minute signal generation via `--long`; signals are not Russian speech golden fixtures.
+- Independent review launch failed before execution: configured review model `opencode-omniroute/cx/gpt-6.1-sol-max` unavailable. No review completion claimed.
