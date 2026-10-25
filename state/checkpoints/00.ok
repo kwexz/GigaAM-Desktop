@@ -1,0 +1,20 @@
+phase: 00
+outcome: passed
+code_commit_sha: aab7936925bf08ece7ff93177e57bacfbab3c1c5
+verified_utc: 2026-10-25T19:41:47Z
+logs:
+  - state/runs/00-baseline/results.json
+  - state/runs/00-model/clean.stdout.txt
+  - state/runs/00-model/noisy.stdout.txt
+  - state/runs/00-model/consistency.json
+matrix:
+  baseline: verified (6 commands; 55 Rust lib tests; 6 frontend tests)
+  windows_release_binary: verified
+  browser_harness: verified (2 Edge tests; injected streams, MediaRecorder, OPFS)
+  real_models: verified (pinned hashes; 3/3 phrase anchors clean and low-noise)
+  segment_consistency: verified (0 mismatches, 250 ms tolerance)
+  vps_static_smoke: verified (both aliases; loopback-only isolated temporary space)
+  review: verified (independent Sol; findings addressed)
+  macos_gui: not-run
+  fresh_model_download: not-run (cached pinned artifacts used)
+  physical_capture: not-run

@@ -1,10 +1,10 @@
 # GigaAM Desktop — состояние автономного плана
 
-- `current_phase`: `00`
-- `phase_state`: `in_progress`
-- `last_verified_commit`: `none`
+- `current_phase`: `01`
+- `phase_state`: `pending`
+- `last_verified_commit`: `aab7936925bf08ece7ff93177e57bacfbab3c1c5`
 - `current_branch`: `feature/gigaam-desktop-web-autonomy`
-- `blocking_issue`: `00 acceptance incomplete: final harness measurement/evidence consolidation and review pending. Licensed natural speech clean/noisy assertions verified; Edge recording/OPFS harness and PS5 tests verified; both VPS smokes passed.`
+- `blocking_issue`: `none; phase 00 passed with explicit platform/network not-run boundaries`
 - `last_update_utc`: `2026-10-25`
 
 ## Источник истины
@@ -15,7 +15,7 @@
 
 | NN | Этап | Статус | Commit | Основной результат |
 |---|---|---|---|---|
-| 00 | Baseline & harness | in_progress | — | Baseline green; reproducible runner and synthetic browser test added; no checkpoint |
+| 00 | Baseline & harness | passed | aab7936 | Baseline, real model clean/noisy metrics, browser recording/OPFS harness, VPS static smokes |
 | 01 | Live bugfixes | pending | — | — |
 | 02 | Streaming core | pending | — | — |
 | 03 | Universal contracts | pending | — | — |
