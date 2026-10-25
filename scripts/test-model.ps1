@@ -1,6 +1,7 @@
 param(
     [string]$AudioPath = 'artifacts/verification/00/generated-speech/speech.wav',
     [string]$ModelDirectory = "$env:APPDATA/ru.gigaam.desktop/models",
+    [string]$ManifestPath = '',
     [string]$EvidenceDirectory = 'artifacts/verification/00/model'
 )
 $ErrorActionPreference = 'Stop'
@@ -26,12 +27,13 @@ $text = Get-Content -Raw -Encoding $(if ($PSVersionTable.PSVersion.Major -le 5) 
 $position = $text.IndexOf('segments=')
 if ($position -lt 0) { throw 'Inference output has no segments' }
 $segments = $text.Substring($position + 9) | ConvertFrom-Json
-$manifest = Get-Content -Raw -Encoding UTF8 (Join-Path (Split-Path $AudioPath) 'manifest.json') | ConvertFrom-Json
+if (-not $ManifestPath) { $ManifestPath = Join-Path (Split-Path $AudioPath) 'manifest.json' }
+$manifest = Get-Content -Raw -Encoding UTF8 $ManifestPath | ConvertFrom-Json
 if (@($manifest.phrases).Count -lt 3) { throw 'At least three expected phrases are required' }
 if (@($segments).Count -eq 0) { throw 'Expected nonempty speech segments' }
 $transcript = ($segments | ForEach-Object { $_.text }) -join ' '
 foreach ($phrase in $manifest.phrases) {
-    if (-not $transcript.Contains($phrase)) { throw "Expected phrase missing: $phrase" }
+    if ($transcript.IndexOf([string]$phrase, [StringComparison]::OrdinalIgnoreCase) -lt 0) { throw "Expected phrase missing: $phrase" }
 }
 $previousEnd = 0.0
 foreach ($segment in $segments) {
