@@ -78,6 +78,8 @@ pub struct LiveStatus {
     pub mic_format: String,
     pub sys_format: String,
     pub paused: bool,
+    pub microphone_capture_state: String,
+    pub system_capture_state: String,
 }
 
 pub fn clamp_gain(gain: f32) -> f32 {
@@ -131,6 +133,8 @@ pub struct LiveCapture {
     pub sys_format: String,
     pub log_path: Option<PathBuf>,
     pub timeline_origin_100ns: Option<u64>,
+    pub microphone_capture_state: String,
+    pub system_capture_state: String,
     pub microphone_base_sample: usize,
     pub system_base_sample: usize,
     pub error: Option<String>,
@@ -188,6 +192,8 @@ impl LiveCapture {
             sys_format: String::new(),
             log_path,
             timeline_origin_100ns: None,
+            microphone_capture_state: "starting".into(),
+            system_capture_state: "starting".into(),
             microphone_base_sample: 0,
             system_base_sample: 0,
             error: None,
@@ -206,6 +212,8 @@ impl LiveCapture {
             mic_format: self.mic_format.clone(),
             sys_format: self.sys_format.clone(),
             paused: false,
+            microphone_capture_state: self.microphone_capture_state.clone(),
+            system_capture_state: self.system_capture_state.clone(),
         }
     }
 
@@ -846,6 +854,12 @@ pub mod platform {
                     let mut last_ts = 0u64;
                     let mut since_ts = 0usize;
                     client.start_stream()?;
+                    {
+                        let mut state = capture.lock().unwrap();
+                        let value = if reconnect_attempts > 0 { "resumed" } else { "capturing" };
+                        if mic { state.microphone_capture_state = value.into(); }
+                        else { state.system_capture_state = value.into(); }
+                    }
                     while !stop_flag.load(Ordering::Relaxed) {
                         let t0 = std::time::Instant::now();
                         let info = reader.read_from_device_to_deque(&mut bytes)?;
@@ -959,6 +973,11 @@ pub mod platform {
                         crate::capture_recovery::device_recovery_action(invalidated, reconnect_attempts, explicitly_selected)
                     {
                         reconnect_attempts += 1;
+                        {
+                            let mut state = capture.lock().unwrap();
+                            if mic { state.microphone_capture_state = "reconnecting".into(); }
+                            else { state.system_capture_state = "reconnecting".into(); }
+                        }
                         if let Some(path) = capture.lock().unwrap().log_path.clone() {
                             debug_log(&path, &format!("capture reconnecting mic={mic} attempt={reconnect_attempts}"));
                         }

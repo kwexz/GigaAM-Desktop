@@ -35,6 +35,7 @@ static ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 struct WorkerHandle(Sender<()>);
 
 struct LiveState {
+    lifecycle: Mutex<()>,
     capture: Arc<Mutex<Option<Arc<Mutex<LiveCapture>>>>>,
     handle: Arc<Mutex<Option<live::platform::CaptureHandle>>>,
     inference_stop: Arc<Mutex<Option<Sender<()>>>>,
@@ -49,6 +50,7 @@ struct LiveState {
 impl LiveState {
     fn new() -> Self {
         Self {
+            lifecycle: Mutex::new(()),
             capture: Arc::new(Mutex::new(None)),
             handle: Arc::new(Mutex::new(None)),
             inference_stop: Arc::new(Mutex::new(None)),
@@ -302,11 +304,10 @@ fn get_segments(
 }
 
 #[tauri::command]
-fn cancel_transcription(
+async fn cancel_transcription(
     id: String,
     state: tauri::State<'_, Arc<Mutex<Store>>>,
     live: tauri::State<'_, LiveState>,
-    worker: tauri::State<'_, WorkerHandle>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     lock_store(&state)?
@@ -320,10 +321,9 @@ fn cancel_transcription(
         .cloned();
     let active_live = active_capture.is_some_and(|capture| capture.lock().unwrap().id == id);
     if active_live {
-        if live.finalizing.swap(true, Ordering::SeqCst) { return Ok(()); }
-        let result = stop_live_blocking(state, live, worker, app.clone());
-        app.state::<LiveState>().finalizing.store(false, Ordering::SeqCst);
-        let _ = result?;
+        if !live.finalizing.load(Ordering::SeqCst) {
+            let _ = stop_live(app).await?;
+        }
     }
     Ok(())
 }
@@ -634,6 +634,7 @@ fn start_live(
     live: tauri::State<'_, LiveState>,
     app: tauri::AppHandle,
 ) -> Result<LiveStatus, String> {
+    let _lifecycle = live.lifecycle.lock().map_err(|_| "live lifecycle lock poisoned")?;
     if live.finalizing.load(Ordering::SeqCst) {
         return Err("previous recording is finalizing".into());
     }
@@ -997,6 +998,7 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     // command thread. The session remains guarded until durable completion.
     tauri::async_runtime::spawn_blocking(move || {
         let live = app.state::<LiveState>();
+        let _lifecycle = live.lifecycle.lock().map_err(|_| "live lifecycle lock poisoned")?;
         if live.finalizing.swap(true, Ordering::SeqCst) { return Err("recording is already finalizing".into()); }
         struct FinalizingGuard<'a>(&'a AtomicBool);
         impl Drop for FinalizingGuard<'_> { fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); } }
@@ -1051,7 +1053,9 @@ fn stop_live_blocking(
         // Completion is reported only after the final inference flush. The
         // previous three-second detach left live records visibly incomplete.
         let waited = std::time::Instant::now();
-        let _ = thread.join();
+        if thread.join().is_err() {
+            *live.error.lock().unwrap() = Some("Live inference worker panicked; audio archive preserved".into());
+        }
         log(&format!(
             "inference final flush joined in {}ms",
             waited.elapsed().as_millis()

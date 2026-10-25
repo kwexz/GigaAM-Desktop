@@ -19,6 +19,7 @@
 	let segmentRequest = 0;
 	let recording = $state(false);
 	let finalizing = $state(false);
+	let captureHealth = $state('');
 	let modelReady = $state(true);
 	let uiNow = $state(Date.now());
 	let paused = $state(false);
@@ -410,7 +411,9 @@
 			try {
 				model = await invoke<typeof model>('model_status');
 				if (!recording) return;
-				const status = await invoke<{ microphone_level: number; system_level: number; model_ready: boolean; paused: boolean; error?: string } | null>('live_status');
+				const status = await invoke<{ microphone_level: number; system_level: number; model_ready: boolean; paused: boolean; error?: string; microphone_capture_state?: string; system_capture_state?: string } | null>('live_status');
+				captureHealth = [status?.microphone_capture_state, status?.system_capture_state].includes('reconnecting')
+					? (locale === 'ru' ? 'Переподключение аудиоустройства…' : 'Reconnecting audio device…') : '';
 				if (status) {
 					micLevel = status.microphone_level;
 					systemLevel = status.system_level;
@@ -477,6 +480,7 @@
 		{:else}
 			<div class="welcome"><div class="wave">∿</div><h1>{t.waiting}</h1><p>{t.empty}</p><button class="add-large" disabled={!model.installed} onclick={pickFiles}>＋ {t.add}</button></div>
 		{/if}
+		{#if captureHealth}<div class="toast" role="status">{captureHealth}</div>{/if}
 		{#if error}<div class="toast" role="alert">{error}</div>{/if}
 		{#if confirmDelete}{#if selected}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={() => confirmDelete = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex={-1} aria-label={t.remove}><h2>{t.remove}?</h2><p>{selected.source_filename}</p><div class="modal-actions"><button class="danger-solid" onclick={() => { const id = selected.id; confirmDelete = false; void action('delete_history', id); }}>{t.remove}</button><button class="ghost" onclick={() => confirmDelete = false}>{t.cancel}</button></div></div></div>{/if}{/if}
 	</main>
