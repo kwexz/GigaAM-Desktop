@@ -9,13 +9,13 @@ fn chunk_fed_live_retains_three_phrase_anchors_on_each_track() {
     let mut reader = hound::WavReader::open(path).unwrap();
     let source: Vec<f32> = reader.samples::<i16>().map(|s| s.unwrap() as f32 / 32768.0).collect();
     let audio: Vec<f32> = source.iter().flat_map(|sample| [*sample; 3]).collect();
-    for track in [SourceTrack::Microphone, SourceTrack::System] {
+    for (track, step) in [(SourceTrack::Microphone, 24_000), (SourceTrack::System, 48_000)] {
         let mut processor = NativeFileProcessor::load_live(&model).unwrap();
         let mut scanner = LiveScanner::new().unwrap();
         let mut emitted = 0.0;
         let mut quiet = 0.0;
         let mut all = Vec::new();
-        for end in (48_000..audio.len() + 48_000).step_by(48_000) {
+        for end in (step..audio.len() + step).step_by(step) {
             scanner.push(&audio[..end.min(audio.len())], 0).unwrap();
             let (segments, next, silence) = processor.transcribe_live_ready(&mut scanner, "fixture", track, all.len(), emitted, quiet, false).unwrap();
             all.extend(segments);
