@@ -7,6 +7,7 @@ use std::{
 use crate::debug_log;
 
 use anyhow::{Context, Result};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use flac_codec::{
     byteorder::LittleEndian,
     encode::{FlacByteWriter, Options},
@@ -138,6 +139,7 @@ pub struct LiveCapture {
     pub microphone_base_sample: usize,
     pub system_base_sample: usize,
     archive_error: Option<String>,
+    pub finalization_cancel: Arc<AtomicBool>,
     pub error: Option<String>,
 }
 
@@ -199,6 +201,7 @@ impl LiveCapture {
             system_base_sample: 0,
             error: None,
             archive_error: None,
+            finalization_cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -224,6 +227,7 @@ impl LiveCapture {
     }
 
     pub fn finish(&mut self) -> Result<Vec<PathBuf>> {
+        if self.finalization_cancel.load(Ordering::Acquire) { anyhow::bail!("Live finalization cancelled; raw audio retained"); }
         if let Some(error) = &self.archive_error {
             anyhow::bail!("Audio archive integrity compromised; raw material retained: {error}");
         }
@@ -241,7 +245,7 @@ impl LiveCapture {
                 "microphone-{timestamp}.{}",
                 self.archive_format.extension()
             ));
-            transcode_raw(&self.microphone_path, &path, self.archive_format)?;
+            transcode_raw_cancellable(&self.microphone_path, &path, self.archive_format, Some(&self.finalization_cancel))?;
             files.push(path);
         }
         if self.system_path.exists() {
@@ -249,7 +253,7 @@ impl LiveCapture {
                 "system-{timestamp}.{}",
                 self.archive_format.extension()
             ));
-            transcode_raw(&self.system_path, &path, self.archive_format)?;
+            transcode_raw_cancellable(&self.system_path, &path, self.archive_format, Some(&self.finalization_cancel))?;
             files.push(path);
         }
         let _ = fs::remove_file(&self.microphone_path);
@@ -410,15 +414,25 @@ impl LiveCapture {
     }
 }
 
-fn transcode_raw(input: &Path, output: &Path, format: ArchiveFormat) -> Result<()> {
+fn transcode_raw_cancellable(input: &Path, output: &Path, format: ArchiveFormat, cancel: Option<&AtomicBool>) -> Result<()> {
     match format {
-        ArchiveFormat::Flac => transcode_raw_to_flac(input, output),
-        ArchiveFormat::Wav => transcode_raw_to_wav(input, output),
-        ArchiveFormat::Mp3 => transcode_raw_to_mp3(input, output),
+        ArchiveFormat::Flac => transcode_raw_to_flac_cancellable(input, output, cancel),
+        ArchiveFormat::Wav => transcode_raw_to_wav_cancellable(input, output, cancel),
+        ArchiveFormat::Mp3 => transcode_raw_to_mp3_cancellable(input, output, cancel),
     }
 }
 
+fn check_archive_cancel(cancel: Option<&AtomicBool>) -> Result<()> {
+    if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        anyhow::bail!("Live finalization cancelled; raw audio retained");
+    }
+    Ok(())
+}
+
 fn transcode_raw_to_flac(input: &Path, output: &Path) -> Result<()> {
+    transcode_raw_to_flac_cancellable(input, output, None)
+}
+fn transcode_raw_to_flac_cancellable(input: &Path, output: &Path, cancel: Option<&AtomicBool>) -> Result<()> {
     use std::io::{Read, Write};
     let output_file = fs::File::create(output)
         .with_context(|| format!("transcode: cannot create {}", output.display()))?;
@@ -437,6 +451,7 @@ fn transcode_raw_to_flac(input: &Path, output: &Path) -> Result<()> {
     );
     let mut floats = [0_u8; 16 * 1024];
     loop {
+        check_archive_cancel(cancel)?;
         let read = input.read(&mut floats)?;
         if read == 0 {
             break;
@@ -455,7 +470,7 @@ fn transcode_raw_to_flac(input: &Path, output: &Path) -> Result<()> {
         .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
-fn transcode_raw_to_wav(input: &Path, output: &Path) -> Result<()> {
+fn transcode_raw_to_wav_cancellable(input: &Path, output: &Path, cancel: Option<&AtomicBool>) -> Result<()> {
     let mut input = std::io::BufReader::new(fs::File::open(input)?);
     let spec = hound::WavSpec {
         channels: 1,
@@ -466,6 +481,7 @@ fn transcode_raw_to_wav(input: &Path, output: &Path) -> Result<()> {
     let mut writer = hound::WavWriter::create(output, spec)?;
     let mut floats = [0_u8; 16 * 1024];
     loop {
+        check_archive_cancel(cancel)?;
         let read = input.read(&mut floats)?;
         if read == 0 {
             break;
@@ -480,6 +496,9 @@ fn transcode_raw_to_wav(input: &Path, output: &Path) -> Result<()> {
 }
 
 fn transcode_raw_to_mp3(input: &Path, output: &Path) -> Result<()> {
+    transcode_raw_to_mp3_cancellable(input, output, None)
+}
+fn transcode_raw_to_mp3_cancellable(input: &Path, output: &Path, cancel: Option<&AtomicBool>) -> Result<()> {
     use shine_rs::{Mp3Encoder, Mp3EncoderConfig, StereoMode};
 
     let mut input = std::io::BufReader::new(fs::File::open(input)?);
@@ -493,6 +512,7 @@ fn transcode_raw_to_mp3(input: &Path, output: &Path) -> Result<()> {
         Mp3Encoder::new(config).map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let mut floats = [0_u8; 16 * 1024];
     loop {
+        check_archive_cancel(cancel)?;
         let read = input.read(&mut floats)?;
         if read == 0 {
             break;
@@ -1163,6 +1183,23 @@ pub mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_archive_keeps_raw_recovery_material() {
+        let directory = std::env::temp_dir().join(format!("gigaam-cancel-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir(&directory).unwrap();
+        let input = directory.join("audio.f32");
+        fs::write(&input, vec![0u8; 16_384]).unwrap();
+        let cancel = AtomicBool::new(true);
+        for format in [ArchiveFormat::Wav, ArchiveFormat::Flac, ArchiveFormat::Mp3] {
+            let output = directory.join(format!("audio.{}", format.extension()));
+            assert!(transcode_raw_cancellable(&input, &output, format, Some(&cancel)).unwrap_err().to_string().contains("cancelled"));
+            assert_eq!(fs::metadata(&input).unwrap().len(), 16_384);
+            if output.exists() { fs::remove_file(output).unwrap(); }
+        }
+        fs::remove_file(input).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
 
     #[test]
     fn compromised_archive_cannot_report_success_even_if_capture_error_clears() {

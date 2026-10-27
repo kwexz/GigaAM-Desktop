@@ -46,6 +46,7 @@ struct LiveState {
     generation: Arc<AtomicU64>,
     paused: Arc<AtomicBool>,
     finalizing: AtomicBool,
+    finalization_cancel: Mutex<Option<(String, Arc<AtomicBool>)>>,
 }
 
 impl LiveState {
@@ -61,6 +62,7 @@ impl LiveState {
             generation: Arc::new(AtomicU64::new(0)),
             paused: Arc::new(AtomicBool::new(false)),
             finalizing: AtomicBool::new(false),
+            finalization_cancel: Mutex::new(None),
         }
     }
 }
@@ -314,6 +316,9 @@ async fn cancel_transcription(
     lock_store(&state)?
         .request_cancel(&id, now_ms())
         .map_err(|error| error.to_string())?;
+    if let Some((session, cancel)) = live.finalization_cancel.lock().unwrap().as_ref() {
+        if session == &id { cancel.store(true, Ordering::Release); }
+    }
     let active_capture = live
         .capture
         .lock()
@@ -1015,6 +1020,8 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
             .ok_or("recording is already finalizing")?;
         let capture = live.capture.lock().map_err(|_| "capture lock poisoned")?.as_ref().cloned().ok_or("no active recording")?;
         let id = capture.lock().map_err(|_| "capture lock poisoned")?.id.clone();
+        let cancel = capture.lock().map_err(|_| "capture lock poisoned")?.finalization_cancel.clone();
+        *live.finalization_cancel.lock().unwrap() = Some((id.clone(), cancel));
         drop(lifecycle);
         // Stop device ingress even if writing finalization metadata fails.
         // Otherwise an error could leave an invisible recording running.
@@ -1053,6 +1060,7 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
         }
         let status_result = app.state::<Arc<Mutex<Store>>>().lock().map_err(|_| "store lock poisoned")?
             .finish_live_finalization(&id, result.is_ok(), now_ms()).map_err(|error| error.to_string());
+        *live.finalization_cancel.lock().unwrap() = None;
         status_result?;
         if let Some(path) = debug_log_path(&app) {
             debug_log(&path, &format!("stop_finalization_ms={} session={id}", stop_requested.elapsed().as_millis()));
