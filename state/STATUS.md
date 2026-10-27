@@ -1,10 +1,10 @@
 # GigaAM Desktop — состояние автономного плана
 
 - `current_phase`: `11`
-- `phase_state`: `in_progress`
-- `last_verified_commit`: `e6d989e`
+- `phase_state`: `passed`
+- `last_verified_commit`: `a931188`
 - `current_branch`: `feature/gigaam-desktop-web-autonomy`
-- `blocking_issue`: `10 completed with external-oauth-blocked outcome; final audit records remaining physical/VPS/model boundaries`
+- `blocking_issue`: `roadmap complete; remaining boundaries are physical devices/macOS, real VPS dual-ASR, OAuth consent, and local GGUF resource blocker`
 - `last_update_utc`: `2026-10-27`
 
 ## Источник истины
@@ -26,6 +26,6 @@
 | 08 | Local summarization | blocked_external | cda23f7 | Extractive source-backed fallback/API; licensed measured GGUF experiment blocked by unavailable weights/runtime |
 | 09 | Optional in-browser ASR | pending | — | — |
 | 10 | Google/Yandex cloud sync | pending | — | — |
-| 11 | Final audit & handoff | pending | — | — |
+| 11 | Final audit & handoff | passed | a931188 | Final matrix, docs/ROADMAP_RESULT.md, secrets scan, evidence/checkpoint complete |
 
 Статусы: `pending`, `in_progress`, `passed`, `blocked_external`, `failed`. В блокерах указывай минимальное необходимое действие и обоснование; не останавливай независимые тесты/подзадачи.
