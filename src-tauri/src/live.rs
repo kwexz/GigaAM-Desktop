@@ -616,8 +616,11 @@ pub mod platform {
     }
 
     impl CaptureHandle {
-        pub fn stop(&self) {
+        pub fn request_stop(&self) {
             self.stop.store(true, Ordering::Relaxed);
+        }
+        pub fn stop(&self) {
+            self.request_stop();
             for thread in self.threads.lock().unwrap().drain(..) {
                 let _ = thread.join();
             }
@@ -1053,6 +1056,7 @@ pub mod platform {
         stream: Mutex<Option<SCStream>>,
     }
     impl CaptureHandle {
+        pub fn request_stop(&self) { self.stop(); }
         pub fn stop(&self) {
             if let Some(stream) = self.stream.lock().unwrap().take() {
                 let _ = stream.stop_capture();
@@ -1113,6 +1117,7 @@ pub mod platform {
     use std::sync::{Arc, Mutex};
     pub struct CaptureHandle;
     impl CaptureHandle {
+        pub fn request_stop(&self) {}
         pub fn stop(&self) {}
     }
     pub fn start(_capture: Arc<Mutex<LiveCapture>>) -> Result<CaptureHandle> {

@@ -950,8 +950,8 @@ fn pause_live(live: tauri::State<'_, LiveState>) -> Result<(), String> {
         return Err("no active recording".into());
     }
     if live.handle.lock().unwrap().is_some() {
-        if let Some(handle) = live.handle.lock().unwrap().take() {
-            handle.stop();
+        if let Some(handle) = live.handle.lock().unwrap().as_ref() {
+            handle.request_stop();
         }
         live.paused.store(true, Ordering::Relaxed);
     }
@@ -1031,6 +1031,15 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
             app.clone(),
         ));
         if let Err(error) = &result {
+            // No new session can start while this claim is held. Clear only
+            // the failed session, recovering a poisoned slot for future use.
+            {
+                let mut slot = live.capture.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if slot.as_ref().is_some_and(|capture| {
+                    capture.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).id == id
+                }) { slot.take(); }
+            }
+            live.capture.clear_poison();
             *live.error.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.clone());
             if let Ok(mut store) = app.state::<Arc<Mutex<Store>>>().lock() {
                 let _ = store.fail_if_not_cancelled(&id, error, now_ms());
