@@ -140,3 +140,14 @@ pm test passed, 2 files / 10 tests.
 - Added src/lib/contracts.ts and src/lib/ports.ts: version 1 event schema, audio/segment identity, monotonic sequence, revisions, separate recording/upload/recognition/sync states, capability matrix, runtime-neutral ports.
 - Desktop remains offline-capable and existing Tauri UI imports are unchanged; no server/cloud/browser inference dependency introduced.
 - Honest boundaries: server adapter compatibility is represented by the versioned contract and stub ports; no external server or OAuth provider was required in this phase.
+
+## Phase 04 verification (2026-10-27T19:18:55Z)
+
+- Browser adapter: src/lib/browser-recorder.ts and src/lib/browser-storage.ts; mic/display streams are independent, returned display audio tracks are checked, and missing system audio produces explicit mic-only status. OPFS stores append-only WebM/Ogg recorder chunks; IndexedDB stores archive metadata, session state, segments and change log.
+- Frontend checks: 
+pm run check passed with 0 diagnostics; 
+pm test passed, 2 files / 10 tests.
+- Browser build: 
+pm run build passed.
+- Playwright: PLAYWRIGHT_CHANNEL=msedge npx playwright test --workers=1 passed 2/2 (synthetic deterministic capture harness; 39.0 s). The earlier 2-worker run exited 1 without assertion details; serial rerun is the reproducible accepted result.
+- Honest boundaries: fake streams are mocked capture integration, not physical microphone/system-audio E2E; actual tab-close prompt, quota exhaustion, permission cancellation, seek/export/reload persistence, and CLI container SHA/duration validation remain not-run. Browser ASR/model download and VPS ASR are intentionally not part of phase 04.
