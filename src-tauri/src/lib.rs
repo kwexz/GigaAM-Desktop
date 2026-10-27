@@ -6,6 +6,7 @@ pub mod live;
 pub mod model_manager;
 pub mod pipeline;
 pub mod queue;
+pub mod server;
 pub mod storage;
 pub mod streaming;
 
