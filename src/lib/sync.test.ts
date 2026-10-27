@@ -11,6 +11,7 @@ describe('logical cloud sync', () => {
 		const second = new SyncEngine(provider);
 		expect(await second.pull()).toBe(1);
 		expect(second.get('a')?.payload).toEqual({ text: 'one' });
+		expect(await first.pull()).toBe(1);
 		await second.record(change('b', 1, 'two')); await second.push();
 		expect(await first.pull()).toBe(1);
 		expect(first.get('b')?.payload).toEqual({ text: 'two' });
