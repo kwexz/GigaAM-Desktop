@@ -865,6 +865,7 @@ pub mod platform {
                     let mut last_ts = 0u64;
                     let mut since_ts = 0usize;
                     client.start_stream()?;
+                    let mut healthy_audio_samples = 0usize;
                     {
                         let mut state = capture.lock().unwrap();
                         let value = if reconnect_attempts > 0 { "resumed" } else { "capturing" };
@@ -886,6 +887,8 @@ pub mod platform {
                         let raw: Vec<u8> = bytes.drain(..).collect();
                         let mono = bytes_to_mono_f32(&raw, dev_ch, bytes_per_sample, float32);
                         let raw_len = mono.len();
+                        healthy_audio_samples = healthy_audio_samples.saturating_add(raw_len.saturating_mul(48_000) / dev_rate);
+                        crate::capture_recovery::reset_after_healthy_capture(&mut reconnect_attempts, healthy_audio_samples);
                         let samples_48k = if let Some(resampler) = resampler.as_mut() {
                             pending.extend_from_slice(&mono);
                             let mut out = Vec::new();

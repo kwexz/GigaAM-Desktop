@@ -14,6 +14,10 @@ pub fn is_device_invalidation(message: &str) -> bool {
         || message.contains("device_invalidated")
 }
 
+pub fn reset_after_healthy_capture(attempts: &mut usize, healthy_audio_samples: usize) {
+    if healthy_audio_samples >= 48_000 * 2 { *attempts = 0; }
+}
+
 pub fn device_recovery_action(invalidated: bool, attempts: usize, explicitly_selected: bool) -> RecoveryAction {
     if !invalidated { return RecoveryAction::KeepCurrent; }
     // Never replace a user-selected microphone with a different endpoint.
@@ -24,6 +28,19 @@ pub fn device_recovery_action(invalidated: bool, attempts: usize, explicitly_sel
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn separate_healthy_recovery_episodes_do_not_exhaust_lifetime_budget() {
+        let mut attempts = 0;
+        for _ in 0..4 {
+            assert!(matches!(device_recovery_action(true, attempts, false), RecoveryAction::RetryAfter(_)));
+            attempts += 1;
+            reset_after_healthy_capture(&mut attempts, 96_000);
+            assert_eq!(attempts, 0);
+        }
+        attempts = 3;
+        reset_after_healthy_capture(&mut attempts, 100);
+        assert_eq!(device_recovery_action(true, attempts, false), RecoveryAction::Fail);
+    }
     #[test]
     fn invalidation_classification_does_not_retry_unrelated_failures() {
         assert!(is_device_invalidation("HRESULT 0x88890004"));
