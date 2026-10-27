@@ -315,6 +315,7 @@
 				busy = false;
 				try {
 					await invoke('stop_live');
+					recording = false;
 				} catch {
 					error = locale === 'ru' ? 'Не удалось остановить запись.' : 'Could not stop recording.';
 					const status = await invoke<{ recording: boolean } | null>('live_status').catch(() => null);
@@ -322,7 +323,6 @@
 				} finally {
 					finalizing = await invoke<boolean>('live_finalizing').catch(() => false);
 				}
-				recording = false;
 				modelReady = true;
 				paused = false;
 				await refresh();

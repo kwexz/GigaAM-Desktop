@@ -635,7 +635,7 @@ fn start_live(
     live: tauri::State<'_, LiveState>,
     app: tauri::AppHandle,
 ) -> Result<LiveStatus, String> {
-    let _lifecycle = live.lifecycle.lock().map_err(|_| "live lifecycle lock poisoned")?;
+    let _lifecycle = live.lifecycle.try_lock().map_err(|_| "live lifecycle transition in progress")?;
     if live.finalizing.load(Ordering::SeqCst) {
         return Err("previous recording is finalizing".into());
     }
@@ -1007,11 +1007,12 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
         let mut acknowledge = Some(acknowledge);
         let result = (|| -> Result<Vec<String>, String> {
         let live = app.state::<LiveState>();
-        let _lifecycle = live.lifecycle.lock().map_err(|_| "live lifecycle lock poisoned")?;
+        let lifecycle = live.lifecycle.try_lock().map_err(|_| "live lifecycle transition in progress")?;
         let _guard = finalization::FinalizationClaim::acquire(&live.finalizing)
             .ok_or("recording is already finalizing")?;
         let capture = live.capture.lock().map_err(|_| "capture lock poisoned")?.as_ref().cloned().ok_or("no active recording")?;
         let id = capture.lock().map_err(|_| "capture lock poisoned")?.id.clone();
+        drop(lifecycle);
         // Stop device ingress even if writing finalization metadata fails.
         // Otherwise an error could leave an invisible recording running.
         if let Some(handle) = live.handle.lock().unwrap().take() {
@@ -1022,12 +1023,18 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
         if persistence_start.is_ok() {
             if let Some(sender) = acknowledge.take() { let _ = sender.send(Ok(Vec::new())); }
         }
-        let result = stop_live_blocking(
+        let result = catch_unwind(AssertUnwindSafe(|| stop_live_blocking(
             app.state::<Arc<Mutex<Store>>>(),
             app.state::<LiveState>(),
             app.state::<WorkerHandle>(),
             app.clone(),
-        );
+        ))).unwrap_or_else(|_| Err("Live finalizer panicked; raw audio retained for recovery".into()));
+        if let Err(error) = &result {
+            *live.error.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.clone());
+            if let Ok(mut store) = app.state::<Arc<Mutex<Store>>>().lock() {
+                let _ = store.fail_if_not_cancelled(&id, error, now_ms());
+            }
+        }
         let status_result = app.state::<Arc<Mutex<Store>>>().lock().map_err(|_| "store lock poisoned")?
             .finish_live_finalization(&id, result.is_ok(), now_ms()).map_err(|error| error.to_string());
         status_result?;
