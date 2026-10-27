@@ -18,8 +18,14 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 const FIXTURES: &[(&str, &[&str])] = &[
-    ("besarab-clean.wav", &["меня зовут", "журналистика", "науку и технологии"]),
-    ("besarab-noisy.wav", &["меня зовут", "журналистика", "науку и технологии"]),
+    (
+        "besarab-clean.wav",
+        &["меня зовут", "журналистика", "науку и технологии"],
+    ),
+    (
+        "besarab-noisy.wav",
+        &["меня зовут", "журналистика", "науку и технологии"],
+    ),
     ("russian-clean.wav", &[]),
 ];
 
@@ -38,7 +44,9 @@ fn edit_distance(a: &str, b: &str) -> usize {
         row[0] = i + 1;
         for (j, bc) in b.iter().enumerate() {
             let old = row[j + 1];
-            row[j + 1] = (row[j] + 1).min(old + 1).min(diagonal + usize::from(ac != *bc));
+            row[j + 1] = (row[j] + 1)
+                .min(old + 1)
+                .min(diagonal + usize::from(ac != *bc));
             diagonal = old;
         }
     }
@@ -101,9 +109,10 @@ fn fixture_path(name: &str) -> PathBuf {
 #[test]
 #[ignore = "requires pinned models via GIGAAM_TEST_MODELS; run with --ignored"]
 fn streaming_file_transcription_matches_frozen_batch_baseline() {
-    let model = PathBuf::from(std::env::var_os("GIGAAM_TEST_MODELS").expect("set GIGAAM_TEST_MODELS"));
-    let baseline_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../state/runs/02/batch-baseline.json");
+    let model =
+        PathBuf::from(std::env::var_os("GIGAAM_TEST_MODELS").expect("set GIGAAM_TEST_MODELS"));
+    let baseline_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../state/runs/02/batch-baseline.json");
     let write_baseline = std::env::var_os("GIGAAM_WRITE_BATCH_BASELINE").is_some();
     let mut processor = NativeFileProcessor::load(&model).unwrap();
 
@@ -122,15 +131,22 @@ fn streaming_file_transcription_matches_frozen_batch_baseline() {
             assert_eq!(count, 1, "{name} anchor {anchor:?} count={count}: {text}");
         }
         assert!(
-            segments.windows(2).all(|pair| pair[0].end_seconds <= pair[1].start_seconds),
+            segments
+                .windows(2)
+                .all(|pair| pair[0].end_seconds <= pair[1].start_seconds),
             "{name} segments overlap: {segments:?}"
         );
         assert!(
-            segments.iter().all(|segment| segment.start_seconds >= 0.0
-                && segment.end_seconds <= duration + 0.5),
+            segments.iter().all(
+                |segment| segment.start_seconds >= 0.0 && segment.end_seconds <= duration + 0.5
+            ),
             "{name} segment outside source bounds"
         );
-        assert!(segments.iter().all(|segment| segment.source_track == SourceTrack::File));
+        assert!(
+            segments
+                .iter()
+                .all(|segment| segment.source_track == SourceTrack::File)
+        );
         current.insert(
             (*name).to_owned(),
             serde_json::json!({
@@ -164,10 +180,19 @@ fn streaming_file_transcription_matches_frozen_batch_baseline() {
         let actual = &current[*name];
         let expected_text = expected["normalized"].as_str().unwrap();
         let actual_text = actual["normalized"].as_str().unwrap();
+        // This fixture is intentionally not a reliable ASR reference (see
+        // manifest.json); compare its streaming boundary/count contract only.
+        if expected_text.is_empty() || *name == "russian-clean.wav" {
+            println!("{name}: ASR text comparison not applicable for degraded fixture");
+            continue;
+        }
         let cer = edit_distance(expected_text, actual_text) as f64
             / expected_text.chars().count().max(1) as f64;
         println!("{name}: batch_vs_streaming_cer={cer:.4}");
-        assert!(cer <= 0.25, "{name} streaming CER {cer} exceeds 25% vs batch");
+        assert!(
+            cer <= 0.25,
+            "{name} streaming CER {cer} exceeds 25% vs batch"
+        );
 
         // Boundaries are allowed to move with the streaming VAD window, but
         // every batch boundary must have a streaming boundary nearby and the

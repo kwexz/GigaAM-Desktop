@@ -7,6 +7,7 @@ pub mod model_manager;
 pub mod pipeline;
 pub mod queue;
 pub mod storage;
+pub mod streaming;
 
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
@@ -846,7 +847,7 @@ fn start_live(
                 *live_error.lock().unwrap() = Some(error.to_string());
                 return;
             }
-            let fed = (mic_scanner.fed_48k(), system_scanner.fed_48k());
+            let fed = (mic_scanner.fed_input(), system_scanner.fed_input());
             if stopping {
                 if let Err(error) = mic_scanner.finish().and_then(|()| system_scanner.finish()) {
                     *live_error.lock().unwrap() = Some(error.to_string());

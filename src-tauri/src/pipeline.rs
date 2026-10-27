@@ -359,13 +359,16 @@ mod baseline_fixture_tests {
         scanner.drop_front_16k(VAD_FRAME * 4 + 123);
         assert_eq!(scanner.samples_16k[0], (VAD_FRAME * 4) as f32);
         assert_eq!(scanner.vad_probs, vec![0.4, 0.5]);
-        assert_eq!(scanner.abs0_48k, VAD_FRAME * 4 * 3);
-        assert_eq!(scanner.vad_abs0_16k + scanner.vad_probs.len() * VAD_FRAME, VAD_FRAME * 2);
+        assert_eq!(scanner.abs0_in, VAD_FRAME * 4 * 3);
+        assert_eq!(
+            scanner.vad_abs0_16k + scanner.vad_probs.len() * VAD_FRAME,
+            VAD_FRAME * 2
+        );
         assert!(scanner.vad_context.iter().all(|v| *v == 0.25));
         assert!(scanner.vad_state.iter().all(|v| *v == 0.5));
         scanner.drop_front_16k(VAD_FRAME + 123);
         assert_eq!(scanner.vad_probs, vec![0.5]);
-        assert_eq!(scanner.abs0_48k, VAD_FRAME * 5 * 3);
+        assert_eq!(scanner.abs0_in, VAD_FRAME * 5 * 3);
         assert_eq!(scanner.samples_16k[0], (VAD_FRAME * 5) as f32);
     }
 
@@ -715,22 +718,26 @@ const LIVE_SCAN_INPUT_RATE: usize = 48_000;
 const LIVE_SCAN_MAX_16K_SAMPLES: usize = SAMPLE_RATE * 40;
 const LIVE_SCAN_MIN_FRESH_48K: usize = 480;
 
-/// Incremental 48 kHz -> 16 kHz buffer for one live track.
+/// Incremental input-rate -> 16 kHz buffer with streaming VAD.
 ///
-/// The capture thread appends 48 kHz samples (see `LiveCapture`); the scanner
+/// Live capture appends 48 kHz samples (see `LiveCapture`); file
+/// transcription feeds bounded blocks at the file's native rate. The scanner
 /// resamples only the *new* span on every `push` with a persistent streaming
-/// resampler, so a tick costs O(new audio) instead of O(whole tail).
+/// resampler, so a tick costs O(new audio) instead of O(whole tail), and the
+/// daemon never holds the whole recording in memory.
+///
 /// Absolute time of `samples_16k[i]` is
-/// `(abs0_48k + i * LIVE_SCAN_INPUT_RATE / SAMPLE_RATE) / LIVE_SCAN_INPUT_RATE`
-/// seconds since the capture origin.
+/// `(abs0_in + i * input_rate / SAMPLE_RATE) / input_rate` seconds since the
+/// stream origin.
 pub struct LiveScanner {
+    input_rate: usize,
     resampler: FftFixedIn<f32>,
-    pending_48k: Vec<f32>,
+    pending_in: Vec<f32>,
     skip_delay: usize,
     samples_16k: Vec<f32>,
-    abs0_48k: usize,
-    fed_48k: usize,
-    last_base_48k: usize,
+    abs0_in: usize,
+    fed_in: usize,
+    last_base_in: usize,
     // Streaming Silero VAD state: probabilities are computed only for new
     // frames, carrying LSTM state and context across ticks. `vad_probs[i]`
     // covers `samples_16k` indices
@@ -742,17 +749,27 @@ pub struct LiveScanner {
 }
 
 impl LiveScanner {
+    /// Scanner for the 48 kHz live capture path.
     pub fn new() -> Result<Self> {
-        let resampler = FftFixedIn::<f32>::new(LIVE_SCAN_INPUT_RATE, SAMPLE_RATE, 1024, 2, 1)?;
+        Self::with_input_rate(LIVE_SCAN_INPUT_RATE)
+    }
+
+    /// Scanner for files at their native rate (after mono downmix).
+    pub fn with_input_rate(input_rate: usize) -> Result<Self> {
+        if input_rate == 0 {
+            bail!("input sample rate must be positive");
+        }
+        let resampler = FftFixedIn::<f32>::new(input_rate, SAMPLE_RATE, 1024, 2, 1)?;
         let skip_delay = resampler.output_delay();
         Ok(Self {
+            input_rate,
             resampler,
-            pending_48k: Vec::new(),
+            pending_in: Vec::new(),
             skip_delay,
             samples_16k: Vec::new(),
-            abs0_48k: 0,
-            fed_48k: 0,
-            last_base_48k: 0,
+            abs0_in: 0,
+            fed_in: 0,
+            last_base_in: 0,
             vad_state: Array3::zeros((2, 1, 128)),
             vad_context: [0.0; VAD_CONTEXT],
             vad_probs: Vec::new(),
@@ -760,40 +777,52 @@ impl LiveScanner {
         })
     }
 
-    /// Total 48 kHz input samples consumed so far (lets callers skip idle ticks).
-    pub fn fed_48k(&self) -> usize {
-        self.fed_48k
+    pub fn input_rate(&self) -> usize {
+        self.input_rate
     }
 
-    /// Absolute 48 kHz index of `samples_16k()[0]`.
-    pub fn abs0_48k(&self) -> usize {
-        self.abs0_48k
+    /// Total input samples consumed so far (lets callers skip idle ticks).
+    pub fn fed_input(&self) -> usize {
+        self.fed_in
+    }
+
+    /// Absolute input index of `samples_16k()[0]`.
+    pub fn abs0_input(&self) -> usize {
+        self.abs0_in
+    }
+
+    /// Absolute seconds of `samples_16k()[0]`.
+    pub fn abs0_seconds(&self) -> f64 {
+        self.abs0_in as f64 / self.input_rate as f64
     }
 
     pub fn samples_16k(&self) -> &[f32] {
         &self.samples_16k
     }
 
-    /// Sync with the current capture buffer (`base_48k` is its absolute base).
-    pub fn push(&mut self, samples_48k: &[f32], base_48k: usize) -> Result<()> {
-        if base_48k < self.last_base_48k {
-            *self = Self::new()?;
+    /// Live capture: sync with the current capture buffer (`base_in` is its
+    /// absolute base). Capture buffers are cumulative, so only the span after
+    /// `fed_in` is new.
+    pub fn push(&mut self, samples_in: &[f32], base_in: usize) -> Result<()> {
+        if base_in < self.last_base_in {
+            *self = Self::with_input_rate(self.input_rate)?;
         }
-        if base_48k > self.abs0_48k {
-            let drop_16k =
-                (base_48k - self.abs0_48k).saturating_mul(SAMPLE_RATE) / LIVE_SCAN_INPUT_RATE;
+        if base_in > self.abs0_in {
+            let drop_16k = (base_in - self.abs0_in).saturating_mul(SAMPLE_RATE) / self.input_rate;
             self.drop_front_16k(drop_16k);
-            self.fed_48k = self.fed_48k.max(base_48k);
+            self.fed_in = self.fed_in.max(base_in);
         }
-        self.last_base_48k = base_48k;
-        let fresh_offset = self.fed_48k.saturating_sub(base_48k);
-        if fresh_offset < samples_48k.len() {
-            let fresh = &samples_48k[fresh_offset..];
+        self.last_base_in = base_in;
+        let fresh_offset = self.fed_in.saturating_sub(base_in);
+        if fresh_offset < samples_in.len() {
+            let fresh = &samples_in[fresh_offset..];
             if fresh.len() >= LIVE_SCAN_MIN_FRESH_48K {
                 self.feed(fresh)?;
-                self.fed_48k = base_48k + samples_48k.len();
+                self.fed_in = base_in + samples_in.len();
             }
         }
+        // Live capture is a sliding window; trim settled audio to keep memory
+        // bounded. File blocks are already bounded by the emission cursor.
         if self.samples_16k.len() > LIVE_SCAN_MAX_16K_SAMPLES {
             let excess = self.samples_16k.len() - LIVE_SCAN_MAX_16K_SAMPLES;
             self.drop_front_16k(excess);
@@ -801,10 +830,29 @@ impl LiveScanner {
         Ok(())
     }
 
+    /// File streaming: append one contiguous block at `base_in`.
+    ///
+    /// Unlike `push`, no freshness window or automatic tail trim is applied:
+    /// the caller feeds every block exactly once and owns emission/discard via
+    /// `transcribe_live_ready`. A discontinuity is an error rather than a
+    /// silent audio gap.
+    pub fn push_file_block(&mut self, samples_in: &[f32], base_in: usize) -> Result<()> {
+        if base_in != self.fed_in {
+            bail!(
+                "non-contiguous file audio: block starts at {base_in}, expected {}",
+                self.fed_in
+            );
+        }
+        self.feed(samples_in)?;
+        self.fed_in = base_in + samples_in.len();
+        self.last_base_in = base_in;
+        Ok(())
+    }
+
     /// Flush resampler leftovers at the end of a session (recovers the last ~ms).
     pub fn finish(&mut self) -> Result<()> {
-        if !self.pending_48k.is_empty() {
-            let tail = std::mem::take(&mut self.pending_48k);
+        if !self.pending_in.is_empty() {
+            let tail = std::mem::take(&mut self.pending_in);
             let output = self
                 .resampler
                 .process_partial(Some(&[tail.as_slice()]), None)?
@@ -817,6 +865,22 @@ impl LiveScanner {
             .remove(0);
         self.append_output(output);
         Ok(())
+    }
+
+    /// File streaming: drop resampler padding past the exact source timeline.
+    ///
+    /// Streaming filters emit a little more than the input duration. Live
+    /// capture keeps that harmless tail, but file timestamps/durations must
+    /// map 1:1 to the source, so the final block is trimmed.
+    pub fn trim_to_input_end(&mut self) {
+        let span = self.fed_in.saturating_sub(self.abs0_in);
+        let target = (span as f64 * SAMPLE_RATE as f64 / self.input_rate as f64).round() as usize;
+        self.samples_16k.truncate(target);
+        let covered = self.vad_abs0_16k + self.vad_probs.len() * VAD_FRAME;
+        if covered > self.samples_16k.len() {
+            let frames = self.samples_16k.len().saturating_sub(self.vad_abs0_16k) / VAD_FRAME;
+            self.vad_probs.truncate(frames);
+        }
     }
 
     /// Run Silero VAD over 16 kHz frames that have no probability yet.
@@ -847,9 +911,9 @@ impl LiveScanner {
     }
 
     /// Speech regions for the 16 kHz span `[scan_idx16, scan_idx16 + len)`
-    /// (indices relative to `abs0_48k()` mapping). The span start is quantized
-    /// down to the VAD frame grid; the returned regions are relative to the
-    /// quantized start.
+    /// (indices relative to the `abs0_input()` mapping). The span start is
+    /// quantized down to the VAD frame grid; the returned regions are relative
+    /// to the quantized start.
     fn vad_regions(&self, scan_idx16: usize, len: usize) -> (Vec<SpeechRegion>, usize) {
         let quantized = scan_idx16 / VAD_FRAME * VAD_FRAME;
         let quantized = quantized.max(self.vad_abs0_16k);
@@ -878,18 +942,37 @@ impl LiveScanner {
         // Both samples and retained probabilities are now relative to the
         // trimmed buffer; advancing this relative origin skipped new frames.
         self.vad_abs0_16k = self.vad_abs0_16k.saturating_sub(drop16);
-        self.abs0_48k += drop * LIVE_SCAN_INPUT_RATE / SAMPLE_RATE;
+        self.abs0_in += drop * self.input_rate / SAMPLE_RATE;
     }
 
     /// Drop settled audio (already emitted or VAD-confirmed silence) from the
     /// front of the buffers, keeping LSTM/probability alignment exact.
     pub fn discard_before(&mut self, seconds: f64) {
-        let abs0_seconds = self.abs0_48k as f64 / LIVE_SCAN_INPUT_RATE as f64;
+        let abs0_seconds = self.abs0_seconds();
         if seconds <= abs0_seconds {
             return;
         }
         let idx16 = ((seconds - abs0_seconds) * SAMPLE_RATE as f64) as usize;
         self.drop_front_16k(idx16);
+    }
+
+    /// Compact a producer that has no VAD consumer (diagnostics/decoder smoke).
+    /// Production ASR uses `discard_before`, which requires VAD-frame alignment;
+    /// this method intentionally keeps only a bounded audio tail and resets the
+    /// probability cursor because no unprocessed VAD frames exist in that mode.
+    pub(crate) fn compact_audio_tail(&mut self, keep_16k: usize) {
+        if self.samples_16k.len() <= keep_16k {
+            return;
+        }
+        let drop = self.samples_16k.len() - keep_16k;
+        let drop = drop / VAD_FRAME * VAD_FRAME;
+        if drop == 0 {
+            return;
+        }
+        self.samples_16k.drain(..drop);
+        self.abs0_in += drop * self.input_rate / SAMPLE_RATE;
+        self.vad_abs0_16k = 0;
+        self.vad_probs.clear();
     }
 
     #[cfg(test)]
@@ -900,15 +983,25 @@ impl LiveScanner {
         self.vad_probs = vec![0.0; frames.min(self.samples_16k.len() / VAD_FRAME)];
     }
 
+    /// Probabilities computed so far, relative to `vad_abs0_16k`.
+    pub fn vad_probabilities(&self) -> &[f32] {
+        &self.vad_probs
+    }
+
+    /// 16 kHz offset of `vad_probabilities()[0]` within `samples_16k()`.
+    pub fn vad_abs0_16k(&self) -> usize {
+        self.vad_abs0_16k
+    }
+
     fn feed(&mut self, fresh: &[f32]) -> Result<()> {
-        self.pending_48k.extend_from_slice(fresh);
+        self.pending_in.extend_from_slice(fresh);
         let chunk = self.resampler.input_frames_next();
-        while self.pending_48k.len() >= chunk {
+        while self.pending_in.len() >= chunk {
             let output = self
                 .resampler
-                .process(&[&self.pending_48k[..chunk]], None)?
+                .process(&[&self.pending_in[..chunk]], None)?
                 .remove(0);
-            self.pending_48k.drain(..chunk);
+            self.pending_in.drain(..chunk);
             self.append_output(output);
         }
         Ok(())
@@ -924,6 +1017,188 @@ impl LiveScanner {
             }
         }
         self.samples_16k.extend(output);
+    }
+}
+
+/// Incremental Silero state machine for file streaming. Mirrors
+/// `regions_from_probabilities`, but emits each closed region once while
+/// carrying speech/silence state across blocks, so no probability frame is
+/// examined twice.
+#[derive(Default)]
+struct VadRegionStream {
+    speech_start: Option<usize>,
+    silence_start: Option<usize>,
+    /// Padded start of the current chunk run. Batch `chunk_speech` splits at
+    /// `padded_start + 22 s`, so streaming cuts must use the same origin to
+    /// avoid tiny pad-sized leftovers every 22 s.
+    chunk_start: Option<usize>,
+}
+
+impl VadRegionStream {
+    fn push(&mut self, sample: usize, probability: f32, closed: &mut Vec<SpeechRegion>) {
+        if probability >= VAD_THRESHOLD {
+            if self.speech_start.is_none() {
+                self.speech_start = Some(sample);
+                self.chunk_start = Some(sample.saturating_sub(SPEECH_PAD_SAMPLES));
+            }
+            self.silence_start = None;
+        } else if self.speech_start.is_some() && probability < VAD_NEG_THRESHOLD {
+            let silence = *self.silence_start.get_or_insert(sample);
+            if sample.saturating_sub(silence) >= MIN_SILENCE_SAMPLES {
+                let start = self.speech_start.take().unwrap();
+                if silence.saturating_sub(start) >= MIN_SPEECH_SAMPLES {
+                    self.close(silence, true, closed);
+                }
+                self.silence_start = None;
+            }
+        }
+    }
+
+    /// Cut a long open speech region at the preferred chunk length. Without
+    /// this, a continuous talker would grow the retained window without bound
+    /// and the chunker would only run at EOF.
+    fn force_cut(&mut self, closed: &mut Vec<SpeechRegion>) {
+        if self.speech_start.is_none() {
+            return;
+        }
+        let origin = self
+            .chunk_start
+            .unwrap_or_else(|| self.speech_start.unwrap());
+        let cut = origin + PREFERRED_CHUNK_SAMPLES;
+        closed.push(SpeechRegion {
+            start: origin,
+            end: cut,
+        });
+        self.speech_start = Some(cut);
+        self.chunk_start = Some(cut);
+        // A silence run straddling the cut belongs to the next segment.
+        self.silence_start = None;
+    }
+
+    fn finish(&mut self, audio_end: usize, closed: &mut Vec<SpeechRegion>) {
+        if let Some(start) = self.speech_start.take()
+            && audio_end.saturating_sub(start) >= MIN_SPEECH_SAMPLES
+        {
+            self.close(audio_end, false, closed);
+        }
+        self.silence_start = None;
+        self.chunk_start = None;
+    }
+
+    fn close(&mut self, end: usize, pad_end: bool, closed: &mut Vec<SpeechRegion>) {
+        let start = self.chunk_start.take().or(self.speech_start).unwrap_or(end);
+        let end = if pad_end {
+            end.saturating_add(SPEECH_PAD_SAMPLES)
+        } else {
+            end
+        };
+        closed.push(SpeechRegion { start, end });
+    }
+}
+
+/// Incremental form of `chunk_speech`: greedy region merging up to the
+/// preferred chunk length, with hard splits for long continuous speech.
+/// Region indices are absolute 16 kHz samples.
+#[derive(Default)]
+struct StreamingChunker {
+    active: Option<SpeechRegion>,
+}
+
+impl StreamingChunker {
+    fn push(&mut self, region: SpeechRegion, out: &mut Vec<SpeechRegion>) {
+        if let Some(active) = self.active.as_mut() {
+            let overlaps = region.start <= active.end;
+            let mergeable = active.end.saturating_sub(active.start) < PREFERRED_SPLIT_SAMPLES
+                && region.end.saturating_sub(active.start) <= PREFERRED_CHUNK_SAMPLES;
+            if overlaps || mergeable {
+                active.end = active.end.max(region.end);
+                self.split_full(out);
+                return;
+            }
+            let active = self.active.take().unwrap();
+            Self::split_exact(active, out);
+        }
+        self.active = Some(region);
+        self.split_full(out);
+    }
+
+    /// Emit the active group once no future region can merge with it (a new
+    /// region would start at or after `audio_end`).
+    fn flush_settled(&mut self, audio_end: usize, out: &mut Vec<SpeechRegion>) {
+        self.split_full(out);
+        let Some(active) = self.active.as_ref() else {
+            return;
+        };
+        if audio_end.saturating_sub(active.start) > PREFERRED_CHUNK_SAMPLES {
+            out.push(self.active.take().unwrap());
+        }
+    }
+
+    fn finish(&mut self, out: &mut Vec<SpeechRegion>) {
+        self.split_full(out);
+        if let Some(active) = self.active.take()
+            && active.end.saturating_sub(active.start) >= FFT_SIZE
+        {
+            out.push(active);
+        }
+    }
+
+    fn split_full(&mut self, out: &mut Vec<SpeechRegion>) {
+        let Some(active) = self.active.take() else {
+            return;
+        };
+        let mut start = active.start;
+        while active.end.saturating_sub(start) > PREFERRED_CHUNK_SAMPLES {
+            let preferred_end = start + PREFERRED_CHUNK_SAMPLES;
+            let hard_end = (start + MAX_CHUNK_SAMPLES).min(active.end);
+            out.push(SpeechRegion {
+                start,
+                end: preferred_end.min(hard_end),
+            });
+            start = preferred_end.min(hard_end);
+        }
+        if start < active.end {
+            self.active = Some(SpeechRegion {
+                start,
+                end: active.end,
+            });
+        }
+    }
+
+    fn split_exact(region: SpeechRegion, out: &mut Vec<SpeechRegion>) {
+        let mut start = region.start;
+        while region.end.saturating_sub(start) > PREFERRED_CHUNK_SAMPLES {
+            let preferred_end = start + PREFERRED_CHUNK_SAMPLES;
+            let hard_end = (start + MAX_CHUNK_SAMPLES).min(region.end);
+            out.push(SpeechRegion {
+                start,
+                end: preferred_end.min(hard_end),
+            });
+            start = preferred_end.min(hard_end);
+        }
+        if start < region.end {
+            out.push(SpeechRegion {
+                start,
+                end: region.end,
+            });
+        }
+    }
+}
+
+/// Mutable streaming state for one file track.
+struct FileStreamState {
+    regions: VadRegionStream,
+    chunks: StreamingChunker,
+    next_probability_abs: usize,
+}
+
+impl Default for FileStreamState {
+    fn default() -> Self {
+        Self {
+            regions: VadRegionStream::default(),
+            chunks: StreamingChunker::default(),
+            next_probability_abs: 0,
+        }
     }
 }
 
@@ -1000,6 +1275,103 @@ impl NativeFileProcessor {
         )
     }
 
+    /// Streaming file transcription: consumes only newly computed VAD
+    /// probabilities, builds padded speech regions incrementally, and cuts
+    /// chunks with the same greedy rules as the batch `chunk_speech`.
+    ///
+    /// Audio is retained only from the earliest unsettled chunk; BF16/CTC
+    /// inference runs exactly once per emitted chunk.
+    fn transcribe_file_ready(
+        &mut self,
+        scanner: &mut LiveScanner,
+        state: &mut FileStreamState,
+        transcription_id: &str,
+        next_index: usize,
+        flush: bool,
+    ) -> Result<Vec<TranscriptSegment>> {
+        scanner.run_vad(&mut self.vad)?;
+        let input_rate = scanner.input_rate();
+        let abs16_base = scanner.abs0_input().saturating_mul(SAMPLE_RATE) / input_rate;
+        let vad_abs0 = scanner.vad_abs0_16k();
+        let mut closed = Vec::new();
+        for (frame, probability) in scanner.vad_probabilities().iter().copied().enumerate() {
+            let absolute = abs16_base + vad_abs0 + frame * VAD_FRAME;
+            if absolute < state.next_probability_abs {
+                continue;
+            }
+            state.next_probability_abs = absolute + VAD_FRAME;
+            state.regions.push(absolute, probability, &mut closed);
+        }
+        let audio_end_abs = abs16_base + scanner.samples_16k().len();
+        let mut ready = Vec::new();
+        for region in closed.drain(..) {
+            state.chunks.push(region, &mut ready);
+        }
+        if flush {
+            let mut tail = Vec::new();
+            state.regions.finish(audio_end_abs, &mut tail);
+            for region in tail {
+                state.chunks.push(region, &mut ready);
+            }
+            state.chunks.finish(&mut ready);
+        } else {
+            // Cut continuous speech at the preferred chunk length; otherwise a
+            // talker without a pause would never produce a segment.
+            loop {
+                let open = state.regions.speech_start;
+                if open.is_none_or(|start| {
+                    audio_end_abs.saturating_sub(start) < PREFERRED_CHUNK_SAMPLES
+                }) {
+                    break;
+                }
+                let mut forced = Vec::new();
+                state.regions.force_cut(&mut forced);
+                if forced.is_empty() {
+                    break;
+                }
+                for region in forced {
+                    state.chunks.push(region, &mut ready);
+                }
+            }
+            state.chunks.flush_settled(audio_end_abs, &mut ready);
+        }
+
+        let audio = scanner.samples_16k();
+        let mut segments = Vec::with_capacity(ready.len());
+        for chunk in ready {
+            let start = chunk.start.max(abs16_base);
+            let end = chunk.end.min(audio_end_abs);
+            if end <= start || end - start < FFT_SIZE {
+                continue;
+            }
+            let text = self.transcribe_chunk(&audio[start - abs16_base..end - abs16_base])?;
+            segments.push(
+                TranscriptSegment::new(
+                    transcription_id,
+                    next_index + segments.len(),
+                    start as f64 / SAMPLE_RATE as f64,
+                    end as f64 / SAMPLE_RATE as f64,
+                    text,
+                    SourceTrack::File,
+                    SegmentState::Final,
+                )
+                .map_err(anyhow::Error::msg)?,
+            );
+        }
+
+        // Keep only the unsettled chunk (plus pre-speech padding when idle).
+        // This is what makes file RAM independent of recording duration.
+        let discard_abs = state
+            .chunks
+            .active
+            .as_ref()
+            .map(|active| active.start)
+            .unwrap_or_else(|| audio_end_abs.saturating_sub(SAMPLE_RATE / 2))
+            .min(audio_end_abs);
+        scanner.discard_before(discard_abs as f64 / SAMPLE_RATE as f64);
+        Ok(segments)
+    }
+
     pub fn transcribe_live_ready(
         &mut self,
         scanner: &mut LiveScanner,
@@ -1011,7 +1383,7 @@ impl NativeFileProcessor {
         flush: bool,
     ) -> Result<(Vec<TranscriptSegment>, f64, f64)> {
         scanner.run_vad(&mut self.vad)?;
-        let abs0_seconds = scanner.abs0_48k() as f64 / LIVE_SCAN_INPUT_RATE as f64;
+        let abs0_seconds = scanner.abs0_seconds();
         // Scan only the unsettled tail: everything before `scan_from` is
         // either already emitted or VAD-confirmed silence, so re-scanning it
         // every tick would be pure waste that grows with session length.
@@ -1071,33 +1443,81 @@ impl FileProcessor for NativeFileProcessor {
         emit: &mut dyn FnMut(TranscriptSegment) -> std::result::Result<(), String>,
         is_cancelled: &dyn Fn() -> std::result::Result<bool, String>,
     ) -> std::result::Result<f64, String> {
-        let (audio, duration) =
-            load_wav(Path::new(&job.source_path)).map_err(|error| error.to_string())?;
-        let regions = detect_speech(&audio, &mut self.vad).map_err(|error| error.to_string())?;
-        let chunks = chunk_speech(&regions, audio.len());
-        set_total(chunks.len())?;
-        for (index, chunk) in chunks.into_iter().enumerate() {
+        // Streaming path: only one decoded block, the streaming resampler and
+        // the unsettled VAD/ASR window are resident, regardless of file
+        // duration. Segments are emitted (and persisted by the caller) as soon
+        // as VAD closes a region; no audio is ever transcribed twice.
+        let path = Path::new(&job.source_path);
+        let mut source = crate::streaming::open_audio_blocks(path)
+            .map_err(|error| format!("failed to decode {}: {error:#}", path.display()))?;
+        let source_rate = source.sample_rate();
+        let hint_seconds = source
+            .total_frames_hint()
+            .map(|frames| frames as f64 / source_rate as f64)
+            .filter(|seconds| seconds.is_finite() && *seconds > 0.0);
+        let mut scanner =
+            LiveScanner::with_input_rate(source_rate).map_err(|error| error.to_string())?;
+        let mut base_in = 0usize;
+        let mut next_index = 0usize;
+        let mut stream_state = FileStreamState::default();
+        let mut reported_total = 0usize;
+        if let Some(duration) = hint_seconds {
+            let estimate = estimated_chunk_total(0, 0.0, duration);
+            set_total(estimate)?;
+            reported_total = estimate;
+        }
+        loop {
             if is_cancelled()? {
                 return Err("transcription cancelled".into());
             }
-            let text = self
-                .transcribe_chunk(&audio[chunk.start..chunk.end])
+            let block = source
+                .next_block()
+                .map_err(|error| format!("failed to decode {}: {error:#}", path.display()))?;
+            let Some(block) = block else { break };
+            let block_len = block.len();
+            scanner
+                .push_file_block(&block, base_in)
                 .map_err(|error| error.to_string())?;
-            emit(
-                TranscriptSegment::new(
-                    &job.id,
-                    index,
-                    chunk.start as f64 / SAMPLE_RATE as f64,
-                    chunk.end as f64 / SAMPLE_RATE as f64,
-                    text,
-                    SourceTrack::File,
-                    SegmentState::Final,
-                )
-                .map_err(str::to_owned)?,
-            )?;
+            base_in += block_len;
+            let segments = self
+                .transcribe_file_ready(&mut scanner, &mut stream_state, &job.id, next_index, false)
+                .map_err(|error| error.to_string())?;
+            for segment in segments {
+                emit(segment)?;
+                next_index += 1;
+            }
+            if let Some(duration) = hint_seconds {
+                let estimate = estimated_chunk_total(
+                    next_index,
+                    base_in as f64 / source_rate as f64,
+                    duration,
+                );
+                if estimate > reported_total {
+                    set_total(estimate)?;
+                    reported_total = estimate;
+                }
+            }
         }
-        Ok(duration.as_secs_f64())
+        scanner.finish().map_err(|error| error.to_string())?;
+        scanner.trim_to_input_end();
+        let segments = self
+            .transcribe_file_ready(&mut scanner, &mut stream_state, &job.id, next_index, true)
+            .map_err(|error| error.to_string())?;
+        for segment in segments {
+            emit(segment)?;
+            next_index += 1;
+        }
+        set_total(next_index)?;
+        Ok(base_in as f64 / source_rate as f64)
     }
+}
+
+/// Progress estimate for streaming transcription. The final `set_total` uses
+/// the exact emitted count, so this only drives the UI while audio remains.
+fn estimated_chunk_total(completed: usize, processed_seconds: f64, duration: f64) -> usize {
+    let remaining = (duration - processed_seconds).max(0.0);
+    let chunk_seconds = PREFERRED_CHUNK_SAMPLES as f64 / SAMPLE_RATE as f64;
+    completed + (remaining / chunk_seconds).ceil() as usize
 }
 
 fn process_rss(system: &mut System) -> Result<u64> {
@@ -1334,8 +1754,8 @@ mod tests {
         }
         split.finish().unwrap();
         whole.finish().unwrap();
-        assert_eq!(whole.fed_48k(), 48_000);
-        assert_eq!(split.fed_48k(), 48_000);
+        assert_eq!(whole.fed_input(), 48_000);
+        assert_eq!(split.fed_input(), 48_000);
         assert_eq!(whole.samples_16k(), split.samples_16k());
         let expected = (48_000.0 * SAMPLE_RATE as f64 / 48_000.0).round() as usize;
         // streaming resampling keeps the filter tail that one-shot
@@ -1354,14 +1774,17 @@ mod tests {
         let before = scanner.samples_16k().len();
         assert!(before > 16_000);
         scanner.push(&input[48_000..], 48_000).unwrap();
-        assert_eq!(scanner.fed_48k(), 96_000);
+        assert_eq!(scanner.fed_input(), 96_000);
         // drops are quantized to whole VAD frames: abs0 lands within one
         // frame (512 samples = 1536 input samples) of the capture base, and
         // the sample/probability/absolute-time mapping stays exact.
-        assert!((48_000i64 - scanner.abs0_48k() as i64).abs() <= 1536);
-        assert_eq!(before - scanner.samples_16k().len(), scanner.abs0_48k() / 3);
+        assert!((48_000i64 - scanner.abs0_input() as i64).abs() <= 1536);
+        assert_eq!(
+            before - scanner.samples_16k().len(),
+            scanner.abs0_input() / 3
+        );
         scanner.push(&input[48_000..], 48_000).unwrap();
-        assert_eq!(scanner.fed_48k(), 96_000);
+        assert_eq!(scanner.fed_input(), 96_000);
     }
 
     #[test]
@@ -1374,9 +1797,9 @@ mod tests {
         assert!(before >= 15_872 + 512);
         scanner.discard_before(1.0);
         // 1 s = 16000 samples -> 31 whole VAD frames = 15872 samples
-        assert_eq!(scanner.abs0_48k(), 15_872 * 3);
+        assert_eq!(scanner.abs0_input(), 15_872 * 3);
         assert_eq!(scanner.samples_16k().len(), before - 15_872);
         scanner.discard_before(0.5);
-        assert_eq!(scanner.abs0_48k(), 15_872 * 3);
+        assert_eq!(scanner.abs0_input(), 15_872 * 3);
     }
 }
