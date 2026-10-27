@@ -9,6 +9,7 @@ pub mod queue;
 pub mod server;
 pub mod storage;
 pub mod streaming;
+pub mod summarization;
 
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
