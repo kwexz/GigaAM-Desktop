@@ -197,3 +197,9 @@ pm run check 0 diagnostics; 5 frontend test files / 13 tests passed.
 - Frontend gate tests passed: 6 files / 15 tests; 
 pm run check passed. The adapter is contract-compatible with RecognitionEngine and keeps RemoteEngine as fallback.
 - This is not a claim of browser ONNX operator compatibility, RTF, p95 lag, WebGPU, or two-track parity; those measurements are not-run because the explicit model/runtime experiment was not available without an opt-in model transfer. No broken ASR button is exposed.
+
+## Phase 10 verification (2026-10-27T21:02:09Z)
+
+- Implemented logical SyncEngine over records/revisions/tombstones, independent cursor journal, idempotent push/pull and conflict-by-revision semantics. No SQLite file sync is used.
+- Added MockCloudProvider and MockOAuthProvider with Google Drive/Yandex provider identities, PKCE-shaped authorization state, logout/revocation and token-free test flow. Sync tests passed (2 tests); frontend contract suite remains green.
+- Real Google/Yandex OAuth is intentionally external-oauth-blocked: client IDs, redirect registrations and user consent do not exist yet. No credentials or real cloud files were accessed.
