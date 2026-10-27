@@ -22,7 +22,7 @@ computing gzip size...
 .svelte-kit/output/server/chunks/internal.js                         86.95 kB │ gzip: 23.80 kB │ map: 191.42 kB
 .svelte-kit/output/server/chunks/instance.js                        117.12 kB │ gzip: 31.61 kB │ map: 238.81 kB
 
-[32m✓ built in 625ms[39m
+[32m✓ built in 332ms[39m
 Analysing routes
 Building app
 [36mvite v8.3.5 [32mbuilding client environment for production...[36m[39m
@@ -37,15 +37,15 @@ computing gzip size...
 .svelte-kit/output/client/_app/immutable/nodes/1.C-33gjV6.js         0.32 kB │ gzip:  0.24 kB
 .svelte-kit/output/client/_app/immutable/nodes/0.CwSBSVzR.js         0.44 kB │ gzip:  0.34 kB
 .svelte-kit/output/client/_app/immutable/entry/start.BcNDoi7z.js     0.52 kB │ gzip:  0.31 kB
-.svelte-kit/output/client/_app/immutable/entry/app.fCGFccSC.js       1.09 kB │ gzip:  0.56 kB
+.svelte-kit/output/client/_app/immutable/entry/app.DDwrPfRV.js       1.09 kB │ gzip:  0.55 kB
 .svelte-kit/output/client/_app/immutable/chunks/Bjy-W4x2.js          1.36 kB │ gzip:  0.65 kB
 .svelte-kit/output/client/_app/immutable/chunks/CRzLMJPS.js          1.53 kB │ gzip:  0.80 kB
 .svelte-kit/output/client/_app/immutable/chunks/Dmjpny6i.js          4.29 kB │ gzip:  1.93 kB
 .svelte-kit/output/client/_app/immutable/chunks/DWL4ZEcu.js         39.64 kB │ gzip: 14.63 kB
 .svelte-kit/output/client/_app/immutable/chunks/wXgZ5p5T.js         43.19 kB │ gzip: 16.75 kB
-.svelte-kit/output/client/_app/immutable/nodes/2.D8lFYdWr.js        47.38 kB │ gzip: 14.00 kB
+.svelte-kit/output/client/_app/immutable/nodes/2.Uthr_Ylg.js        47.38 kB │ gzip: 14.00 kB
 
-[32m✓ built in 716ms[39m
+[32m✓ built in 644ms[39m
 Prerendering
 
 Run npm run preview to preview your production build locally.

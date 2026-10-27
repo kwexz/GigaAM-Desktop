@@ -238,6 +238,18 @@ impl LiveCapture {
         drop(self.microphone_file.take());
         drop(self.system_file.take());
         fs::create_dir_all(&self.directory)?;
+        struct UncommittedArchives {
+            paths: Vec<PathBuf>,
+            committed: bool,
+        }
+        impl Drop for UncommittedArchives {
+            fn drop(&mut self) {
+                if !self.committed {
+                    for path in &self.paths { let _ = fs::remove_file(path); }
+                }
+            }
+        }
+        let mut archive_guard = UncommittedArchives { paths: Vec::new(), committed: false };
         let mut files = Vec::new();
         let timestamp = archive_timestamp(self.started_ms);
         if self.microphone_path.exists() {
@@ -246,6 +258,7 @@ impl LiveCapture {
                 self.archive_format.extension()
             ));
             transcode_raw_cancellable(&self.microphone_path, &path, self.archive_format, Some(&self.finalization_cancel))?;
+            archive_guard.paths.push(path.clone());
             files.push(path);
         }
         if self.system_path.exists() {
@@ -254,11 +267,10 @@ impl LiveCapture {
                 self.archive_format.extension()
             ));
             transcode_raw_cancellable(&self.system_path, &path, self.archive_format, Some(&self.finalization_cancel))?;
+            archive_guard.paths.push(path.clone());
             files.push(path);
         }
         check_archive_cancel(Some(&self.finalization_cancel))?;
-        let _ = fs::remove_file(&self.microphone_path);
-        let _ = fs::remove_file(&self.system_path);
         // Track start offsets (seconds from the session origin) so the
         // archived tracks can later be mixed back together chronologically.
         // Sessions predating this file mix from zero, as before.
@@ -277,11 +289,15 @@ impl LiveCapture {
             }
         }
         if !tracks.is_empty() {
-            let _ = fs::write(
+            fs::write(
                 self.directory.join("tracks.json"),
-                serde_json::to_string_pretty(&tracks).unwrap_or_default(),
-            );
+                serde_json::to_string_pretty(&tracks)?,
+            )?;
         }
+        check_archive_cancel(Some(&self.finalization_cancel))?;
+        archive_guard.committed = true;
+        let _ = fs::remove_file(&self.microphone_path);
+        let _ = fs::remove_file(&self.system_path);
         Ok(files)
     }
 
@@ -623,6 +639,29 @@ fn rms_tail(samples: &[f32]) -> f32 {
 #[cfg(target_os = "windows")]
 pub mod platform {
     use super::*;
+
+    #[test]
+    #[cfg(test)]
+    fn second_track_failure_rolls_back_first_archive_and_keeps_raw() {
+        let directory = std::env::temp_dir().join(format!("gigaam-track-failure-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir(&directory).unwrap();
+        let mut capture = LiveCapture::new("dual-failure".into(), 0, LiveSource::SystemAndMicrophone,
+            None, true, ArchiveFormat::Wav, 1.0, directory.clone(), None);
+        capture.initialize_paths().unwrap();
+        capture.append_timed(true, 10_000_000, vec![0.1; 4800]);
+        drop(capture.system_file.take());
+        if capture.system_path.exists() { fs::remove_file(&capture.system_path).unwrap(); }
+        fs::create_dir(&capture.system_path).unwrap();
+        assert!(capture.finish().is_err());
+        assert!(capture.microphone_path.exists());
+        assert!(!fs::read_dir(&directory).unwrap().flatten().any(|entry| entry.path().extension().is_some_and(|extension| extension == "wav")));
+        drop(capture);
+        for entry in fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() { fs::remove_dir(path).unwrap(); } else { fs::remove_file(path).unwrap(); }
+        }
+        fs::remove_dir(directory).unwrap();
+    }
     use rubato::{FftFixedIn, Resampler};
     use std::{
         collections::VecDeque,
