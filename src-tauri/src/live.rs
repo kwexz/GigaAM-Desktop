@@ -872,6 +872,7 @@ pub mod platform {
                         if mic { state.microphone_capture_state = value.into(); }
                         else { state.system_capture_state = value.into(); }
                     }
+                    let loop_result: Result<()> = (|| {
                     while !stop_flag.load(Ordering::Relaxed) {
                         if !mic && endpoint_checked.elapsed() >= std::time::Duration::from_secs(1) {
                             endpoint_checked = std::time::Instant::now();
@@ -955,6 +956,8 @@ pub mod platform {
                             }
                         }
                     }
+                    Ok(())
+                    })();
                     // Flush resampler leftovers so the session tail is kept.
                     if let Some(resampler) = resampler.as_mut() {
                         if !pending.is_empty() {
@@ -982,6 +985,7 @@ pub mod platform {
                         }
                     }
                     client.stop_stream()?;
+                    loop_result?;
                     Ok(())
                 })();
                 if let Err(error) = result {
