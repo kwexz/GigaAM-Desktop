@@ -1035,12 +1035,13 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
         let persistence_start = app.state::<Arc<Mutex<Store>>>().lock().map_err(|_| "store lock poisoned")?
             .begin_live_finalization(&id, now_ms()).map_err(|error| error.to_string());
         let result = finalization::finish_after_acknowledgement(|| {
-        if persistence_start.is_ok() {
-            if let Some(path) = debug_log_path(&app) {
-                debug_log(&path, &format!("stop_ack_ms={} session={id}", stop_requested.elapsed().as_millis()));
-            }
-            if let Some(sender) = acknowledge.take() { let _ = sender.send(Ok(Vec::new())); }
+        if let Some(path) = debug_log_path(&app) {
+            debug_log(&path, &format!("stop_ack_ms={} session={id} persistence_started={}", stop_requested.elapsed().as_millis(), persistence_start.is_ok()));
         }
+        // Device ingress is already stopping, so the UI may regain control even
+        // when the finalization marker could not be written. The background
+        // finalizer still attempts the archive and reports/persists its error.
+        if let Some(sender) = acknowledge.take() { let _ = sender.send(Ok(Vec::new())); }
         }, || stop_live_blocking(
             app.state::<Arc<Mutex<Store>>>(),
             app.state::<LiveState>(),

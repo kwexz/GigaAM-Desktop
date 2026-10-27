@@ -40,6 +40,7 @@ fn thirty_minute_archive_preserves_duration() {
     });
     ack_rx.recv_timeout(std::time::Duration::from_millis(500)).unwrap();
     let ack_ms = archive_started.elapsed().as_millis();
+    assert!(ack_ms < 500, "Stop acknowledgement must stay below the 500 ms UI target");
     release_tx.send(()).unwrap();
     let paths = worker.join().unwrap().unwrap();
     let reader = hound::WavReader::open(&paths[0]).unwrap();
