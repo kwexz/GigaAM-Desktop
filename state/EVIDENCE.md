@@ -119,3 +119,12 @@
 - Final 30-minute production archive run: ACK assertion <500 ms passed (measured 0 ms at millisecond resolution), archive phase 10.9 s, accelerated total 13.9 s; exact 1800 s WAV duration verified via production `LiveCapture::finish`, acknowledgement ordered through the production `finish_after_acknowledgement` seam.
 - Integration lifecycle (`cargo test --test live_lifecycle`): two sequential sessions, pause gap, playback gating, archive commit, per-track edits, rename, TXT/SRT/VTT/JSON export, raw cleanup after commit — passed inside the baseline integration step.
 - Honest boundaries: real Tauri IPC/webview Stop latency, physical USB hotplug, physical capture pause/resume, and macOS GUI/capture are `not-run` (no safe automated capture/device availability on this host). Independent review is `blocked_external` (review models unavailable after the model switch); the changes were self-reviewed against the prior findings, which are not a substitute for independent review.
+
+## Phase 02 verification (2026-10-27T18:45:25Z)
+
+- Final baseline after streaming changes: scripts/verify-baseline.ps1 passed; install/check/unit-web/build-web/unit-rust/integration-rust all exit 0.
+- Streaming model comparison: state/runs/02/streaming-vs-batch.txt; pinned-model clean/noisy fixtures retained batch transcript with CER 0.0000, boundaries and timestamp bounds passed; degraded ussian-clean.wav text comparison explicitly excluded per fixture manifest.
+- Five-minute pinned-model E2E: state/runs/02/streaming-long-model.txt; duration 310.622 s, 18 segments, no overlap, passed in 80.62 s.
+- RSS plateau: state/runs/02/rss-plateau.txt; 15 min 12.5->17.1 MB, 60 min 12.8->17.2 MB, 180 min 12.7->17.2 MB; plateau threshold passed. This is decoder/resampler/scanner without ASR, as permitted for 180 min.
+- Unit/integration: 83 Rust library tests passed; full Rust integration baseline passed. Compressed media, stereo downmix, corrupt input, cancellation checks and exact source duration are covered by tests.
+- Honest limitations: large archive mixed_session_audio still uses the existing whole-vector mix path and is not claimed as verified for the phase 02 large-archive mix gate; disk-full and crash-continuation remain not-run; desktop IPC filesystem-writer/Stop concurrency remains covered by prior phase but not a new phase-02-specific E2E.
