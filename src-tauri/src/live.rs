@@ -256,6 +256,7 @@ impl LiveCapture {
             transcode_raw_cancellable(&self.system_path, &path, self.archive_format, Some(&self.finalization_cancel))?;
             files.push(path);
         }
+        check_archive_cancel(Some(&self.finalization_cancel))?;
         let _ = fs::remove_file(&self.microphone_path);
         let _ = fs::remove_file(&self.system_path);
         // Track start offsets (seconds from the session origin) so the
@@ -415,11 +416,19 @@ impl LiveCapture {
 }
 
 fn transcode_raw_cancellable(input: &Path, output: &Path, format: ArchiveFormat, cancel: Option<&AtomicBool>) -> Result<()> {
-    match format {
-        ArchiveFormat::Flac => transcode_raw_to_flac_cancellable(input, output, cancel),
-        ArchiveFormat::Wav => transcode_raw_to_wav_cancellable(input, output, cancel),
-        ArchiveFormat::Mp3 => transcode_raw_to_mp3_cancellable(input, output, cancel),
-    }
+    let partial = output.with_extension(format!("{}.partial", format.extension()));
+    let result = (|| {
+        match format {
+        ArchiveFormat::Flac => transcode_raw_to_flac_cancellable(input, &partial, cancel),
+        ArchiveFormat::Wav => transcode_raw_to_wav_cancellable(input, &partial, cancel),
+        ArchiveFormat::Mp3 => transcode_raw_to_mp3_cancellable(input, &partial, cancel),
+        }?;
+        check_archive_cancel(cancel)?;
+        fs::rename(&partial, output)?;
+        Ok(())
+    })();
+    if result.is_err() { let _ = fs::remove_file(&partial); }
+    result
 }
 
 fn check_archive_cancel(cancel: Option<&AtomicBool>) -> Result<()> {
