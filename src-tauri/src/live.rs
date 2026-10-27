@@ -654,6 +654,7 @@ fn rms_tail(samples: &[f32]) -> f32 {
 #[cfg(target_os = "windows")]
 pub mod platform {
     use super::*;
+    use crate::capture_recovery::{CaptureAttempt, SupervisorEvent};
     use rubato::{FftFixedIn, Resampler};
     use std::{
         collections::VecDeque,
@@ -714,10 +715,19 @@ pub mod platform {
             let capture = capture.clone();
             threads.push(thread::spawn(move || {
                 let _ = initialize_mta();
-                let mut reconnect_attempts = 0;
-                loop {
-                if stop_flag.load(Ordering::Relaxed) { break; }
-                let result: Result<()> = (|| {
+                struct Attempt<'a> {
+                    capture: &'a Arc<Mutex<LiveCapture>>,
+                    mic: bool,
+                    direction: Direction,
+                    stop_flag: &'a AtomicBool,
+                }
+                impl CaptureAttempt for Attempt<'_> {
+                    fn run(&mut self, reconnect_attempts: &mut usize) -> Result<(), String> {
+                        let capture = self.capture;
+                        let mic = self.mic;
+                        let direction = &self.direction;
+                        let stop_flag = self.stop_flag;
+                        (|| -> Result<()> {
                     let enumerator = DeviceEnumerator::new()?;
                     let dual_source = matches!(
                         capture.lock().unwrap().source,
@@ -735,9 +745,9 @@ pub mod platform {
                                     .get_device_with_name(name)
                             })
                             .transpose()?
-                            .unwrap_or(enumerator.get_default_device(&direction)?)
+                            .unwrap_or(enumerator.get_default_device(direction)?)
                     } else {
-                        enumerator.get_default_device(&direction)?
+                        enumerator.get_default_device(direction)?
                     };
                     let endpoint_id = device.get_id()?;
                     let mut endpoint_checked = std::time::Instant::now();
@@ -928,7 +938,7 @@ pub mod platform {
                     let mut healthy_audio_samples = 0usize;
                     {
                         let mut state = capture.lock().unwrap();
-                        let value = if reconnect_attempts > 0 { "resumed" } else { "capturing" };
+                        let value = if *reconnect_attempts > 0 { "resumed" } else { "capturing" };
                         if mic { state.microphone_capture_state = value.into(); }
                         else { state.system_capture_state = value.into(); }
                     }
@@ -936,7 +946,7 @@ pub mod platform {
                     while !stop_flag.load(Ordering::Relaxed) {
                         if !mic && endpoint_checked.elapsed() >= std::time::Duration::from_secs(1) {
                             endpoint_checked = std::time::Instant::now();
-                            let current_endpoint = enumerator.get_default_device(&direction)
+                            let current_endpoint = enumerator.get_default_device(direction)
                                 .and_then(|device| device.get_id())
                                 .map_err(|error| anyhow::anyhow!("AUDCLNT_E_DEVICE_INVALIDATED: default render unavailable: {error}"))?;
                             if current_endpoint != endpoint_id {
@@ -952,7 +962,7 @@ pub mod platform {
                         let mono = bytes_to_mono_f32(&raw, dev_ch, bytes_per_sample, float32);
                         let raw_len = mono.len();
                         healthy_audio_samples = healthy_audio_samples.saturating_add(raw_len.saturating_mul(48_000) / dev_rate);
-                        crate::capture_recovery::reset_after_healthy_capture(&mut reconnect_attempts, healthy_audio_samples);
+                        crate::capture_recovery::reset_after_healthy_capture(reconnect_attempts, healthy_audio_samples);
                         let samples_48k = if let Some(resampler) = resampler.as_mut() {
                             pending.extend_from_slice(&mono);
                             let mut out = Vec::new();
@@ -1050,34 +1060,52 @@ pub mod platform {
                     client.stop_stream()?;
                     loop_result?;
                     Ok(())
-                })();
-                if let Err(error) = result {
-                    let message = error.to_string();
-                    let invalidated = crate::capture_recovery::is_device_invalidation(&message);
-                    let explicitly_selected = mic && capture.lock().unwrap().microphone_device.is_some();
-                    if let crate::capture_recovery::RecoveryAction::RetryAfter(delay) =
-                        crate::capture_recovery::device_recovery_action(invalidated, reconnect_attempts, explicitly_selected)
-                    {
-                        reconnect_attempts += 1;
-                        {
+                        })()
+                        .map_err(|error| error.to_string())
+                    }
+                }
+                let explicitly_selected =
+                    mic && capture.lock().unwrap().microphone_device.is_some();
+                let mut attempt = Attempt {
+                    capture: &capture,
+                    mic,
+                    direction,
+                    stop_flag: &stop_flag,
+                };
+                crate::capture_recovery::supervise_capture(
+                    &mut attempt,
+                    &stop_flag,
+                    explicitly_selected,
+                    &mut |event| match event {
+                        SupervisorEvent::AttemptStarted { .. } | SupervisorEvent::Stopped => {}
+                        SupervisorEvent::Reconnecting { attempt, delay } => {
+                            {
+                                let mut state = capture.lock().unwrap();
+                                if mic {
+                                    state.microphone_capture_state = "reconnecting".into();
+                                } else {
+                                    state.system_capture_state = "reconnecting".into();
+                                }
+                            }
+                            if let Some(path) = capture.lock().unwrap().log_path.clone() {
+                                debug_log(
+                                    &path,
+                                    &format!(
+                                        "capture reconnecting mic={mic} attempt={attempt} delay_ms={}",
+                                        delay.as_millis()
+                                    ),
+                                );
+                            }
+                        }
+                        SupervisorEvent::Failed { error } => {
                             let mut state = capture.lock().unwrap();
-                            if mic { state.microphone_capture_state = "reconnecting".into(); }
-                            else { state.system_capture_state = "reconnecting".into(); }
+                            if let Some(path) = state.log_path.clone() {
+                                debug_log(&path, &format!("capture thread error (mic={mic}): {error}"));
+                            }
+                            state.set_error(error);
                         }
-                        if let Some(path) = capture.lock().unwrap().log_path.clone() {
-                            debug_log(&path, &format!("capture reconnecting mic={mic} attempt={reconnect_attempts}"));
-                        }
-                        thread::sleep(delay);
-                        continue;
-                    }
-                    let mut state = capture.lock().unwrap();
-                    if let Some(path) = state.log_path.clone() {
-                        debug_log(&path, &format!("capture thread error (mic={mic}): {error}"));
-                    }
-                    state.set_error(error);
-                }
-                break;
-                }
+                    },
+                );
             }));
         }
         Ok(CaptureHandle {
