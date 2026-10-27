@@ -29,8 +29,10 @@ fn chunk_fed_live_retains_three_phrase_anchors_on_each_track() {
         let text = all.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ").to_lowercase();
         for phrase in ["меня зовут", "журналистика", "науку и технологии"] {
             assert!(text.contains(phrase), "{track:?} missing {phrase}: {text}");
+            assert_eq!(text.matches(phrase).count(), 1, "{track:?} duplicated {phrase}: {text}");
         }
         assert!(all.iter().all(|s| s.source_track == track));
         assert!(all.windows(2).all(|s| s[0].end_seconds <= s[1].start_seconds));
+        assert!(all.iter().all(|s| s.start_seconds >= 0.0 && s.end_seconds <= source.len() as f64 / 16_000.0 + 0.25));
     }
 }
