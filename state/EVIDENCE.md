@@ -175,3 +175,12 @@ pm run check passed;
 pm test passed 3 files / 11 tests. Rust locked baseline passed all six commands; 86 Rust library tests including server auth/upload/range tests and full integration suite passed.
 - SSH read-only inventory: sqrthost-ism and ismvphost reachable; staging directory creation was attempted without modifying services. No Cargo toolchain was available from the inventory output, so remote binary deployment/dual-track ONNX RTF is blocked_external. ismvphost is restricted to API/static due to 956 MB RAM and 1.5 GB free disk.
 - Honest boundaries: real dual-track remote ASR, packet-loss/restart 5–10 minute E2E, and p50/p95 ACK/RTF/RSS measurements are blocked_external pending a safe Rust-capable staging runtime; local protocol reliability and localhost server smoke are verified. Physical devices/macOS remain final external boundaries.
+
+## Phase 07 verification (2026-10-27T20:55:23Z)
+
+- Local-first web coordinator added: WebSession keeps capture and OPFS archive independent from remote transport; pause/resume/stop state is persisted in IndexedDB; remote is optional and backlog failures do not stop local recording.
+- Frontend checks: latest baseline all six commands exit 0; 
+pm run check 0 diagnostics; 5 frontend test files / 13 tests passed.
+- Edge browser E2E: 2/2 serial synthetic mic/display and OPFS recorder tests passed.
+- Resilience tests: offline RemoteEngine bounded backlog and explicit lag/failure behavior passed; RemoteEngine checksum, reconnect replay, sequence cursors and browser bearer subprotocol are covered at unit/protocol level.
+- Honest boundaries: full 10-minute browser>real remote ONNX>editable transcript flow, real reconnect/server crash chaos, quota/permission fault injection and physical mic/system devices are not-run or blocked_external pending Rust-capable staging; macOS/USB remain final external gates.

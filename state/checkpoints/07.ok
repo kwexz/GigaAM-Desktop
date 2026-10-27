@@ -1,0 +1,17 @@
+phase: 07
+outcome: passed
+code_commit_sha: dabd3b0a236e17d1eca93709f421a4a5cffb8fec
+verified_utc: 2026-10-27T20:55:23Z
+logs:
+  - state/runs/00-baseline/results.json
+  - state/EVIDENCE.md
+matrix:
+  local_first_web: verified
+  frontend_checks: verified (13 tests, check/build passed)
+  browser_capture: verified (2/2 Edge synthetic tests)
+  offline_backlog: verified
+  xss_and_auth_contracts: verified at export/API boundary
+  real_remote_onnx_10min: blocked_external (Rust-capable staging unavailable)
+  chaos_server_restart: not-run
+  physical_devices: not-run
+  macos: not-run
