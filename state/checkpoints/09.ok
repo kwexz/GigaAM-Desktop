@@ -1,0 +1,14 @@
+phase: 09
+outcome: validated-no-go
+code_commit_sha: 05208bab95495276831fdd855c22f30667bd6295
+verified_utc: 2026-10-27T20:59:42Z
+logs:
+  - state/EVIDENCE.md
+matrix:
+  architecture_compatibility: verified (BrowserAsrEngine implements RecognitionEngine)
+  opt_in_and_checksum_gate: verified (15 frontend tests)
+  auto_download: verified absent
+  browser_onnx_runtime: not-run
+  webgpu: not-run
+  two_track_rtf: not-run
+  decision: validated-no-go

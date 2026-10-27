@@ -190,3 +190,10 @@ pm run check 0 diagnostics; 5 frontend test files / 13 tests passed.
 - Checked local model cache: only pinned GigaAM ASR ONNX/Silero artifacts are present; no GGUF summarization weights or approved llama.cpp runtime is installed. Available host memory is not a safe basis for downloading/trying unknown 2B/4B weights, and no model download was initiated.
 - Implemented SummarizationEngine boundary plus deterministic ExtractiveFallback. It only copies source transcript text and segment IDs, emits no invented actions/dates/speakers, validates timestamps, and supports cancel seam. Two Rust tests passed.
 - This is not a completed local summarization selection. External/resource blocker: a licensed, measured RU summarization model/runtime and two-model experiment are unavailable; task explicitly forbids a fake checkpoint. Phase 08 remains in_progress and no  8.ok is created.
+
+## Phase 09 decision (2026-10-27T20:59:42Z)
+
+- Decision: validated NO-GO for production browser ASR. The pinned ONNX weights are not installed in browser storage; no ONNX Runtime Web dependency or automatic 227 MB download was introduced. BrowserAsrEngine requires explicit verified manifest/checksum and otherwise remains disabled/blocked.
+- Frontend gate tests passed: 6 files / 15 tests; 
+pm run check passed. The adapter is contract-compatible with RecognitionEngine and keeps RemoteEngine as fallback.
+- This is not a claim of browser ONNX operator compatibility, RTF, p95 lag, WebGPU, or two-track parity; those measurements are not-run because the explicit model/runtime experiment was not available without an opt-in model transfer. No broken ASR button is exposed.
