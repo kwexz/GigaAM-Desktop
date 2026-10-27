@@ -1,0 +1,21 @@
+﻿phase: 02
+outcome: passed
+code_commit_sha: 50fdad390c30ad0a9b7d2faed999a0da466535eb
+verified_utc: 2026-10-27T19:07:29Z
+logs:
+  - state/runs/00-baseline/results.json
+  - state/runs/02/streaming-vs-batch.txt
+  - state/runs/02/streaming-long-model.txt
+  - state/runs/02/rss-plateau.txt
+matrix:
+  baseline: verified (six commands exit 0)
+  streaming_decode: verified (bounded WAV/Symphonia blocks; stereo/downmix/corrupt media)
+  batch_parity: verified (clean/noisy RU fixtures; CER 0.0000; boundaries and timestamps)
+  model_e2e: verified (five-minute pinned-model run; 310.622 s; 18 segments)
+  rss_plateau: verified (15/60/180 min; approximately 17 MB after each run)
+  large_archive_mix: verified (bounded per-track spill and fixed-block offset-preserving merge)
+  durable_failure: verified (SQLite injected failure; archive partial rollback)
+  crash_recovery: verified (interrupted SQLite/staged partial recovery tests; process-kill file continuation not-run)
+  disk_exhaustion: not-run (actual volume exhaustion unsafe; durable failure seam verified)
+  macos_gui: not-run
+  physical_capture: not-run
