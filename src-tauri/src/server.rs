@@ -104,12 +104,7 @@ async fn auth(State(state): State<ServerState>, request: Request<Body>, next: Ne
     if request.uri().path() == "/health" {
         return next.run(request).await;
     }
-    let authorized = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|token| token.as_bytes() == state.config.bearer_token.as_bytes());
+    let authorized = bearer_authorized(request.headers(), &state.config.bearer_token);
     if !authorized {
         return (
             StatusCode::UNAUTHORIZED,
@@ -145,11 +140,7 @@ async fn live_socket(
     if !valid_session_id(&session_id) {
         return bad_request("invalid session id");
     }
-    let authorized = headers
-        .get("sec-websocket-protocol")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("bearer."))
-        .is_some_and(|token| token.as_bytes() == state.config.bearer_token.as_bytes());
+    let authorized = bearer_authorized(&headers, &state.config.bearer_token);
     if !authorized {
         return (
             StatusCode::UNAUTHORIZED,
@@ -492,6 +483,18 @@ fn parse_range(headers: &HeaderMap, size: u64) -> Result<(u64, u64, bool), Statu
         return Err(StatusCode::RANGE_NOT_SATISFIABLE);
     }
     Ok((start, end, true))
+}
+
+fn bearer_authorized(headers: &HeaderMap, expected: &str) -> bool {
+    let http = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let websocket = headers
+        .get("sec-websocket-protocol")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("bearer."));
+    http.or(websocket).is_some_and(|token| token == expected)
 }
 
 fn valid_session_id(value: &str) -> bool {
