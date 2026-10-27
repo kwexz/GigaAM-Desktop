@@ -1,10 +1,10 @@
 # GigaAM Desktop — состояние автономного плана
 
-- `current_phase`: `05`
+- `current_phase`: `06`
 - `phase_state`: `pending`
-- `last_verified_commit`: `29a9075`
+- `last_verified_commit`: `d887c13`
 - `current_branch`: `feature/gigaam-desktop-web-autonomy`
-- `blocking_issue`: `04 passed with synthetic browser capture; physical devices, quota/permission faults, and tab-close UI remain not-run`
+- `blocking_issue`: `05 passed with localhost API smoke; real VPS deployment is blocked_external and public bind is prohibited`
 - `last_update_utc`: `2026-10-27`
 
 ## Источник истины
@@ -20,7 +20,7 @@
 | 02 | Streaming core | passed | 22b9ec9 | Bounded file decode/VAD/ASR, batch parity, 5-minute model E2E, RSS plateau, bounded offset-preserving archive mix |
 | 03 | Universal contracts | passed | c6556f4 | Versioned Rust/TypeScript events, FSM states, frontend ports, compatibility tests, ADR |
 | 04 | Browser capture & storage | passed | 29a9075 | Browser mic/system adapter, OPFS/IndexedDB storage, Edge synthetic E2E |
-| 05 | Rust VPS API | pending | — | — |
+| 05 | Rust VPS API | passed | d887c13 | Authenticated localhost Axum API, bounded upload, Range download, session/model status, safe server binary |
 | 06 | Remote Live transport | pending | — | — |
 | 07 | Web E2E, resilience | pending | — | — |
 | 08 | Local summarization | pending | — | — |
