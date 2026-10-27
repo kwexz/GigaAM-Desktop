@@ -1,10 +1,10 @@
 # GigaAM Desktop — состояние автономного плана
 
-- `current_phase`: `01`
-- `phase_state`: `in_progress`
-- `last_verified_commit`: `aab7936925bf08ece7ff93177e57bacfbab3c1c5`
+- `current_phase`: `02`
+- `phase_state`: `pending`
+- `last_verified_commit`: `7c50dae2d8b568ea3dc4e011e426cebf777550d2`
 - `current_branch`: `feature/gigaam-desktop-web-autonomy`
-- `blocking_issue`: `01 in progress: VAD cursor regression fixed/tested; asynchronous Stop and hotplug acceptance pending`
+- `blocking_issue`: `01 passed with documented not-run boundaries; starting 02`
 - `last_update_utc`: `2026-10-27`
 
 ## Источник истины
