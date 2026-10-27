@@ -1,10 +1,10 @@
 # GigaAM Desktop — состояние автономного плана
 
-- `current_phase`: `03`
+- `current_phase`: `04`
 - `phase_state`: `pending`
-- `last_verified_commit`: `22b9ec9`
+- `last_verified_commit`: `c6556f4`
 - `current_branch`: `feature/gigaam-desktop-web-autonomy`
-- `blocking_issue`: `02 passed; disk exhaustion and process-kill continuation are explicitly not-run, with durable failure/recovery seams verified`
+- `blocking_issue`: `03 passed; cloud/OAuth and browser inference remain intentionally deferred to their phases`
 - `last_update_utc`: `2026-10-27`
 
 ## Источник истины
@@ -18,7 +18,7 @@
 | 00 | Baseline & harness | passed | aab7936 | Baseline, real model clean/noisy metrics, browser recording/OPFS harness, VPS static smokes |
 | 01 | Live bugfixes | passed | 7c50dae | VAD cursor red/green; async Stop; recovery supervisor; real-model and archive acceptance passed |
 | 02 | Streaming core | passed | 22b9ec9 | Bounded file decode/VAD/ASR, batch parity, 5-minute model E2E, RSS plateau, bounded offset-preserving archive mix |
-| 03 | Universal contracts | pending | — | — |
+| 03 | Universal contracts | passed | c6556f4 | Versioned Rust/TypeScript events, FSM states, frontend ports, compatibility tests, ADR |
 | 04 | Browser capture & storage | pending | — | — |
 | 05 | Rust VPS API | pending | — | — |
 | 06 | Remote Live transport | pending | — | — |
