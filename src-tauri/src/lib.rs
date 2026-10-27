@@ -1174,6 +1174,9 @@ fn stop_live_blocking(
         let _ = worker.0.send(());
         return Err(message);
     }
+    if let Err(error) = capture.cleanup_committed_raw() {
+        log(&format!("committed archive raw cleanup deferred: {error}"));
+    }
     drop(capture);
     *live.capture.lock().unwrap() = None;
     let _ = worker.0.send(());

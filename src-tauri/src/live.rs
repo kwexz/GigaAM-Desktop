@@ -289,16 +289,29 @@ impl LiveCapture {
             }
         }
         if !tracks.is_empty() {
-            fs::write(
-                self.directory.join("tracks.json"),
-                serde_json::to_string_pretty(&tracks)?,
-            )?;
+            let manifest = self.directory.join("tracks.json");
+            let staged = self.directory.join("tracks.json.partial");
+            fs::write(&staged, serde_json::to_string_pretty(&tracks)?)?;
+            fs::OpenOptions::new().write(true).open(&staged)?.sync_all()?;
+            check_archive_cancel(Some(&self.finalization_cancel))?;
+            // A pre-existing manifest may describe recovery material. Do not
+            // replace it silently during retry/finalization.
+            if manifest.exists() { anyhow::bail!("Track manifest already exists; recovery material retained"); }
+            fs::rename(&staged, &manifest)?;
+            archive_guard.paths.push(manifest);
         }
         check_archive_cancel(Some(&self.finalization_cancel))?;
         archive_guard.committed = true;
-        let _ = fs::remove_file(&self.microphone_path);
-        let _ = fs::remove_file(&self.system_path);
+        // Raw material is intentionally retained until the caller has
+        // durably committed archive metadata. Never delete it in preparation.
         Ok(files)
+    }
+
+    pub fn cleanup_committed_raw(&self) -> Result<()> {
+        for path in [&self.microphone_path, &self.system_path] {
+            if path.is_file() { fs::remove_file(path)?; }
+        }
+        Ok(())
     }
 
     pub fn initialize_paths(&mut self) -> Result<()> {
@@ -440,6 +453,7 @@ fn transcode_raw_cancellable(input: &Path, output: &Path, format: ArchiveFormat,
         ArchiveFormat::Mp3 => transcode_raw_to_mp3_cancellable(input, &partial, cancel),
         }?;
         check_archive_cancel(cancel)?;
+        fs::OpenOptions::new().write(true).open(&partial)?.sync_all()?;
         fs::rename(&partial, output)?;
         Ok(())
     })();
