@@ -72,7 +72,12 @@ export class RemoteEngine implements RecognitionEngine {
 			socket.binaryType = 'arraybuffer';
 			socket.onopen = () => { this.connecting = false; this.flush(); resolve(); };
 			socket.onerror = () => { this.connecting = false; this.scheduleReconnect(); reject(new Error('remote websocket unavailable')); };
-			socket.onclose = () => { this.connecting = false; if (!this.stopped) this.scheduleReconnect(); };
+			socket.onclose = () => {
+			this.connecting = false;
+			// Anything sent without a durable ACK must be replayed after resume.
+			this.sent.clear();
+			if (!this.stopped) this.scheduleReconnect();
+		};
 			socket.onmessage = (message) => this.handleMessage(message.data);
 		});
 	}
