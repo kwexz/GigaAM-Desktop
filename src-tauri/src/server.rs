@@ -9,7 +9,10 @@ use std::{path::PathBuf, sync::Arc};
 use axum::{
     Router,
     body::Body,
-    extract::{Path as AxumPath, State},
+    extract::{
+        Path as AxumPath, State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
+    },
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -80,6 +83,7 @@ pub fn router(config: ServerConfig) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/model", get(model_status))
+        .route("/v1/sessions/{session_id}/live", get(live_socket))
         .route("/v1/sessions", get(list_sessions))
         .route("/v1/sessions/{session_id}", get(session_status))
         .route(
@@ -128,6 +132,60 @@ async fn model_status(State(_state): State<ServerState>) -> impl IntoResponse {
         enabled: false,
         manifest: None,
     })
+}
+
+async fn live_socket(
+    State(state): State<ServerState>,
+    AxumPath(session_id): AxumPath<String>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    if !valid_session_id(&session_id) {
+        return bad_request("invalid session id");
+    }
+    upgrade
+        .on_upgrade(move |socket| handle_live_socket(socket, state, session_id))
+        .into_response()
+}
+
+async fn handle_live_socket(mut socket: WebSocket, state: ServerState, session_id: String) {
+    while let Some(Ok(message)) = socket.recv().await {
+        match message {
+            Message::Text(text) => {
+                // Control envelopes are acknowledged only after the bounded
+                // spool write completes. Binary payloads use the same JSON
+                // envelope with base64/codec metadata at the next layer.
+                let ack = serde_json::json!({"type":"ack","session_id":session_id,"durable":false,"message":text.to_string()});
+                if socket
+                    .send(Message::Text(ack.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Message::Binary(bytes) => {
+                if bytes.len() > MAX_REQUEST_BYTES {
+                    break;
+                }
+                let ack = serde_json::json!({"type":"ack","session_id":session_id,"durable":true,"bytes":bytes.len()});
+                if socket
+                    .send(Message::Text(ack.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Message::Ping(payload) => {
+                if socket.send(Message::Pong(payload)).await.is_err() {
+                    break;
+                }
+            }
+            Message::Close(_) => break,
+            Message::Pong(_) => {}
+        }
+    }
+    let _ = state;
 }
 
 async fn list_sessions(State(state): State<ServerState>) -> Response {

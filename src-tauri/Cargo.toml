@@ -35,7 +35,7 @@ tauri-build = { version = "2.7.1", features = [] }
 
 [dependencies]
 anyhow = "1.0"
-axum = { version = "0.8", features = ["multipart"] }
+axum = { version = "0.8", features = ["multipart", "ws"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["fs", "io-util", "net", "signal", "sync"] }
 tower = { version = "0.5", features = ["util"] }
