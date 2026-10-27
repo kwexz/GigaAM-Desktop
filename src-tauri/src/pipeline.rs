@@ -1,6 +1,7 @@
 use std::{
     f32::consts::PI,
     fs,
+    io::Seek,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -608,38 +609,50 @@ pub(crate) fn mix_mono_48k_to_raw(inputs: &[(PathBuf, f64)], output: &Path) -> R
         let mut output = BufWriter::new(fs::File::create(output)?);
         let mut blocks = vec![vec![0.0_f32; 16_384]; readers.len()];
         let mut output_position = 0usize;
+        let mut source_positions = vec![0usize; readers.len()];
         let mut finished = vec![false; readers.len()];
         loop {
-            let mut active = false;
-            let mut scheduled = false;
+            let mut mixed_count = 0usize;
             let mut mixed = vec![0.0_f32; 16_384];
             for (index, reader) in readers.iter_mut().enumerate() {
                 if finished[index] {
                     continue;
                 }
-                scheduled = true;
-                if output_position < offsets[index] {
+                let block_end = output_position + mixed.len();
+                if block_end <= offsets[index] {
                     continue;
                 }
-                let bytes = reader.read(bytemuck_f32_as_bytes(&mut blocks[index]))?;
+                let source_start = output_position.saturating_sub(offsets[index]);
+                if source_start > source_positions[index] {
+                    reader.seek(std::io::SeekFrom::Start((source_start * 4) as u64))?;
+                    source_positions[index] = source_start;
+                }
+                let destination = offsets[index].saturating_sub(output_position);
+                let wanted = (mixed.len() - destination).min(blocks[index].len());
+                let bytes = reader.read(bytemuck_f32_as_bytes(&mut blocks[index][..wanted]))?;
                 let count = bytes / 4;
                 if count == 0 {
                     finished[index] = true;
                     continue;
                 }
-                active = true;
+                source_positions[index] += count;
+                mixed_count = mixed_count.max(destination + count);
                 for sample in 0..count {
-                    mixed[sample] += blocks[index][sample];
+                    mixed[destination + sample] += blocks[index][sample];
                 }
             }
-            if !scheduled && !active {
-                break;
+            if mixed_count == 0 {
+                if finished.iter().all(|done| *done) {
+                    break;
+                }
+                output_position += mixed.len();
+                continue;
             }
-            for sample in mixed.iter_mut() {
+            for sample in &mut mixed[..mixed_count] {
                 *sample = sample.clamp(-1.0, 1.0);
             }
-            output.write_all(bytemuck_f32_as_bytes(&mut mixed))?;
-            output_position += mixed.len();
+            output.write_all(bytemuck_f32_as_bytes(&mut mixed[..mixed_count]))?;
+            output_position += mixed_count;
         }
         output.flush()?;
         Ok::<(), anyhow::Error>(())
