@@ -639,29 +639,6 @@ fn rms_tail(samples: &[f32]) -> f32 {
 #[cfg(target_os = "windows")]
 pub mod platform {
     use super::*;
-
-    #[test]
-    #[cfg(test)]
-    fn second_track_failure_rolls_back_first_archive_and_keeps_raw() {
-        let directory = std::env::temp_dir().join(format!("gigaam-track-failure-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
-        fs::create_dir(&directory).unwrap();
-        let mut capture = LiveCapture::new("dual-failure".into(), 0, LiveSource::SystemAndMicrophone,
-            None, true, ArchiveFormat::Wav, 1.0, directory.clone(), None);
-        capture.initialize_paths().unwrap();
-        capture.append_timed(true, 10_000_000, vec![0.1; 4800]);
-        drop(capture.system_file.take());
-        if capture.system_path.exists() { fs::remove_file(&capture.system_path).unwrap(); }
-        fs::create_dir(&capture.system_path).unwrap();
-        assert!(capture.finish().is_err());
-        assert!(capture.microphone_path.exists());
-        assert!(!fs::read_dir(&directory).unwrap().flatten().any(|entry| entry.path().extension().is_some_and(|extension| extension == "wav")));
-        drop(capture);
-        for entry in fs::read_dir(&directory).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() { fs::remove_dir(path).unwrap(); } else { fs::remove_file(path).unwrap(); }
-        }
-        fs::remove_dir(directory).unwrap();
-    }
     use rubato::{FftFixedIn, Resampler};
     use std::{
         collections::VecDeque,
@@ -1231,6 +1208,28 @@ pub mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn second_track_failure_rolls_back_first_archive_and_keeps_raw() {
+        let directory = std::env::temp_dir().join(format!("gigaam-track-failure-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir(&directory).unwrap();
+        let mut capture = LiveCapture::new("dual-failure".into(), 0, LiveSource::SystemAndMicrophone,
+            None, true, ArchiveFormat::Wav, 1.0, directory.clone(), None);
+        capture.initialize_paths().unwrap();
+        capture.append_timed(true, 10_000_000, vec![0.1; 4800]);
+        drop(capture.system_file.take());
+        if capture.system_path.exists() { fs::remove_file(&capture.system_path).unwrap(); }
+        fs::create_dir(&capture.system_path).unwrap();
+        assert!(capture.finish().is_err());
+        assert!(capture.microphone_path.exists());
+        assert!(!fs::read_dir(&directory).unwrap().flatten().any(|entry| entry.path().extension().is_some_and(|extension| extension == "wav")));
+        drop(capture);
+        for entry in fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() { fs::remove_dir(path).unwrap(); } else { fs::remove_file(path).unwrap(); }
+        }
+        fs::remove_dir(directory).unwrap();
+    }
 
     #[test]
     fn cancelled_archive_keeps_raw_recovery_material() {
