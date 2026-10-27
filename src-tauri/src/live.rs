@@ -876,7 +876,10 @@ pub mod platform {
                     while !stop_flag.load(Ordering::Relaxed) {
                         if !mic && endpoint_checked.elapsed() >= std::time::Duration::from_secs(1) {
                             endpoint_checked = std::time::Instant::now();
-                            if enumerator.get_default_device(&direction)?.get_id()? != endpoint_id {
+                            let current_endpoint = enumerator.get_default_device(&direction)
+                                .and_then(|device| device.get_id())
+                                .map_err(|error| anyhow::anyhow!("AUDCLNT_E_DEVICE_INVALIDATED: default render unavailable: {error}"))?;
+                            if current_endpoint != endpoint_id {
                                 anyhow::bail!("AUDCLNT_E_DEVICE_INVALIDATED: default render endpoint changed");
                             }
                         }
