@@ -1,10 +1,10 @@
 # GigaAM Desktop — состояние автономного плана
 
-- `current_phase`: `07`
+- `current_phase`: `08`
 - `phase_state`: `pending`
-- `last_verified_commit`: `fd0798d`
+- `last_verified_commit`: `0eab9dc`
 - `current_branch`: `feature/gigaam-desktop-web-autonomy`
-- `blocking_issue`: `06 passed with local protocol reliability; real dual-track VPS ASR/RTF is blocked_external pending Rust-capable staging runtime`
+- `blocking_issue`: `07 passed local-first/resilience gates; real remote ONNX chaos E2E remains blocked_external pending staging runtime`
 - `last_update_utc`: `2026-10-27`
 
 ## Источник истины
@@ -22,7 +22,7 @@
 | 04 | Browser capture & storage | passed | 29a9075 | Browser mic/system adapter, OPFS/IndexedDB storage, Edge synthetic E2E |
 | 05 | Rust VPS API | passed | d887c13 | Authenticated localhost Axum API, bounded upload, Range download, session/model status, safe server binary |
 | 06 | Remote Live transport | passed | fd0798d | Bounded RemoteEngine, authenticated WS, checksum/durable ACK, sequence gap rejection, reconnect replay |
-| 07 | Web E2E, resilience | pending | — | — |
+| 07 | Web E2E, resilience | passed | 0eab9dc | Local-first WebSession, bounded offline backlog, Edge E2E, browser resilience contracts |
 | 08 | Local summarization | pending | — | — |
 | 09 | Optional in-browser ASR | pending | — | — |
 | 10 | Google/Yandex cloud sync | pending | — | — |
