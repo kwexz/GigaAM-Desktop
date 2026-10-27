@@ -4,7 +4,7 @@
 //! bind address, TLS proxy and process limits. No public socket is opened by
 //! the desktop binary and no ASR work runs on the async reactor.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use axum::{
     Router,
@@ -175,6 +175,7 @@ async fn handle_live_socket(mut socket: WebSocket, state: ServerState, session_i
         Err(_) => return,
     };
     let mut envelope: Option<LiveEnvelope> = None;
+    let mut next_seq: HashMap<String, u64> = HashMap::new();
     while let Some(Ok(message)) = socket.recv().await {
         match message {
             Message::Text(text) => {
@@ -194,6 +195,22 @@ async fn handle_live_socket(mut socket: WebSocket, state: ServerState, session_i
                 if checksum != current.checksum {
                     break;
                 }
+                let expected = next_seq.entry(current.track_id.clone()).or_insert(0);
+                if current.seq < *expected {
+                    let ack = serde_json::json!({"type":"ack","session_id":session_id,"durable":true,"duplicate":true,"track_id":current.track_id,"seq":current.seq,"idempotency_key":current.idempotency_key});
+                    if socket
+                        .send(Message::Text(ack.to_string().into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                if current.seq > *expected {
+                    break;
+                }
+                *expected += 1;
                 if spool
                     .write_all(&(bytes.len() as u32).to_le_bytes())
                     .await
