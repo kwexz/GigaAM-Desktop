@@ -18,7 +18,8 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post, put},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::{
     fs,
     fs::OpenOptions,
@@ -148,6 +149,16 @@ async fn live_socket(
         .into_response()
 }
 
+#[derive(Debug, Deserialize)]
+struct LiveEnvelope {
+    track_id: String,
+    seq: u64,
+    idempotency_key: String,
+    checksum: String,
+    #[serde(default)]
+    duration_samples: u32,
+}
+
 async fn handle_live_socket(mut socket: WebSocket, state: ServerState, session_id: String) {
     let directory = state.config.data_dir.join("sessions").join(&session_id);
     if fs::create_dir_all(&directory).await.is_err() {
@@ -163,20 +174,24 @@ async fn handle_live_socket(mut socket: WebSocket, state: ServerState, session_i
         Ok(file) => file,
         Err(_) => return,
     };
+    let mut envelope: Option<LiveEnvelope> = None;
     while let Some(Ok(message)) = socket.recv().await {
         match message {
             Message::Text(text) => {
-                let ack = serde_json::json!({"type":"ack","session_id":session_id,"durable":false,"message":text.to_string()});
-                if socket
-                    .send(Message::Text(ack.to_string().into()))
-                    .await
-                    .is_err()
-                {
+                envelope = serde_json::from_str::<LiveEnvelope>(&text).ok();
+                if envelope.is_none() {
                     break;
                 }
             }
             Message::Binary(bytes) => {
+                let Some(current) = envelope.take() else {
+                    break;
+                };
                 if bytes.len() > MAX_REQUEST_BYTES {
+                    break;
+                }
+                let checksum = format!("{:x}", Sha256::digest(&bytes));
+                if checksum != current.checksum {
                     break;
                 }
                 if spool
@@ -188,7 +203,7 @@ async fn handle_live_socket(mut socket: WebSocket, state: ServerState, session_i
                 {
                     break;
                 }
-                let ack = serde_json::json!({"type":"ack","session_id":session_id,"durable":true,"bytes":bytes.len()});
+                let ack = serde_json::json!({"type":"ack","session_id":session_id,"durable":true,"track_id":current.track_id,"seq":current.seq,"idempotency_key":current.idempotency_key,"bytes":bytes.len()});
                 if socket
                     .send(Message::Text(ack.to_string().into()))
                     .await
