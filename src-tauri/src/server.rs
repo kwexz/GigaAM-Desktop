@@ -21,7 +21,8 @@ use axum::{
 use serde::Serialize;
 use tokio::{
     fs,
-    io::{AsyncReadExt, AsyncSeekExt},
+    fs::OpenOptions,
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::Semaphore,
 };
 
@@ -148,12 +149,23 @@ async fn live_socket(
 }
 
 async fn handle_live_socket(mut socket: WebSocket, state: ServerState, session_id: String) {
+    let directory = state.config.data_dir.join("sessions").join(&session_id);
+    if fs::create_dir_all(&directory).await.is_err() {
+        return;
+    }
+    let spool_path = directory.join("live.spool.partial");
+    let mut spool = match OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&spool_path)
+        .await
+    {
+        Ok(file) => file,
+        Err(_) => return,
+    };
     while let Some(Ok(message)) = socket.recv().await {
         match message {
             Message::Text(text) => {
-                // Control envelopes are acknowledged only after the bounded
-                // spool write completes. Binary payloads use the same JSON
-                // envelope with base64/codec metadata at the next layer.
                 let ack = serde_json::json!({"type":"ack","session_id":session_id,"durable":false,"message":text.to_string()});
                 if socket
                     .send(Message::Text(ack.to_string().into()))
@@ -165,6 +177,15 @@ async fn handle_live_socket(mut socket: WebSocket, state: ServerState, session_i
             }
             Message::Binary(bytes) => {
                 if bytes.len() > MAX_REQUEST_BYTES {
+                    break;
+                }
+                if spool
+                    .write_all(&(bytes.len() as u32).to_le_bytes())
+                    .await
+                    .is_err()
+                    || spool.write_all(&bytes).await.is_err()
+                    || spool.sync_data().await.is_err()
+                {
                     break;
                 }
                 let ack = serde_json::json!({"type":"ack","session_id":session_id,"durable":true,"bytes":bytes.len()});
@@ -185,7 +206,6 @@ async fn handle_live_socket(mut socket: WebSocket, state: ServerState, session_i
             Message::Pong(_) => {}
         }
     }
-    let _ = state;
 }
 
 async fn list_sessions(State(state): State<ServerState>) -> Response {
