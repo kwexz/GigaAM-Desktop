@@ -184,3 +184,9 @@ pm run check 0 diagnostics; 5 frontend test files / 13 tests passed.
 - Edge browser E2E: 2/2 serial synthetic mic/display and OPFS recorder tests passed.
 - Resilience tests: offline RemoteEngine bounded backlog and explicit lag/failure behavior passed; RemoteEngine checksum, reconnect replay, sequence cursors and browser bearer subprotocol are covered at unit/protocol level.
 - Honest boundaries: full 10-minute browser>real remote ONNX>editable transcript flow, real reconnect/server crash chaos, quota/permission fault injection and physical mic/system devices are not-run or blocked_external pending Rust-capable staging; macOS/USB remain final external gates.
+
+## Phase 08 experiment/blocker (2026-10-27T20:58:10Z)
+
+- Checked local model cache: only pinned GigaAM ASR ONNX/Silero artifacts are present; no GGUF summarization weights or approved llama.cpp runtime is installed. Available host memory is not a safe basis for downloading/trying unknown 2B/4B weights, and no model download was initiated.
+- Implemented SummarizationEngine boundary plus deterministic ExtractiveFallback. It only copies source transcript text and segment IDs, emits no invented actions/dates/speakers, validates timestamps, and supports cancel seam. Two Rust tests passed.
+- This is not a completed local summarization selection. External/resource blocker: a licensed, measured RU summarization model/runtime and two-model experiment are unavailable; task explicitly forbids a fake checkpoint. Phase 08 remains in_progress and no  8.ok is created.
