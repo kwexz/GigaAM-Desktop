@@ -138,4 +138,27 @@ describe('GigaAM page', () => {
 			micGain: 3
 		})));
 	});
+
+	it('keeps the UI responsive while stop acknowledgement is pending', async () => {
+		let resolveStop!: () => void;
+		let stopping = false;
+		const backend = invoke.getMockImplementation()!;
+		invoke.mockImplementation((command: string, ...args: unknown[]) => {
+			if (command === 'start_live') return Promise.resolve({ started_ms: Date.now() });
+			if (command === 'live_status') return Promise.resolve({ microphone_level: 0, system_level: 0, model_ready: true, paused: false });
+			if (command === 'stop_live') { stopping = true; return new Promise<void>((resolve) => { resolveStop = resolve; }); }
+			if (command === 'live_finalizing') return Promise.resolve(stopping);
+			return backend(command, ...args);
+		});
+		render(Page);
+		await waitFor(() => expect(screen.queryByText('Требуется модель распознавания')).not.toBeInTheDocument());
+		await fireEvent.click(await screen.findByRole('button', { name: 'Записать' }));
+		await fireEvent.click(screen.getByRole('button', { name: '●Запись' }));
+		const stop = await screen.findByRole('button', { name: /Стоп/ });
+		await waitFor(() => expect(stop).toBeEnabled());
+		await fireEvent.click(stop);
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('stop_live'));
+		expect(stop).toBeDisabled();
+		resolveStop();
+	});
 });
