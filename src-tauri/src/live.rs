@@ -1039,6 +1039,7 @@ pub mod platform {
             };
             if let Ok(list) = sample.audio_buffer_list() {
                 let mut capture = self.capture.lock().unwrap();
+                if self.stopped.load(Ordering::Acquire) { return; }
                 for buffer in &list {
                     let samples = buffer
                         .data()
