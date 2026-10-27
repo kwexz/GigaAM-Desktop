@@ -645,6 +645,9 @@ pub(crate) fn mix_mono_48k_to_raw(inputs: &[(PathBuf, f64)], output: &Path) -> R
                 if finished.iter().all(|done| *done) {
                     break;
                 }
+                // All remaining tracks begin in a future offset: preserve the
+                // chronology with a bounded block of silence.
+                output.write_all(bytemuck_f32_as_bytes(&mut mixed))?;
                 output_position += mixed.len();
                 continue;
             }
