@@ -9,6 +9,7 @@ export class BrowserCaptureSource implements CaptureSource {
 	private recorders = new Map<AudioBlockEvent['track_id'], MediaRecorder>();
 	private sequence = new Map<AudioBlockEvent['track_id'], number>();
 	private started = new Map<AudioBlockEvent['track_id'], number>();
+	private lastEventAt = new Map<AudioBlockEvent['track_id'], number>();
 	private streams: MediaStream[] = [];
 	status: BrowserCaptureStatus = { microphone: false, system: false, systemAudioUnavailable: false };
 
@@ -40,15 +41,20 @@ export class BrowserCaptureSource implements CaptureSource {
 		const recorder = new MediaRecorder(stream, { mimeType: mime });
 		this.sequence.set(trackId, 0);
 		this.started.set(trackId, performance.now());
+		this.lastEventAt.set(trackId, performance.now());
 		recorder.ondataavailable = async (event) => {
 			if (!event.data.size) return;
 			const seq = this.sequence.get(trackId) ?? 0;
 			const rate = 48_000;
-			const start = Math.round((performance.now() - (this.started.get(trackId) ?? performance.now())) * rate / 1000);
+			const now = performance.now();
+			const previous = this.lastEventAt.get(trackId) ?? now;
+			const start = Math.round((previous - (this.started.get(trackId) ?? previous)) * rate / 1000);
+			const duration = Math.max(1, Math.round((now - previous) * rate / 1000));
+			this.lastEventAt.set(trackId, now);
 			const payload = new Uint8Array(await event.data.arrayBuffer());
 			const block: AudioBlockEvent = {
 				version: 1, session_id: sessionId, track_id: trackId, seq, sample_rate: rate,
-				absolute_sample_start: start, duration_samples: Math.max(1, Math.round(payload.byteLength)),
+				absolute_sample_start: start, duration_samples: duration,
 				codec: mime.includes('ogg') ? 'opus' : 'opus', codec_config: mime,
 				flags: { final: false, discontinuity: false }, idempotency_key: `${sessionId}:${trackId}:${seq}`,
 				payload,
