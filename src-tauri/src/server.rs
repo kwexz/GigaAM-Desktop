@@ -15,7 +15,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncSeekExt},
