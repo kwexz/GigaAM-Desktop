@@ -159,3 +159,9 @@ pm run build passed.
 - Localhost smoke via built binary: health=200 unauth=401 upload=201 range=2345.
 - SSH inventory verified read-only: sqrthost-ism 2 vCPU/3.9 GB/78 GB free; ismvphost 1 vCPU/956 MB/1.5 GB free. No remote services changed; no ASR run on either host. Real VPS staging deployment/RTF/RSS is blocked by external deployment approval and intentionally not-run.
 - Honest boundaries: HTTPS proxy, external auth/CSRF integration, multipart parser, model-enabled inference and UI upload→remote-ASR E2E are deferred to remote transport/resilience phases; this phase provides the authenticated API boundary and safe localhost staging binary.
+
+## Phase 06 progress (2026-10-27T19:31:48Z)
+
+- Added authenticated /v1/sessions/{session_id}/live WebSocket boundary with bounded binary frame size and durable ACK ordering: binary frame is appended to session spool, sync_data completes, then ACK is emitted. Text control envelopes and ping/pong are supported.
+- This is an adapter boundary, not a claimed end-to-end remote ASR result. Sequence/checksum/resume protocol and dual-track ONNX/VPS RTF measurements remain open acceptance gates.
+- No phase checkpoint created.
