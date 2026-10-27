@@ -131,3 +131,12 @@
 - Disk-full: verified at the durable-storage seam by injected SQLite write failure and archive partial-file rollback tests; actual host disk exhaustion is not-run to avoid destabilizing the workspace.
 - Crash continuation: verified for SQLite interrupted-job recovery and staged `.partial` archive recovery tests; process-kill continuation with a live multi-hour file is not-run on this host.
 - Desktop IPC filesystem-writer/Stop concurrency remains covered by prior phase; no new phase-02-specific UI E2E was required after the bounded worker path preserved the same background execution contract.
+
+## Phase 03 verification (2026-10-27T19:12:39Z)
+
+- Frontend contract tests: 
+pm test passed, 2 files / 10 tests.
+- Rust contract compatibility: 85 library tests passed; domain event JSON round-trip and validation passed. Full Rust integration suite passed.
+- Added src/lib/contracts.ts and src/lib/ports.ts: version 1 event schema, audio/segment identity, monotonic sequence, revisions, separate recording/upload/recognition/sync states, capability matrix, runtime-neutral ports.
+- Desktop remains offline-capable and existing Tauri UI imports are unchanged; no server/cloud/browser inference dependency introduced.
+- Honest boundaries: server adapter compatibility is represented by the versioned contract and stub ports; no external server or OAuth provider was required in this phase.
