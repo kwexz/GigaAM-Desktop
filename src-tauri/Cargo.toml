@@ -23,6 +23,10 @@ name = "inference-spike"
 path = "src/bin/inference_spike.rs"
 required-features = ["inference-spike"]
 
+[[bin]]
+name = "gigaam-server"
+path = "src/bin/gigaam_server.rs"
+
 [features]
 inference-spike = []
 
