@@ -946,6 +946,8 @@ fn set_mic_gain(mic_gain: f32, live: tauri::State<'_, LiveState>) -> Result<(), 
 
 #[tauri::command]
 fn pause_live(live: tauri::State<'_, LiveState>) -> Result<(), String> {
+    let _lifecycle = live.lifecycle.try_lock().map_err(|_| "live lifecycle transition in progress")?;
+    if live.finalizing.load(Ordering::SeqCst) { return Err("recording is finalizing".into()); }
     if live.capture.lock().unwrap().is_none() {
         return Err("no active recording".into());
     }
@@ -958,6 +960,8 @@ fn pause_live(live: tauri::State<'_, LiveState>) -> Result<(), String> {
 
 #[tauri::command]
 fn resume_live(live: tauri::State<'_, LiveState>) -> Result<(), String> {
+    let _lifecycle = live.lifecycle.try_lock().map_err(|_| "live lifecycle transition in progress")?;
+    if live.finalizing.load(Ordering::SeqCst) { return Err("recording is finalizing".into()); }
     if live.handle.lock().unwrap().is_some() {
         return Ok(());
     }
