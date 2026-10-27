@@ -3,6 +3,7 @@ import { assertAudioBlock, assertSegment } from './contracts';
 
 export type RemoteEngineOptions = {
 	url: string;
+	token?: string;
 	maxQueuedBlocks?: number;
 	reconnectMs?: number;
 };
@@ -29,7 +30,7 @@ export class RemoteEngine implements RecognitionEngine {
 	private connecting = false;
 
 	constructor(options: RemoteEngineOptions) {
-		this.options = { maxQueuedBlocks: 256, reconnectMs: 500, ...options };
+		this.options = { maxQueuedBlocks: 256, reconnectMs: 500, token: '', ...options };
 	}
 
 	async start(sessionId: string): Promise<void> {
@@ -67,7 +68,9 @@ export class RemoteEngine implements RecognitionEngine {
 		if (this.connecting || this.socket?.readyState === WebSocket.OPEN) return Promise.resolve();
 		this.connecting = true;
 		return new Promise((resolve, reject) => {
-			const socket = new WebSocket(`${this.options.url.replace(/\/$/, '')}/v1/sessions/${encodeURIComponent(this.sessionId)}/live`);
+			const socket = this.options.token
+				? new WebSocket(`${this.options.url.replace(/\/$/, '')}/v1/sessions/${encodeURIComponent(this.sessionId)}/live`, [`bearer.${this.options.token}`])
+				: new WebSocket(`${this.options.url.replace(/\/$/, '')}/v1/sessions/${encodeURIComponent(this.sessionId)}/live`);
 			this.socket = socket;
 			socket.binaryType = 'arraybuffer';
 			socket.onopen = () => { this.connecting = false; this.flush(); resolve(); };

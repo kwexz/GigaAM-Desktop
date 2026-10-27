@@ -139,10 +139,25 @@ async fn model_status(State(_state): State<ServerState>) -> impl IntoResponse {
 async fn live_socket(
     State(state): State<ServerState>,
     AxumPath(session_id): AxumPath<String>,
+    headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
     if !valid_session_id(&session_id) {
         return bad_request("invalid session id");
+    }
+    let authorized = headers
+        .get("sec-websocket-protocol")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("bearer."))
+        .is_some_and(|token| token.as_bytes() == state.config.bearer_token.as_bytes());
+    if !authorized {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(ErrorBody {
+                error: "unauthorized",
+            }),
+        )
+            .into_response();
     }
     upgrade
         .on_upgrade(move |socket| handle_live_socket(socket, state, session_id))
