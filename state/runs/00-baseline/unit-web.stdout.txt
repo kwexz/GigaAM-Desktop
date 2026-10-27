@@ -7,7 +7,7 @@
 
 
  Test Files  1 passed (1)
-      Tests  6 passed (6)
-   Start at  19:05:54
-   Duration  5.18s (tests 31%, environment 30%, transform 26%, setup 12%)
+      Tests  7 passed (7)
+   Start at  19:11:11
+   Duration  10.16s (transform 29%, tests 28%, environment 28%, setup 15%, import 1%)
 

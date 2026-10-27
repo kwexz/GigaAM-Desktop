@@ -1002,6 +1002,7 @@ fn live_finalizing(live: tauri::State<'_, LiveState>) -> bool {
 
 #[tauri::command]
 async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let stop_requested = std::time::Instant::now();
     // Native joins and archive encoding must never execute on the webview
     // command thread. The session remains guarded until durable completion.
     let (acknowledge, acknowledgement) = tokio::sync::oneshot::channel();
@@ -1024,6 +1025,9 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
             .begin_live_finalization(&id, now_ms()).map_err(|error| error.to_string());
         let result = finalization::finish_after_acknowledgement(|| {
         if persistence_start.is_ok() {
+            if let Some(path) = debug_log_path(&app) {
+                debug_log(&path, &format!("stop_ack_ms={} session={id}", stop_requested.elapsed().as_millis()));
+            }
             if let Some(sender) = acknowledge.take() { let _ = sender.send(Ok(Vec::new())); }
         }
         }, || stop_live_blocking(
@@ -1050,6 +1054,9 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
         let status_result = app.state::<Arc<Mutex<Store>>>().lock().map_err(|_| "store lock poisoned")?
             .finish_live_finalization(&id, result.is_ok(), now_ms()).map_err(|error| error.to_string());
         status_result?;
+        if let Some(path) = debug_log_path(&app) {
+            debug_log(&path, &format!("stop_finalization_ms={} session={id}", stop_requested.elapsed().as_millis()));
+        }
         persistence_start?;
         result
         })();
