@@ -137,6 +137,7 @@ pub struct LiveCapture {
     pub system_capture_state: String,
     pub microphone_base_sample: usize,
     pub system_base_sample: usize,
+    archive_error: Option<String>,
     pub error: Option<String>,
 }
 
@@ -197,6 +198,7 @@ impl LiveCapture {
             microphone_base_sample: 0,
             system_base_sample: 0,
             error: None,
+            archive_error: None,
         }
     }
 
@@ -222,6 +224,9 @@ impl LiveCapture {
     }
 
     pub fn finish(&mut self) -> Result<Vec<PathBuf>> {
+        if let Some(error) = &self.archive_error {
+            anyhow::bail!("Audio archive integrity compromised; raw material retained: {error}");
+        }
         if !self.keep_audio {
             return Ok(Vec::new());
         }
@@ -382,6 +387,7 @@ impl LiveCapture {
             }
         }
         if let Err(error) = self.append_archive(microphone, &samples) {
+            self.archive_error = Some(error.to_string());
             self.error = Some(error.to_string());
             return;
         }
@@ -1130,6 +1136,15 @@ pub mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compromised_archive_cannot_report_success_even_if_capture_error_clears() {
+        let mut capture = LiveCapture::new("failed-archive".into(), 0, LiveSource::Microphone,
+            None, true, ArchiveFormat::Wav, 1.0, PathBuf::new(), None);
+        capture.archive_error = Some("injected partial write".into());
+        capture.error = None;
+        assert!(capture.finish().unwrap_err().to_string().contains("integrity compromised"));
+    }
 
     #[test]
     fn dual_tracks_remain_separate() {

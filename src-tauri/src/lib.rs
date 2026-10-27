@@ -949,10 +949,8 @@ fn pause_live(live: tauri::State<'_, LiveState>) -> Result<(), String> {
     if live.capture.lock().unwrap().is_none() {
         return Err("no active recording".into());
     }
-    if live.handle.lock().unwrap().is_some() {
-        if let Some(handle) = live.handle.lock().unwrap().as_ref() {
-            handle.request_stop();
-        }
+    if let Some(handle) = live.handle.lock().unwrap().take() {
+        handle.stop();
         live.paused.store(true, Ordering::Relaxed);
     }
     Ok(())
@@ -1015,8 +1013,8 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
         drop(lifecycle);
         // Stop device ingress even if writing finalization metadata fails.
         // Otherwise an error could leave an invisible recording running.
-        if let Some(handle) = live.handle.lock().unwrap().take() {
-            handle.stop();
+        if let Some(handle) = live.handle.lock().unwrap().as_ref() {
+            handle.request_stop();
         }
         let persistence_start = app.state::<Arc<Mutex<Store>>>().lock().map_err(|_| "store lock poisoned")?
             .begin_live_finalization(&id, now_ms()).map_err(|error| error.to_string());

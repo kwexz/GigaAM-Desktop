@@ -1,7 +1,8 @@
    Compiling gigaam-desktop v0.1.2 (C:\Source\GigaAM-UI\src-tauri)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.32s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.41s
      Running unittests src\lib.rs (src-tauri\target\debug\deps\gigaam_desktop_lib-7517bf4e0d3ecea8.exe)
      Running unittests src\main.rs (src-tauri\target\debug\deps\gigaam_desktop-45e2730e259fa9e3.exe)
      Running tests\live_model.rs (src-tauri\target\debug\deps\live_model-aac9b906925a5c83.exe)
+     Running tests\long_archive.rs (src-tauri\target\debug\deps\long_archive-6dd058ea0ee560e8.exe)
      Running tests\signal_fixtures.rs (src-tauri\target\debug\deps\signal_fixtures-eaa9dfa37a412c30.exe)
    Doc-tests gigaam_desktop_lib
