@@ -13,7 +13,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use serde::Serialize;
 use tokio::{
@@ -57,6 +57,21 @@ struct UploadBody {
     durable: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct SessionBody {
+    session_id: String,
+    recording: &'static str,
+    upload: &'static str,
+    recognition: &'static str,
+    sync: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct ModelBody {
+    enabled: bool,
+    manifest: Option<&'static str>,
+}
+
 pub fn router(config: ServerConfig) -> Router {
     let state = ServerState {
         jobs: Arc::new(Semaphore::new(config.max_concurrent_jobs.max(1))),
@@ -64,6 +79,13 @@ pub fn router(config: ServerConfig) -> Router {
     };
     Router::new()
         .route("/health", get(health))
+        .route("/v1/model", get(model_status))
+        .route("/v1/sessions", get(list_sessions))
+        .route("/v1/sessions/{session_id}", get(session_status))
+        .route(
+            "/v1/sessions/{session_id}/recognition",
+            put(start_recognition),
+        )
         .route(
             "/v1/sessions/{session_id}/audio",
             post(upload_audio).get(download_audio),
@@ -99,6 +121,83 @@ async fn health(State(_state): State<ServerState>) -> impl IntoResponse {
         status: "ok",
         model_enabled: false,
     })
+}
+
+async fn model_status(State(_state): State<ServerState>) -> impl IntoResponse {
+    axum::Json(ModelBody {
+        enabled: false,
+        manifest: None,
+    })
+}
+
+async fn list_sessions(State(state): State<ServerState>) -> Response {
+    let directory = state.config.data_dir.join("sessions");
+    let mut entries = match fs::read_dir(directory).await {
+        Ok(entries) => entries,
+        Err(_) => return axum::Json(Vec::<SessionBody>::new()).into_response(),
+    };
+    let mut sessions = Vec::new();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if let Ok(file_type) = entry.file_type().await
+            && file_type.is_dir()
+            && entry.file_name().to_str().is_some_and(valid_session_id)
+        {
+            sessions.push(SessionBody {
+                session_id: entry.file_name().to_string_lossy().into_owned(),
+                recording: "idle",
+                upload: "durable",
+                recognition: "not_started",
+                sync: "disabled",
+            });
+        }
+    }
+    axum::Json(sessions).into_response()
+}
+
+async fn session_status(
+    State(state): State<ServerState>,
+    AxumPath(session_id): AxumPath<String>,
+) -> Response {
+    if !valid_session_id(&session_id) {
+        return bad_request("invalid session id");
+    }
+    let path = state
+        .config
+        .data_dir
+        .join("sessions")
+        .join(&session_id)
+        .join("audio.bin");
+    if fs::metadata(path).await.is_err() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    axum::Json(SessionBody {
+        session_id,
+        recording: "idle",
+        upload: "durable",
+        recognition: "not_started",
+        sync: "disabled",
+    })
+    .into_response()
+}
+
+async fn start_recognition(
+    State(_state): State<ServerState>,
+    AxumPath(session_id): AxumPath<String>,
+) -> Response {
+    if !valid_session_id(&session_id) {
+        return bad_request("invalid session id");
+    }
+    (
+        StatusCode::ACCEPTED,
+        axum::Json(SessionBody {
+            session_id,
+            recording: "idle",
+            upload: "durable",
+            recognition: "queued",
+            sync: "disabled",
+        }),
+    )
+        .into_response()
 }
 
 async fn upload_audio(
