@@ -6,8 +6,8 @@
  RUN  v5.0.5 C:/Source/GigaAM-UI
 
 
- Test Files  3 passed (3)
-      Tests  11 passed (11)
-   Start at  23:47:20
-   Duration  6.68s (transform 42%, environment 31%, tests 16%, setup 11%)
+ Test Files  5 passed (5)
+      Tests  13 passed (13)
+   Start at  23:54:34
+   Duration  7.61s (transform 41%, environment 35%, setup 15%, tests 9%)
 

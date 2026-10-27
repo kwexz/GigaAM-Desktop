@@ -1,15 +1,15 @@
 warning: field `duration_samples` is never read
-   --> src\server.rs:159:5
+   --> src\server.rs:165:5
     |
-153 | struct LiveEnvelope {
+159 | struct LiveEnvelope {
     |        ------------ field in this struct
 ...
-159 |     duration_samples: u32,
+165 |     duration_samples: u32,
     |     ^^^^^^^^^^^^^^^^
     |
     = note: `LiveEnvelope` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: `gigaam-desktop` (lib test) generated 1 warning
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.71s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.05s
      Running unittests src\lib.rs (src-tauri\target\debug\deps\gigaam_desktop_lib-05b0b8a71d7b08a9.exe)
