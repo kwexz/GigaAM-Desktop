@@ -679,6 +679,8 @@ pub mod platform {
                     } else {
                         enumerator.get_default_device(&direction)?
                     };
+                    let endpoint_id = device.get_id()?;
+                    let mut endpoint_checked = std::time::Instant::now();
                     // Open the device in its native mix format and convert
                     // here (downmix + resample to 48 kHz mono). Engine
                     // autoconvert stays ON: this engine rejects some
@@ -870,6 +872,12 @@ pub mod platform {
                         else { state.system_capture_state = value.into(); }
                     }
                     while !stop_flag.load(Ordering::Relaxed) {
+                        if !mic && endpoint_checked.elapsed() >= std::time::Duration::from_secs(1) {
+                            endpoint_checked = std::time::Instant::now();
+                            if enumerator.get_default_device(&direction)?.get_id()? != endpoint_id {
+                                anyhow::bail!("AUDCLNT_E_DEVICE_INVALIDATED: default render endpoint changed");
+                            }
+                        }
                         let t0 = std::time::Instant::now();
                         let info = reader.read_from_device_to_deque(&mut bytes)?;
                         let t1 = std::time::Instant::now();
