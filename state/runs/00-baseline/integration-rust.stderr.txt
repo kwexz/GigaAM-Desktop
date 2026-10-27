@@ -1,4 +1,17 @@
    Compiling gigaam-desktop v0.1.2 (C:\Source\GigaAM-UI\src-tauri)
+warning: field `duration_samples` is never read
+   --> src\server.rs:159:5
+    |
+153 | struct LiveEnvelope {
+    |        ------------ field in this struct
+...
+159 |     duration_samples: u32,
+    |     ^^^^^^^^^^^^^^^^
+    |
+    = note: `LiveEnvelope` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `gigaam-desktop` (lib test) generated 1 warning
 warning: function `transcode_raw_to_flac` is never used
    --> src\live.rs:509:4
     |
@@ -52,6 +65,17 @@ warning: method `compact_audio_tail` is never used
 1071 |     pub(crate) fn compact_audio_tail(&mut self, keep_16k: usize) {
      |                   ^^^^^^^^^^^^^^^^^^
 
+warning: field `duration_samples` is never read
+   --> src\server.rs:159:5
+    |
+153 | struct LiveEnvelope {
+    |        ------------ field in this struct
+...
+159 |     duration_samples: u32,
+    |     ^^^^^^^^^^^^^^^^
+    |
+    = note: `LiveEnvelope` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
 warning: function `rss_plateau_smoke` is never used
   --> src\streaming.rs:32:15
    |
@@ -64,15 +88,15 @@ warning: function `process_rss` is never used
 58 | fn process_rss(system: &mut sysinfo::System) -> Result<u64> {
    |    ^^^^^^^^^^^
 
-warning: `gigaam-desktop` (lib) generated 10 warnings
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 09s
-     Running unittests src\lib.rs (src-tauri\target\debug\deps\gigaam_desktop_lib-bcedf423450385b1.exe)
-     Running unittests src\main.rs (src-tauri\target\debug\deps\gigaam_desktop-31325d03e011db45.exe)
-     Running unittests src\bin\gigaam_server.rs (src-tauri\target\debug\deps\gigaam_server-e996fd67b9da4bc5.exe)
-     Running tests\live_lifecycle.rs (src-tauri\target\debug\deps\live_lifecycle-06d8a1c3b2209ce9.exe)
-     Running tests\live_model.rs (src-tauri\target\debug\deps\live_model-34da9ff42f64951b.exe)
-     Running tests\long_archive.rs (src-tauri\target\debug\deps\long_archive-1221ae9afd88e71a.exe)
-     Running tests\signal_fixtures.rs (src-tauri\target\debug\deps\signal_fixtures-cb03ecba20d91d7f.exe)
-     Running tests\streaming_long_model.rs (src-tauri\target\debug\deps\streaming_long_model-f4eedff662272d8d.exe)
-     Running tests\streaming_model.rs (src-tauri\target\debug\deps\streaming_model-cc6cac779db2f75e.exe)
+warning: `gigaam-desktop` (lib) generated 11 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 24s
+     Running unittests src\lib.rs (src-tauri\target\debug\deps\gigaam_desktop_lib-05b0b8a71d7b08a9.exe)
+     Running unittests src\main.rs (src-tauri\target\debug\deps\gigaam_desktop-faeac3e135a20fdd.exe)
+     Running unittests src\bin\gigaam_server.rs (src-tauri\target\debug\deps\gigaam_server-1982685a2926f953.exe)
+     Running tests\live_lifecycle.rs (src-tauri\target\debug\deps\live_lifecycle-185300223ecb392a.exe)
+     Running tests\live_model.rs (src-tauri\target\debug\deps\live_model-541eb39e2bbe67e6.exe)
+     Running tests\long_archive.rs (src-tauri\target\debug\deps\long_archive-04f693cf6f847f7a.exe)
+     Running tests\signal_fixtures.rs (src-tauri\target\debug\deps\signal_fixtures-d8f7d71249355a1d.exe)
+     Running tests\streaming_long_model.rs (src-tauri\target\debug\deps\streaming_long_model-689a2a2f37197552.exe)
+     Running tests\streaming_model.rs (src-tauri\target\debug\deps\streaming_model-9203f3eab05538bb.exe)
    Doc-tests gigaam_desktop_lib
