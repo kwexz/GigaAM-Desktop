@@ -352,6 +352,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn versioned_audio_and_segment_events_round_trip_and_validate() {
+        let audio = AudioBlockEvent {
+            version: CONTRACT_VERSION,
+            session_id: "session".into(),
+            track_id: TrackId::Microphone,
+            seq: 7,
+            sample_rate: 48_000,
+            absolute_sample_start: 3_360,
+            duration_samples: 480,
+            codec: "pcm_f32le".into(),
+            codec_config: None,
+            final_block: false,
+            discontinuity: false,
+            idempotency_key: "session:microphone:7".into(),
+        };
+        let decoded: AudioBlockEvent =
+            serde_json::from_str(&serde_json::to_string(&audio).unwrap()).unwrap();
+        assert_eq!(decoded, audio);
+        assert!(decoded.validate().is_ok());
+        assert!(
+            AudioBlockEvent {
+                version: 99,
+                ..audio
+            }
+            .validate()
+            .is_err()
+        );
+
+        let segment = TranscriptSegmentEvent {
+            version: CONTRACT_VERSION,
+            session_id: "session".into(),
+            segment_id: "segment".into(),
+            track_id: TrackId::System,
+            seq: 2,
+            start_seconds: 1.0,
+            end_seconds: 2.0,
+            text: "реплика".into(),
+            final_segment: true,
+            revision: 3,
+            idempotency_key: "session:segment:3".into(),
+        };
+        assert!(segment.validate().is_ok());
+        assert!(
+            TranscriptSegmentEvent {
+                end_seconds: 0.0,
+                ..segment
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
     fn segment_serialization_is_stable() {
         let segment = TranscriptSegment::new(
             "tx-1",
