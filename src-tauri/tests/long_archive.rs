@@ -27,10 +27,24 @@ fn thirty_minute_archive_preserves_duration() {
         capture.append_timed(true, 10_000_000 + second * 10_000_000, vec![0.0; 48_000]);
     }
     let archive_started = std::time::Instant::now();
-    let paths = capture.finish().unwrap();
+    let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        gigaam_desktop_lib::finalization::finish_after_acknowledgement(
+            || { ack_tx.send(()).unwrap(); },
+            || {
+                release_rx.recv().unwrap();
+                capture.finish().map_err(|error| error.to_string())
+            },
+        )
+    });
+    ack_rx.recv_timeout(std::time::Duration::from_millis(500)).unwrap();
+    let ack_ms = archive_started.elapsed().as_millis();
+    release_tx.send(()).unwrap();
+    let paths = worker.join().unwrap().unwrap();
     let reader = hound::WavReader::open(&paths[0]).unwrap();
     assert_eq!(reader.duration(), 1800 * 48_000);
-    println!("synthetic_duration_s=1800 archive_ms={} total_ms={}", archive_started.elapsed().as_millis(), started.elapsed().as_millis());
+    println!("synthetic_duration_s=1800 orchestration_ack_ms={ack_ms} archive_ms={} total_ms={}", archive_started.elapsed().as_millis(), started.elapsed().as_millis());
     drop(reader);
     // Remove only this test's known files, never unrelated temp directories.
     for entry in std::fs::read_dir(&directory).unwrap() {
