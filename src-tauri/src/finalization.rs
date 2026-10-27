@@ -14,6 +14,17 @@ impl Drop for FinalizationClaim<'_> {
     fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); }
 }
 
+/// Production ordering seam: acknowledge stopped ingress before slow work.
+/// Panics in finalization become an explicit failure, never a silent detach.
+pub fn finish_after_acknowledgement<T>(
+    acknowledge: impl FnOnce(),
+    finish: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    acknowledge();
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(finish))
+        .unwrap_or_else(|_| Err("Live finalizer panicked; raw audio retained for recovery".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -24,16 +35,26 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            ack_tx.send(()).unwrap();
-            // Deterministic blocked-storage simulation, released by caller.
-            release_rx.recv().unwrap();
-            finished_tx.send(()).unwrap();
+            finish_after_acknowledgement(|| ack_tx.send(()).unwrap(), || {
+                release_rx.recv().unwrap();
+                finished_tx.send(()).unwrap();
+                Ok(())
+            }).unwrap();
         });
         ack_rx.recv_timeout(std::time::Duration::from_millis(500)).unwrap();
         assert!(finished_rx.try_recv().is_err());
         release_tx.send(()).unwrap();
         worker.join().unwrap();
         finished_rx.recv().unwrap();
+    }
+
+    #[test]
+    fn production_ordering_converts_post_ack_panic_to_error() {
+        let acknowledged = std::cell::Cell::new(false);
+        let result: Result<(), String> = finish_after_acknowledgement(
+            || acknowledged.set(true), || panic!("injected archive panic"));
+        assert!(acknowledged.get());
+        assert!(result.unwrap_err().contains("panicked"));
     }
 
     #[test]

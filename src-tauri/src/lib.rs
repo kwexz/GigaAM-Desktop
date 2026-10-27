@@ -1020,15 +1020,16 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
         }
         let persistence_start = app.state::<Arc<Mutex<Store>>>().lock().map_err(|_| "store lock poisoned")?
             .begin_live_finalization(&id, now_ms()).map_err(|error| error.to_string());
+        let result = finalization::finish_after_acknowledgement(|| {
         if persistence_start.is_ok() {
             if let Some(sender) = acknowledge.take() { let _ = sender.send(Ok(Vec::new())); }
         }
-        let result = catch_unwind(AssertUnwindSafe(|| stop_live_blocking(
+        }, || stop_live_blocking(
             app.state::<Arc<Mutex<Store>>>(),
             app.state::<LiveState>(),
             app.state::<WorkerHandle>(),
             app.clone(),
-        ))).unwrap_or_else(|_| Err("Live finalizer panicked; raw audio retained for recovery".into()));
+        ));
         if let Err(error) = &result {
             *live.error.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.clone());
             if let Ok(mut store) = app.state::<Arc<Mutex<Store>>>().lock() {
