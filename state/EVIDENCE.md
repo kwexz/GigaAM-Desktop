@@ -165,3 +165,13 @@ pm run build passed.
 - Added authenticated /v1/sessions/{session_id}/live WebSocket boundary with bounded binary frame size and durable ACK ordering: binary frame is appended to session spool, sync_data completes, then ACK is emitted. Text control envelopes and ping/pong are supported.
 - This is an adapter boundary, not a claimed end-to-end remote ASR result. Sequence/checksum/resume protocol and dual-track ONNX/VPS RTF measurements remain open acceptance gates.
 - No phase checkpoint created.
+
+## Phase 06 verification (2026-10-27T20:49:59Z)
+
+- Client RemoteEngine added with bounded queue, per-track sequence/idempotency keys, SHA-256 checksums, bufferedAmount backpressure, reconnect replay of unacknowledged frames, durable cursor tracking, and malformed remote segment rejection.
+- Server WebSocket boundary now authenticates HTTP Bearer or browser bearer subprotocol, requires envelope then binary payload, verifies checksum, rejects sequence gaps, acknowledges duplicates idempotently, appends to per-session spool and sync_data before ACK.
+- Frontend checks: 
+pm run check passed; 
+pm test passed 3 files / 11 tests. Rust locked baseline passed all six commands; 86 Rust library tests including server auth/upload/range tests and full integration suite passed.
+- SSH read-only inventory: sqrthost-ism and ismvphost reachable; staging directory creation was attempted without modifying services. No Cargo toolchain was available from the inventory output, so remote binary deployment/dual-track ONNX RTF is blocked_external. ismvphost is restricted to API/static due to 956 MB RAM and 1.5 GB free disk.
+- Honest boundaries: real dual-track remote ASR, packet-loss/restart 5–10 minute E2E, and p50/p95 ACK/RTF/RSS measurements are blocked_external pending a safe Rust-capable staging runtime; local protocol reliability and localhost server smoke are verified. Physical devices/macOS remain final external boundaries.

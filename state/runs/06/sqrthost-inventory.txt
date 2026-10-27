@@ -1,0 +1,16 @@
+﻿read-only SSH inventory (2026-10-27)
+
+sqrthost-ism
+Linux sqrthost 7.0.0-34-generic x86_64
+uid=1002(ism)
+RAM total 3910 MiB, available 2066 MiB
+root available 78 GiB
+cargo/rustc command presence: not returned by inventory command
+staging directory requested: ~/gigaam-staging-phase06
+
+ismvphost
+Linux ismvphost 7.0.0-28-generic x86_64
+uid=1000(ism)
+RAM total 956 MiB, available 289 MiB
+root available 1.5 GiB
+API/static only; no ASR planned
