@@ -1,10 +1,10 @@
 # GigaAM Desktop — состояние автономного плана
 
-- `current_phase`: `06`
+- `current_phase`: `07`
 - `phase_state`: `pending`
-- `last_verified_commit`: `d887c13`
+- `last_verified_commit`: `fd0798d`
 - `current_branch`: `feature/gigaam-desktop-web-autonomy`
-- `blocking_issue`: `05 passed with localhost API smoke; real VPS deployment is blocked_external and public bind is prohibited`
+- `blocking_issue`: `06 passed with local protocol reliability; real dual-track VPS ASR/RTF is blocked_external pending Rust-capable staging runtime`
 - `last_update_utc`: `2026-10-27`
 
 ## Источник истины
@@ -21,7 +21,7 @@
 | 03 | Universal contracts | passed | c6556f4 | Versioned Rust/TypeScript events, FSM states, frontend ports, compatibility tests, ADR |
 | 04 | Browser capture & storage | passed | 29a9075 | Browser mic/system adapter, OPFS/IndexedDB storage, Edge synthetic E2E |
 | 05 | Rust VPS API | passed | d887c13 | Authenticated localhost Axum API, bounded upload, Range download, session/model status, safe server binary |
-| 06 | Remote Live transport | pending | — | — |
+| 06 | Remote Live transport | passed | fd0798d | Bounded RemoteEngine, authenticated WS, checksum/durable ACK, sequence gap rejection, reconnect replay |
 | 07 | Web E2E, resilience | pending | — | — |
 | 08 | Local summarization | pending | — | — |
 | 09 | Optional in-browser ASR | pending | — | — |
