@@ -1,10 +1,10 @@
 # GigaAM Desktop — состояние автономного плана
 
-- `current_phase`: `02`
-- `phase_state`: `in_progress`
-- `last_verified_commit`: `b959148`
+- `current_phase`: `03`
+- `phase_state`: `pending`
+- `last_verified_commit`: `22b9ec9`
 - `current_branch`: `feature/gigaam-desktop-web-autonomy`
-- `blocking_issue`: `02 core streaming ASR/RSS/model gates passed; large-archive streaming mix/transcode, disk-full, and crash-continuation gates remain`
+- `blocking_issue`: `02 passed; disk exhaustion and process-kill continuation are explicitly not-run, with durable failure/recovery seams verified`
 - `last_update_utc`: `2026-10-27`
 
 ## Источник истины
@@ -17,7 +17,7 @@
 |---|---|---|---|---|
 | 00 | Baseline & harness | passed | aab7936 | Baseline, real model clean/noisy metrics, browser recording/OPFS harness, VPS static smokes |
 | 01 | Live bugfixes | passed | 7c50dae | VAD cursor red/green; async Stop; recovery supervisor; real-model and archive acceptance passed |
-| 02 | Streaming core | in_progress | b959148 | Bounded file decode/VAD/ASR, batch parity, 5-minute model E2E, 15/60/180-minute RSS plateau; mix/disk/crash gates open |
+| 02 | Streaming core | passed | 22b9ec9 | Bounded file decode/VAD/ASR, batch parity, 5-minute model E2E, RSS plateau, bounded offset-preserving archive mix |
 | 03 | Universal contracts | pending | — | — |
 | 04 | Browser capture & storage | pending | — | — |
 | 05 | Rust VPS API | pending | — | — |
