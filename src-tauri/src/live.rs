@@ -291,6 +291,7 @@ impl LiveCapture {
         if !tracks.is_empty() {
             let manifest = self.directory.join("tracks.json");
             let staged = self.directory.join("tracks.json.partial");
+            archive_guard.paths.push(staged.clone());
             fs::write(&staged, serde_json::to_string_pretty(&tracks)?)?;
             fs::OpenOptions::new().write(true).open(&staged)?.sync_all()?;
             check_archive_cancel(Some(&self.finalization_cancel))?;
