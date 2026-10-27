@@ -11,19 +11,21 @@ export interface CloudStorageProvider extends SyncProvider {
 export class MockCloudProvider implements CloudStorageProvider {
 	readonly name = 'mock' as const;
 	private records = new Map<string, SyncRecord>();
+	private journal: Array<{ cursor: number; change: SyncRecord }> = [];
 	private cursor = 0;
 	private loggedOut = false;
 	async changesSince(cursor: string | null): Promise<{ cursor: string; changes: TranscriptChange[] }> {
 		if (this.loggedOut) throw new Error('provider logged out');
 		const from = Number(cursor ?? 0);
-		return { cursor: String(this.cursor), changes: [...this.records.values()].filter((record) => record.revision > from) };
+		return { cursor: String(this.cursor), changes: this.journal.filter((entry) => entry.cursor > from).map((entry) => entry.change) };
 	}
 	async applyChange(change: TranscriptChange): Promise<void> {
 		if (this.loggedOut) throw new Error('provider logged out');
 		const previous = this.records.get(change.change_id);
 		if (previous && previous.revision >= change.revision) return;
 		this.records.set(change.change_id, change);
-		this.cursor = Math.max(this.cursor, change.revision);
+		this.cursor += 1;
+		this.journal.push({ cursor: this.cursor, change });
 	}
 	async logout(): Promise<void> { this.loggedOut = true; }
 }
