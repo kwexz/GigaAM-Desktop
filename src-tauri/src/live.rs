@@ -969,8 +969,7 @@ pub mod platform {
                 })();
                 if let Err(error) = result {
                     let message = error.to_string();
-                    let invalidated = message.contains("88890004") || message.contains("88890026")
-                        || message.to_ascii_lowercase().contains("device_invalidated");
+                    let invalidated = crate::capture_recovery::is_device_invalidation(&message);
                     let explicitly_selected = mic && capture.lock().unwrap().microphone_device.is_some();
                     if let crate::capture_recovery::RecoveryAction::RetryAfter(delay) =
                         crate::capture_recovery::device_recovery_action(invalidated, reconnect_attempts, explicitly_selected)

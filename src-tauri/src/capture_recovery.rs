@@ -8,6 +8,12 @@ pub enum RecoveryAction {
     Fail,
 }
 
+pub fn is_device_invalidation(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("88890004") || message.contains("88890026")
+        || message.contains("device_invalidated")
+}
+
 pub fn device_recovery_action(invalidated: bool, attempts: usize, explicitly_selected: bool) -> RecoveryAction {
     if !invalidated { return RecoveryAction::KeepCurrent; }
     // Never replace a user-selected microphone with a different endpoint.
@@ -18,6 +24,13 @@ pub fn device_recovery_action(invalidated: bool, attempts: usize, explicitly_sel
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn invalidation_classification_does_not_retry_unrelated_failures() {
+        assert!(is_device_invalidation("HRESULT 0x88890004"));
+        assert!(is_device_invalidation("AUDCLNT_E_DEVICE_INVALIDATED"));
+        assert!(!is_device_invalidation("permission denied"));
+        assert!(!is_device_invalidation("device added"));
+    }
     #[test]
     fn added_device_does_not_restart_healthy_capture() {
         assert_eq!(device_recovery_action(false, 0, false), RecoveryAction::KeepCurrent);
