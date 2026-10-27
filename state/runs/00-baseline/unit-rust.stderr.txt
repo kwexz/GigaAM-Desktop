@@ -1,2 +1,4 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.67s
-     Running unittests src\lib.rs (src-tauri\target\debug\deps\gigaam_desktop_lib-7517bf4e0d3ecea8.exe)
+    Blocking waiting for file lock on build directory
+   Compiling gigaam-desktop v0.1.2 (C:\Source\GigaAM-UI\src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.59s
+     Running unittests src\lib.rs (src-tauri\target\debug\deps\gigaam_desktop_lib-bcedf423450385b1.exe)

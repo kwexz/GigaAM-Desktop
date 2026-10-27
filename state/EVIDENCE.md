@@ -151,3 +151,11 @@ pm test passed, 2 files / 10 tests.
 pm run build passed.
 - Playwright: PLAYWRIGHT_CHANNEL=msedge npx playwright test --workers=1 passed 2/2 (synthetic deterministic capture harness; 39.0 s). The earlier 2-worker run exited 1 without assertion details; serial rerun is the reproducible accepted result.
 - Honest boundaries: fake streams are mocked capture integration, not physical microphone/system-audio E2E; actual tab-close prompt, quota exhaustion, permission cancellation, seek/export/reload persistence, and CLI container SHA/duration validation remain not-run. Browser ASR/model download and VPS ASR are intentionally not part of phase 04.
+
+## Phase 05 verification (2026-10-27T19:28:13Z)
+
+- Added src-tauri/src/server.rs and gigaam-server binary. Server refuses non-loopback bind unless explicitly opted in, requires bearer auth for resources, uses bounded upload semaphore, streams upload to .partial then fsync/rename, validates session IDs, serves HTTP Range audio, and exposes health/model/session/status/recognition endpoints. ASR remains disabled in this API-only adapter; no work runs on the async reactor.
+- Rust server tests: auth, upload limit, traversal rejection, durable rename and Range response passed. Full baseline after server changes: all six commands exit 0; integration suite passed.
+- Localhost smoke via built binary: health=200 unauth=401 upload=201 range=2345.
+- SSH inventory verified read-only: sqrthost-ism 2 vCPU/3.9 GB/78 GB free; ismvphost 1 vCPU/956 MB/1.5 GB free. No remote services changed; no ASR run on either host. Real VPS staging deployment/RTF/RSS is blocked by external deployment approval and intentionally not-run.
+- Honest boundaries: HTTPS proxy, external auth/CSRF integration, multipart parser, model-enabled inference and UI upload→remote-ASR E2E are deferred to remote transport/resilience phases; this phase provides the authenticated API boundary and safe localhost staging binary.

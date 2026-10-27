@@ -65,13 +65,14 @@ warning: function `process_rss` is never used
    |    ^^^^^^^^^^^
 
 warning: `gigaam-desktop` (lib) generated 10 warnings
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.30s
-     Running unittests src\lib.rs (src-tauri\target\debug\deps\gigaam_desktop_lib-7517bf4e0d3ecea8.exe)
-     Running unittests src\main.rs (src-tauri\target\debug\deps\gigaam_desktop-45e2730e259fa9e3.exe)
-     Running tests\live_lifecycle.rs (src-tauri\target\debug\deps\live_lifecycle-5de9e33ce796c6de.exe)
-     Running tests\live_model.rs (src-tauri\target\debug\deps\live_model-aac9b906925a5c83.exe)
-     Running tests\long_archive.rs (src-tauri\target\debug\deps\long_archive-6dd058ea0ee560e8.exe)
-     Running tests\signal_fixtures.rs (src-tauri\target\debug\deps\signal_fixtures-eaa9dfa37a412c30.exe)
-     Running tests\streaming_long_model.rs (src-tauri\target\debug\deps\streaming_long_model-f5da7e66ba66614f.exe)
-     Running tests\streaming_model.rs (src-tauri\target\debug\deps\streaming_model-721c53e76a68599f.exe)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 09s
+     Running unittests src\lib.rs (src-tauri\target\debug\deps\gigaam_desktop_lib-bcedf423450385b1.exe)
+     Running unittests src\main.rs (src-tauri\target\debug\deps\gigaam_desktop-31325d03e011db45.exe)
+     Running unittests src\bin\gigaam_server.rs (src-tauri\target\debug\deps\gigaam_server-e996fd67b9da4bc5.exe)
+     Running tests\live_lifecycle.rs (src-tauri\target\debug\deps\live_lifecycle-06d8a1c3b2209ce9.exe)
+     Running tests\live_model.rs (src-tauri\target\debug\deps\live_model-34da9ff42f64951b.exe)
+     Running tests\long_archive.rs (src-tauri\target\debug\deps\long_archive-1221ae9afd88e71a.exe)
+     Running tests\signal_fixtures.rs (src-tauri\target\debug\deps\signal_fixtures-cb03ecba20d91d7f.exe)
+     Running tests\streaming_long_model.rs (src-tauri\target\debug\deps\streaming_long_model-f4eedff662272d8d.exe)
+     Running tests\streaming_model.rs (src-tauri\target\debug\deps\streaming_model-cc6cac779db2f75e.exe)
    Doc-tests gigaam_desktop_lib

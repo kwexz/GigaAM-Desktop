@@ -1,0 +1,17 @@
+﻿phase: 05
+outcome: passed
+code_commit_sha: 01b6a4527b8ed2d039f07547eb6e5b5f12c8004e
+verified_utc: 2026-10-27T19:28:13Z
+logs:
+  - state/runs/00-baseline/results.json
+  - state/EVIDENCE.md
+matrix:
+  server_compile: verified (locked cargo check/build)
+  server_unit: verified (auth/upload/range/path safety)
+  baseline: verified (six commands exit 0)
+  localhost_smoke: verified (health 200, unauthorized 401, upload 201, range body 2345)
+  sqrthost_inventory: verified (read-only; no deployment)
+  ismvphost_inventory: verified (read-only; API-only host; no ASR)
+  real_vps_staging: blocked_external (deployment approval/external staging boundary)
+  public_ports: not-run (refused by policy)
+  oauth_external_auth: not-run (phase 10)
