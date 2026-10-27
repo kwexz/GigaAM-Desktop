@@ -1138,11 +1138,8 @@ fn stop_live_blocking(
             } else {
                 let _ = store.fail_if_not_cancelled(&id, &error.to_string(), now_ms());
             }
-            for extension in ["flac", "wav", "mp3"] {
-                let _ =
-                    std::fs::remove_file(capture.directory.join(format!("microphone.{extension}")));
-                let _ = std::fs::remove_file(capture.directory.join(format!("system.{extension}")));
-            }
+            // LiveCapture owns exact staged-output rollback. Do not delete
+            // legacy filenames here: they may be valid recovery archives.
             drop(capture);
             *live.capture.lock().unwrap() = None;
             let _ = worker.0.send(());
