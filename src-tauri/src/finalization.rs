@@ -30,6 +30,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cancellation_between_publication_and_reconciliation_is_observed() {
+        use std::sync::{Arc, Barrier, Mutex};
+        let token = Arc::new(AtomicBool::new(false));
+        let published = Arc::new(Mutex::new(None::<Arc<AtomicBool>>));
+        let persisted = Arc::new(AtomicBool::new(false));
+        let barrier = Arc::new(Barrier::new(2));
+        let worker = {
+            let (token, published, persisted, barrier) = (token.clone(), published.clone(), persisted.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                *published.lock().unwrap() = Some(token.clone());
+                barrier.wait();
+                barrier.wait();
+                if persisted.load(Ordering::Acquire) { token.store(true, Ordering::Release); }
+                assert!(token.load(Ordering::Acquire));
+            })
+        };
+        barrier.wait();
+        persisted.store(true, Ordering::Release);
+        published.lock().unwrap().as_ref().unwrap().store(true, Ordering::Release);
+        barrier.wait();
+        worker.join().unwrap();
+    }
+
+    #[test]
     fn acknowledgement_does_not_wait_for_slow_archive() {
         let (ack_tx, ack_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
