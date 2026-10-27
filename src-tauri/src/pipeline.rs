@@ -583,6 +583,90 @@ pub(crate) fn mix_mono_48k_to_wav(inputs: &[(PathBuf, f64)], output: &Path) -> R
     write_mono_48k_wav(&mixed, output)
 }
 
+/// Stream archived tracks through decode/resample and mix them into a raw
+/// 48-kHz f32 file. Temporary per-track files are bounded by the filesystem,
+/// not RAM; the final merge holds only one block per track.
+pub(crate) fn mix_mono_48k_to_raw(inputs: &[(PathBuf, f64)], output: &Path) -> Result<()> {
+    use std::io::{BufReader, BufWriter, Read, Write};
+    let temp_dir = output.with_extension("tracks.partial");
+    fs::create_dir_all(&temp_dir)?;
+    let result = (|| {
+        let mut converted = Vec::new();
+        for (index, (input, offset)) in inputs.iter().enumerate() {
+            let path = temp_dir.join(format!("track-{index}.raw"));
+            stream_decode_to_raw(input, &path)?;
+            converted.push((path, *offset));
+        }
+        let mut readers: Vec<_> = converted
+            .iter()
+            .map(|(path, _)| fs::File::open(path).map(BufReader::new))
+            .collect::<std::io::Result<_>>()?;
+        let offsets: Vec<usize> = converted
+            .iter()
+            .map(|(_, offset)| (*offset).max(0.0) as usize * 48_000)
+            .collect();
+        let mut output = BufWriter::new(fs::File::create(output)?);
+        let mut blocks = vec![vec![0.0_f32; 16_384]; readers.len()];
+        let mut output_position = 0usize;
+        let mut finished = vec![false; readers.len()];
+        loop {
+            let mut active = false;
+            let mut scheduled = false;
+            let mut mixed = vec![0.0_f32; 16_384];
+            for (index, reader) in readers.iter_mut().enumerate() {
+                if finished[index] {
+                    continue;
+                }
+                scheduled = true;
+                if output_position < offsets[index] {
+                    continue;
+                }
+                let bytes = reader.read(bytemuck_f32_as_bytes(&mut blocks[index]))?;
+                let count = bytes / 4;
+                if count == 0 {
+                    finished[index] = true;
+                    continue;
+                }
+                active = true;
+                for sample in 0..count {
+                    mixed[sample] += blocks[index][sample];
+                }
+            }
+            if !scheduled && !active {
+                break;
+            }
+            for sample in mixed.iter_mut() {
+                *sample = sample.clamp(-1.0, 1.0);
+            }
+            output.write_all(bytemuck_f32_as_bytes(&mut mixed))?;
+            output_position += mixed.len();
+        }
+        output.flush()?;
+        Ok::<(), anyhow::Error>(())
+    })();
+    let _ = fs::remove_dir_all(&temp_dir);
+    result
+}
+
+fn bytemuck_f32_as_bytes(samples: &mut [f32]) -> &mut [u8] {
+    unsafe { std::slice::from_raw_parts_mut(samples.as_mut_ptr() as *mut u8, samples.len() * 4) }
+}
+
+fn stream_decode_to_raw(input: &Path, output: &Path) -> Result<()> {
+    use std::io::Write;
+    let mut source = crate::streaming::open_audio_blocks(input)?;
+    let mut resampler = crate::streaming::BlockResampler::new(source.sample_rate(), 48_000)?;
+    let mut writer = std::io::BufWriter::new(fs::File::create(output)?);
+    while let Some(block) = source.next_block()? {
+        let converted = resampler.push(&block)?;
+        writer.write_all(bytemuck_f32_as_bytes(&mut converted.clone()))?;
+    }
+    let mut tail = resampler.finish()?;
+    writer.write_all(bytemuck_f32_as_bytes(&mut tail))?;
+    writer.flush()?;
+    Ok(())
+}
+
 pub(crate) fn mix_mono_48k(inputs: &[(PathBuf, f64)]) -> Result<Vec<f32>> {
     let mut mixed: Vec<f32> = Vec::new();
     for (input, offset_seconds) in inputs {

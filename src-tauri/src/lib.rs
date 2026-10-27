@@ -1,7 +1,7 @@
-pub mod domain;
-pub mod finalization;
 pub mod capture_recovery;
+pub mod domain;
 pub mod export;
+pub mod finalization;
 pub mod live;
 pub mod model_manager;
 pub mod pipeline;
@@ -318,14 +318,11 @@ async fn cancel_transcription(
         .request_cancel(&id, now_ms())
         .map_err(|error| error.to_string())?;
     if let Some((session, cancel)) = live.finalization_cancel.lock().unwrap().as_ref() {
-        if session == &id { cancel.store(true, Ordering::Release); }
+        if session == &id {
+            cancel.store(true, Ordering::Release);
+        }
     }
-    let active_capture = live
-        .capture
-        .lock()
-        .unwrap()
-        .as_ref()
-        .cloned();
+    let active_capture = live.capture.lock().unwrap().as_ref().cloned();
     let active_live = active_capture.is_some_and(|capture| capture.lock().unwrap().id == id);
     if active_live {
         if !live.finalizing.load(Ordering::SeqCst) {
@@ -591,8 +588,10 @@ fn mixed_session_audio(id: String, app: tauri::AppHandle) -> Result<String, Stri
             "mp3" => ArchiveFormat::Mp3,
             _ => ArchiveFormat::Wav,
         };
-        let result = pipeline::mix_mono_48k(&tracks)
-            .and_then(|samples| live::encode_mono_48k(&samples, &output, format));
+        let raw = output.with_extension("mix.raw.partial");
+        let result = pipeline::mix_mono_48k_to_raw(&tracks, &raw)
+            .and_then(|_| live::encode_raw_48k(&raw, &output, format));
+        let _ = std::fs::remove_file(&raw);
         if let Err(error) = result {
             log(&format!("mixed_session_audio failed for {id}: {error}"));
             return Err(error.to_string());
@@ -641,7 +640,10 @@ fn start_live(
     live: tauri::State<'_, LiveState>,
     app: tauri::AppHandle,
 ) -> Result<LiveStatus, String> {
-    let _lifecycle = live.lifecycle.try_lock().map_err(|_| "live lifecycle transition in progress")?;
+    let _lifecycle = live
+        .lifecycle
+        .try_lock()
+        .map_err(|_| "live lifecycle transition in progress")?;
     if live.finalizing.load(Ordering::SeqCst) {
         return Err("previous recording is finalizing".into());
     }
@@ -952,8 +954,13 @@ fn set_mic_gain(mic_gain: f32, live: tauri::State<'_, LiveState>) -> Result<(), 
 
 #[tauri::command]
 fn pause_live(live: tauri::State<'_, LiveState>) -> Result<(), String> {
-    let _lifecycle = live.lifecycle.try_lock().map_err(|_| "live lifecycle transition in progress")?;
-    if live.finalizing.load(Ordering::SeqCst) { return Err("recording is finalizing".into()); }
+    let _lifecycle = live
+        .lifecycle
+        .try_lock()
+        .map_err(|_| "live lifecycle transition in progress")?;
+    if live.finalizing.load(Ordering::SeqCst) {
+        return Err("recording is finalizing".into());
+    }
     if live.capture.lock().unwrap().is_none() {
         return Err("no active recording".into());
     }
@@ -966,8 +973,13 @@ fn pause_live(live: tauri::State<'_, LiveState>) -> Result<(), String> {
 
 #[tauri::command]
 fn resume_live(live: tauri::State<'_, LiveState>) -> Result<(), String> {
-    let _lifecycle = live.lifecycle.try_lock().map_err(|_| "live lifecycle transition in progress")?;
-    if live.finalizing.load(Ordering::SeqCst) { return Err("recording is finalizing".into()); }
+    let _lifecycle = live
+        .lifecycle
+        .try_lock()
+        .map_err(|_| "live lifecycle transition in progress")?;
+    if live.finalizing.load(Ordering::SeqCst) {
+        return Err("recording is finalizing".into());
+    }
     if live.handle.lock().unwrap().is_some() {
         return Ok(());
     }
@@ -986,12 +998,7 @@ fn resume_live(live: tauri::State<'_, LiveState>) -> Result<(), String> {
 
 #[tauri::command]
 fn live_status(live: tauri::State<'_, LiveState>) -> Option<LiveStatus> {
-    let capture = live
-        .capture
-        .lock()
-        .unwrap()
-        .as_ref()
-        .cloned()?;
+    let capture = live.capture.lock().unwrap().as_ref().cloned()?;
     let mut status = capture.lock().unwrap().status();
     if let Some(error) = live.error.lock().unwrap().clone() {
         status.error = Some(error);
@@ -1015,71 +1022,139 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut acknowledge = Some(acknowledge);
         let result = (|| -> Result<Vec<String>, String> {
-        let live = app.state::<LiveState>();
-        let lifecycle = live.lifecycle.try_lock().map_err(|_| "live lifecycle transition in progress")?;
-        let _guard = finalization::FinalizationClaim::acquire(&live.finalizing)
-            .ok_or("recording is already finalizing")?;
-        let capture = live.capture.lock().map_err(|_| "capture lock poisoned")?.as_ref().cloned().ok_or("no active recording")?;
-        let id = capture.lock().map_err(|_| "capture lock poisoned")?.id.clone();
-        let cancel = capture.lock().map_err(|_| "capture lock poisoned")?.finalization_cancel.clone();
-        *live.finalization_cancel.lock().unwrap() = Some((id.clone(), cancel.clone()));
-        if app.state::<Arc<Mutex<Store>>>().lock().map_err(|_| "store lock poisoned")?
-            .is_cancelled(&id).map_err(|error| error.to_string())? {
-            cancel.store(true, Ordering::Release);
-        }
-        drop(lifecycle);
-        // Stop device ingress even if writing finalization metadata fails.
-        // Otherwise an error could leave an invisible recording running.
-        if let Some(handle) = live.handle.lock().unwrap().as_ref() {
-            handle.request_stop();
-        }
-        let persistence_start = app.state::<Arc<Mutex<Store>>>().lock().map_err(|_| "store lock poisoned")?
-            .begin_live_finalization(&id, now_ms()).map_err(|error| error.to_string());
-        let result = finalization::finish_after_acknowledgement(|| {
-        if let Some(path) = debug_log_path(&app) {
-            debug_log(&path, &format!("stop_ack_ms={} session={id} persistence_started={}", stop_requested.elapsed().as_millis(), persistence_start.is_ok()));
-        }
-        // Device ingress is already stopping, so the UI may regain control even
-        // when the finalization marker could not be written. The background
-        // finalizer still attempts the archive and reports/persists its error.
-        if let Some(sender) = acknowledge.take() { let _ = sender.send(Ok(Vec::new())); }
-        }, || stop_live_blocking(
-            app.state::<Arc<Mutex<Store>>>(),
-            app.state::<LiveState>(),
-            app.state::<WorkerHandle>(),
-            app.clone(),
-        ));
-        if let Err(error) = &result {
-            // No new session can start while this claim is held. Clear only
-            // the failed session, recovering a poisoned slot for future use.
+            let live = app.state::<LiveState>();
+            let lifecycle = live
+                .lifecycle
+                .try_lock()
+                .map_err(|_| "live lifecycle transition in progress")?;
+            let _guard = finalization::FinalizationClaim::acquire(&live.finalizing)
+                .ok_or("recording is already finalizing")?;
+            let capture = live
+                .capture
+                .lock()
+                .map_err(|_| "capture lock poisoned")?
+                .as_ref()
+                .cloned()
+                .ok_or("no active recording")?;
+            let id = capture
+                .lock()
+                .map_err(|_| "capture lock poisoned")?
+                .id
+                .clone();
+            let cancel = capture
+                .lock()
+                .map_err(|_| "capture lock poisoned")?
+                .finalization_cancel
+                .clone();
+            *live.finalization_cancel.lock().unwrap() = Some((id.clone(), cancel.clone()));
+            if app
+                .state::<Arc<Mutex<Store>>>()
+                .lock()
+                .map_err(|_| "store lock poisoned")?
+                .is_cancelled(&id)
+                .map_err(|error| error.to_string())?
             {
-                let mut slot = live.capture.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                if slot.as_ref().is_some_and(|capture| {
-                    capture.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).id == id
-                }) { slot.take(); }
+                cancel.store(true, Ordering::Release);
             }
-            live.capture.clear_poison();
-            *live.error.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.clone());
-            if let Ok(mut store) = app.state::<Arc<Mutex<Store>>>().lock() {
-                let _ = store.fail_if_not_cancelled(&id, error, now_ms());
+            drop(lifecycle);
+            // Stop device ingress even if writing finalization metadata fails.
+            // Otherwise an error could leave an invisible recording running.
+            if let Some(handle) = live.handle.lock().unwrap().as_ref() {
+                handle.request_stop();
             }
-        }
-        let status_result = app.state::<Arc<Mutex<Store>>>().lock().map_err(|_| "store lock poisoned")?
-            .finish_live_finalization(&id, result.is_ok(), now_ms()).map_err(|error| error.to_string());
-        *live.finalization_cancel.lock().unwrap() = None;
-        status_result?;
-        if let Some(path) = debug_log_path(&app) {
-            debug_log(&path, &format!("stop_finalization_ms={} session={id}", stop_requested.elapsed().as_millis()));
-        }
-        persistence_start?;
-        result
+            let persistence_start = app
+                .state::<Arc<Mutex<Store>>>()
+                .lock()
+                .map_err(|_| "store lock poisoned")?
+                .begin_live_finalization(&id, now_ms())
+                .map_err(|error| error.to_string());
+            let result = finalization::finish_after_acknowledgement(
+                || {
+                    if let Some(path) = debug_log_path(&app) {
+                        debug_log(
+                            &path,
+                            &format!(
+                                "stop_ack_ms={} session={id} persistence_started={}",
+                                stop_requested.elapsed().as_millis(),
+                                persistence_start.is_ok()
+                            ),
+                        );
+                    }
+                    // Device ingress is already stopping, so the UI may regain control even
+                    // when the finalization marker could not be written. The background
+                    // finalizer still attempts the archive and reports/persists its error.
+                    if let Some(sender) = acknowledge.take() {
+                        let _ = sender.send(Ok(Vec::new()));
+                    }
+                },
+                || {
+                    stop_live_blocking(
+                        app.state::<Arc<Mutex<Store>>>(),
+                        app.state::<LiveState>(),
+                        app.state::<WorkerHandle>(),
+                        app.clone(),
+                    )
+                },
+            );
+            if let Err(error) = &result {
+                // No new session can start while this claim is held. Clear only
+                // the failed session, recovering a poisoned slot for future use.
+                {
+                    let mut slot = live
+                        .capture
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if slot.as_ref().is_some_and(|capture| {
+                        capture
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .id
+                            == id
+                    }) {
+                        slot.take();
+                    }
+                }
+                live.capture.clear_poison();
+                *live
+                    .error
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.clone());
+                if let Ok(mut store) = app.state::<Arc<Mutex<Store>>>().lock() {
+                    let _ = store.fail_if_not_cancelled(&id, error, now_ms());
+                }
+            }
+            let status_result = app
+                .state::<Arc<Mutex<Store>>>()
+                .lock()
+                .map_err(|_| "store lock poisoned")?
+                .finish_live_finalization(&id, result.is_ok(), now_ms())
+                .map_err(|error| error.to_string());
+            *live.finalization_cancel.lock().unwrap() = None;
+            status_result?;
+            if let Some(path) = debug_log_path(&app) {
+                debug_log(
+                    &path,
+                    &format!(
+                        "stop_finalization_ms={} session={id}",
+                        stop_requested.elapsed().as_millis()
+                    ),
+                );
+            }
+            persistence_start?;
+            result
         })();
-        if let Some(sender) = acknowledge.take() { let _ = sender.send(result.clone()); }
+        if let Some(sender) = acknowledge.take() {
+            let _ = sender.send(result.clone());
+        }
         if let Err(error) = result {
-            if let Some(path) = debug_log_path(&app) { debug_log(&path, &format!("Live finalization failed: {error}")); }
+            if let Some(path) = debug_log_path(&app) {
+                debug_log(&path, &format!("Live finalization failed: {error}"));
+            }
         }
     });
-    acknowledgement.await.map_err(|_| "Live finalizer stopped before acknowledging capture shutdown".to_string())?
+    acknowledgement
+        .await
+        .map_err(|_| "Live finalizer stopped before acknowledging capture shutdown".to_string())?
 }
 
 fn stop_live_blocking(
@@ -1090,7 +1165,9 @@ fn stop_live_blocking(
 ) -> Result<Vec<String>, String> {
     struct NotifyWorkerOnExit(Sender<()>);
     impl Drop for NotifyWorkerOnExit {
-        fn drop(&mut self) { let _ = self.0.send(()); }
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
     }
     let _notify = NotifyWorkerOnExit(worker.0.clone());
     let log_path = debug_log_path(&app);
@@ -1113,7 +1190,8 @@ fn stop_live_blocking(
         // previous three-second detach left live records visibly incomplete.
         let waited = std::time::Instant::now();
         if thread.join().is_err() {
-            *live.error.lock().unwrap() = Some("Live inference worker panicked; audio archive preserved".into());
+            *live.error.lock().unwrap() =
+                Some("Live inference worker panicked; audio archive preserved".into());
         }
         log(&format!(
             "inference final flush joined in {}ms",
@@ -1170,7 +1248,9 @@ fn stop_live_blocking(
         let _ = worker.0.send(());
         return Ok(files);
     }
-    if let Err(error) = store.complete_live_archive(&id, duration, files.first().map(String::as_str), now_ms()) {
+    if let Err(error) =
+        store.complete_live_archive(&id, duration, files.first().map(String::as_str), now_ms())
+    {
         let message = format!("Audio archive saved but final metadata commit failed: {error}");
         let _ = store.fail_if_not_cancelled(&id, &message, now_ms());
         let _ = worker.0.send(());

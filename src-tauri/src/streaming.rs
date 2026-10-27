@@ -12,7 +12,6 @@
 use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
-#[cfg(test)]
 use rubato::{FftFixedIn, Resampler};
 use symphonia::core::{
     audio::sample::Sample,
@@ -320,7 +319,6 @@ pub(crate) fn decode_all(path: &Path) -> Result<(Vec<f32>, usize)> {
 /// Only `pending` (less than one filter block) plus the current output block
 /// are held in memory. The filter delay is skipped once, so output sample 0
 /// corresponds to input sample 0.
-#[cfg(test)]
 pub(crate) struct BlockResampler {
     /// `None` is an exact 1:1 passthrough (no filter delay or colouring).
     resampler: Option<FftFixedIn<f32>>,
@@ -333,7 +331,6 @@ pub(crate) struct BlockResampler {
     emitted_total: usize,
 }
 
-#[cfg(test)]
 impl BlockResampler {
     pub(crate) fn new(input_rate: usize, output_rate: usize) -> Result<Self> {
         if input_rate == 0 || output_rate == 0 {
