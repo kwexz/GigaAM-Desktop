@@ -1014,6 +1014,7 @@ pub mod platform {
     use super::*;
     use screencapturekit::prelude::*;
     use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     pub fn microphones() -> Result<Vec<String>> {
         Ok(Vec::new())
@@ -1021,6 +1022,7 @@ pub mod platform {
 
     struct Handler {
         capture: Arc<Mutex<LiveCapture>>,
+        stopped: Arc<AtomicBool>,
     }
     impl SCStreamOutputTrait for Handler {
         fn did_output_sample_buffer(
@@ -1028,6 +1030,7 @@ pub mod platform {
             sample: CMSampleBuffer,
             output_type: SCStreamOutputType,
         ) {
+            if self.stopped.load(Ordering::Acquire) { return; }
             let time = sample.output_presentation_timestamp();
             let timestamp_100ns = if time.timescale > 0 {
                 (time.value.max(0) as u128 * 10_000_000 / time.timescale as u128) as u64
@@ -1059,10 +1062,12 @@ pub mod platform {
 
     pub struct CaptureHandle {
         stream: Mutex<Option<SCStream>>,
+        stopped: Arc<AtomicBool>,
     }
     impl CaptureHandle {
-        pub fn request_stop(&self) { self.stop(); }
+        pub fn request_stop(&self) { self.stopped.store(true, Ordering::Release); }
         pub fn stop(&self) {
+            self.request_stop();
             if let Some(stream) = self.stream.lock().unwrap().take() {
                 let _ = stream.stop_capture();
             }
@@ -1095,10 +1100,12 @@ pub mod platform {
                 LiveSource::Microphone | LiveSource::SystemAndMicrophone
             ))?;
         let mut stream = SCStream::new(&filter, &config)?;
+        let stopped = Arc::new(AtomicBool::new(false));
         if matches!(source, LiveSource::System | LiveSource::SystemAndMicrophone) {
             stream.add_output_handler(
                 Handler {
                     capture: capture.clone(),
+                    stopped: stopped.clone(),
                 },
                 SCStreamOutputType::Audio,
             )?;
@@ -1107,11 +1114,12 @@ pub mod platform {
             source,
             LiveSource::Microphone | LiveSource::SystemAndMicrophone
         ) {
-            stream.add_output_handler(Handler { capture }, SCStreamOutputType::Microphone)?;
+            stream.add_output_handler(Handler { capture, stopped: stopped.clone() }, SCStreamOutputType::Microphone)?;
         }
         stream.start_capture()?;
         Ok(CaptureHandle {
             stream: Mutex::new(Some(stream)),
+            stopped,
         })
     }
 }
