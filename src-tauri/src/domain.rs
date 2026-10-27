@@ -1,6 +1,98 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt, str::FromStr};
 
+pub const CONTRACT_VERSION: u16 = 1;
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackId {
+    Microphone,
+    System,
+    File,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct AudioBlockEvent {
+    pub version: u16,
+    pub session_id: String,
+    pub track_id: TrackId,
+    pub seq: u64,
+    pub sample_rate: u32,
+    pub absolute_sample_start: u64,
+    pub duration_samples: u32,
+    pub codec: String,
+    pub codec_config: Option<String>,
+    pub final_block: bool,
+    pub discontinuity: bool,
+    pub idempotency_key: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct TranscriptSegmentEvent {
+    pub version: u16,
+    pub session_id: String,
+    pub segment_id: String,
+    pub track_id: TrackId,
+    pub seq: u64,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    pub text: String,
+    pub final_segment: bool,
+    pub revision: u64,
+    pub idempotency_key: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordingState {
+    Idle,
+    Recording,
+    Paused,
+    Stopping,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UploadState {
+    NotStarted,
+    Queued,
+    Uploading,
+    Durable,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecognitionState {
+    NotStarted,
+    Running,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncState {
+    Disabled,
+    Idle,
+    Pending,
+    Syncing,
+    Synced,
+    Conflict,
+    Failed,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SessionStates {
+    pub recording: RecordingState,
+    pub upload: UploadState,
+    pub recognition: RecognitionState,
+    pub sync: SyncState,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptionKind {
@@ -96,6 +188,39 @@ pub struct TranscriptSegment {
     pub source_track: SourceTrack,
     pub speaker_id: Option<String>,
     pub state: SegmentState,
+}
+
+impl AudioBlockEvent {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.version != CONTRACT_VERSION
+            || self.session_id.is_empty()
+            || self.idempotency_key.is_empty()
+        {
+            return Err("invalid audio event identity/version");
+        }
+        if self.sample_rate == 0 || self.duration_samples == 0 {
+            return Err("invalid audio event geometry");
+        }
+        Ok(())
+    }
+}
+
+impl TranscriptSegmentEvent {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.version != CONTRACT_VERSION
+            || self.session_id.is_empty()
+            || self.segment_id.is_empty()
+        {
+            return Err("invalid transcript event identity/version");
+        }
+        if !self.start_seconds.is_finite()
+            || !self.end_seconds.is_finite()
+            || self.end_seconds <= self.start_seconds
+        {
+            return Err("invalid transcript event timestamps");
+        }
+        Ok(())
+    }
 }
 
 impl TranscriptSegment {
