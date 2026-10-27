@@ -1021,11 +1021,11 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
         let capture = live.capture.lock().map_err(|_| "capture lock poisoned")?.as_ref().cloned().ok_or("no active recording")?;
         let id = capture.lock().map_err(|_| "capture lock poisoned")?.id.clone();
         let cancel = capture.lock().map_err(|_| "capture lock poisoned")?.finalization_cancel.clone();
+        *live.finalization_cancel.lock().unwrap() = Some((id.clone(), cancel.clone()));
         if app.state::<Arc<Mutex<Store>>>().lock().map_err(|_| "store lock poisoned")?
             .is_cancelled(&id).map_err(|error| error.to_string())? {
             cancel.store(true, Ordering::Release);
         }
-        *live.finalization_cancel.lock().unwrap() = Some((id.clone(), cancel));
         drop(lifecycle);
         // Stop device ingress even if writing finalization metadata fails.
         // Otherwise an error could leave an invisible recording running.
