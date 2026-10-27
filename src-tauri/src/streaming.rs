@@ -12,6 +12,7 @@
 use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
+#[cfg(test)]
 use rubato::{FftFixedIn, Resampler};
 use symphonia::core::{
     audio::sample::Sample,
