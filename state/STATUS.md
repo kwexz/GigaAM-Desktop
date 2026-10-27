@@ -1,10 +1,10 @@
 # GigaAM Desktop — состояние автономного плана
 
-- `current_phase`: `08`
+- `current_phase`: `09
 - `phase_state`: `pending`
-- `last_verified_commit`: `0eab9dc`
+- `last_verified_commit`: `cda23f7`
 - `current_branch`: `feature/gigaam-desktop-web-autonomy`
-- `blocking_issue`: `07 passed local-first/resilience gates; real remote ONNX chaos E2E remains blocked_external pending staging runtime`
+- `blocking_issue`: `08 blocked_external/resource: no approved local summarization GGUF/runtime; extractive fallback implemented, no false completion`
 - `last_update_utc`: `2026-10-27`
 
 ## Источник истины
@@ -23,7 +23,7 @@
 | 05 | Rust VPS API | passed | d887c13 | Authenticated localhost Axum API, bounded upload, Range download, session/model status, safe server binary |
 | 06 | Remote Live transport | passed | fd0798d | Bounded RemoteEngine, authenticated WS, checksum/durable ACK, sequence gap rejection, reconnect replay |
 | 07 | Web E2E, resilience | passed | 0eab9dc | Local-first WebSession, bounded offline backlog, Edge E2E, browser resilience contracts |
-| 08 | Local summarization | pending | — | — |
+| 08 | Local summarization | blocked_external | cda23f7 | Extractive source-backed fallback/API; licensed measured GGUF experiment blocked by unavailable weights/runtime |
 | 09 | Optional in-browser ASR | pending | — | — |
 | 10 | Google/Yandex cloud sync | pending | — | — |
 | 11 | Final audit & handoff | pending | — | — |
