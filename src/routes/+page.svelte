@@ -320,7 +320,7 @@
 					const status = await invoke<{ recording: boolean } | null>('live_status').catch(() => null);
 					recording = status?.recording ?? false;
 				} finally {
-					finalizing = false;
+					finalizing = await invoke<boolean>('live_finalizing').catch(() => false);
 				}
 				recording = false;
 				modelReady = true;
@@ -410,6 +410,7 @@
 			uiNow = Date.now();
 			try {
 				model = await invoke<typeof model>('model_status');
+				finalizing = await invoke<boolean>('live_finalizing');
 				if (!recording) return;
 				const status = await invoke<{ microphone_level: number; system_level: number; model_ready: boolean; paused: boolean; error?: string; microphone_capture_state?: string; system_capture_state?: string } | null>('live_status');
 				captureHealth = [status?.microphone_capture_state, status?.system_capture_state].includes('reconnecting')

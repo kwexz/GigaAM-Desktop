@@ -5,7 +5,7 @@
 - `last_verified_commit`: `aab7936925bf08ece7ff93177e57bacfbab3c1c5`
 - `current_branch`: `feature/gigaam-desktop-web-autonomy`
 - `blocking_issue`: `01 in progress: VAD cursor regression fixed/tested; asynchronous Stop and hotplug acceptance pending`
-- `last_update_utc`: `2026-10-25`
+- `last_update_utc`: `2026-10-27`
 
 ## Источник истины
 

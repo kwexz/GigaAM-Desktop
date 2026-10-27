@@ -2,8 +2,8 @@
   {
     "name": "install",
     "command": "npm.cmd ci",
-    "started_utc": "2026-10-25T20:31:12.6050774Z",
-    "elapsed_ms": 10213,
+    "started_utc": "2026-10-27T15:32:15.2355547Z",
+    "elapsed_ms": 46357,
     "exit_code": 0,
     "status": "verified",
     "stdout": "state\\runs\\00-baseline\\install.stdout.txt",
@@ -12,8 +12,8 @@
   {
     "name": "check",
     "command": "npm.cmd run check",
-    "started_utc": "2026-10-25T20:31:22.8537399Z",
-    "elapsed_ms": 5316,
+    "started_utc": "2026-10-27T15:33:01.7282140Z",
+    "elapsed_ms": 12267,
     "exit_code": 0,
     "status": "verified",
     "stdout": "state\\runs\\00-baseline\\check.stdout.txt",
@@ -22,8 +22,8 @@
   {
     "name": "unit-web",
     "command": "npm.cmd test",
-    "started_utc": "2026-10-25T20:31:28.1805946Z",
-    "elapsed_ms": 7015,
+    "started_utc": "2026-10-27T15:33:14.0128002Z",
+    "elapsed_ms": 14711,
     "exit_code": 0,
     "status": "verified",
     "stdout": "state\\runs\\00-baseline\\unit-web.stdout.txt",
@@ -32,8 +32,8 @@
   {
     "name": "build-web",
     "command": "npm.cmd run build",
-    "started_utc": "2026-10-25T20:31:35.2011695Z",
-    "elapsed_ms": 6710,
+    "started_utc": "2026-10-27T15:33:28.7327833Z",
+    "elapsed_ms": 14969,
     "exit_code": 0,
     "status": "verified",
     "stdout": "state\\runs\\00-baseline\\build-web.stdout.txt",
@@ -42,21 +42,11 @@
   {
     "name": "unit-rust",
     "command": "cargo test --locked --manifest-path src-tauri/Cargo.toml --lib",
-    "started_utc": "2026-10-25T20:31:41.9167900Z",
-    "elapsed_ms": 6532,
+    "started_utc": "2026-10-27T15:33:43.7060999Z",
+    "elapsed_ms": 53709,
     "exit_code": 0,
     "status": "verified",
     "stdout": "state\\runs\\00-baseline\\unit-rust.stdout.txt",
     "stderr": "state\\runs\\00-baseline\\unit-rust.stderr.txt"
-  },
-  {
-    "name": "integration-rust",
-    "command": "cargo test --locked --manifest-path src-tauri/Cargo.toml",
-    "started_utc": "2026-10-25T20:31:48.4529854Z",
-    "elapsed_ms": 23850,
-    "exit_code": 0,
-    "status": "verified",
-    "stdout": "state\\runs\\00-baseline\\integration-rust.stdout.txt",
-    "stderr": "state\\runs\\00-baseline\\integration-rust.stderr.txt"
   }
 ]

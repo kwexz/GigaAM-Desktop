@@ -994,10 +994,18 @@ fn live_status(live: tauri::State<'_, LiveState>) -> Option<LiveStatus> {
 }
 
 #[tauri::command]
+fn live_finalizing(live: tauri::State<'_, LiveState>) -> bool {
+    live.finalizing.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
 async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
     // Native joins and archive encoding must never execute on the webview
     // command thread. The session remains guarded until durable completion.
+    let (acknowledge, acknowledgement) = tokio::sync::oneshot::channel();
     tauri::async_runtime::spawn_blocking(move || {
+        let mut acknowledge = Some(acknowledge);
+        let result = (|| -> Result<Vec<String>, String> {
         let live = app.state::<LiveState>();
         let _lifecycle = live.lifecycle.lock().map_err(|_| "live lifecycle lock poisoned")?;
         let _guard = finalization::FinalizationClaim::acquire(&live.finalizing)
@@ -1011,6 +1019,9 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
         }
         let persistence_start = app.state::<Arc<Mutex<Store>>>().lock().map_err(|_| "store lock poisoned")?
             .begin_live_finalization(&id, now_ms()).map_err(|error| error.to_string());
+        if persistence_start.is_ok() {
+            if let Some(sender) = acknowledge.take() { let _ = sender.send(Ok(Vec::new())); }
+        }
         let result = stop_live_blocking(
             app.state::<Arc<Mutex<Store>>>(),
             app.state::<LiveState>(),
@@ -1022,9 +1033,13 @@ async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
         status_result?;
         persistence_start?;
         result
-    })
-    .await
-    .map_err(|error| error.to_string())?
+        })();
+        if let Some(sender) = acknowledge.take() { let _ = sender.send(result.clone()); }
+        if let Err(error) = result {
+            if let Some(path) = debug_log_path(&app) { debug_log(&path, &format!("Live finalization failed: {error}")); }
+        }
+    });
+    acknowledgement.await.map_err(|_| "Live finalizer stopped before acknowledging capture shutdown".to_string())?
 }
 
 fn stop_live_blocking(
@@ -1189,6 +1204,7 @@ pub fn run() {
             list_microphones,
             live_status,
             stop_live,
+            live_finalizing,
             model_status,
             download_model,
             cancel_model_download,

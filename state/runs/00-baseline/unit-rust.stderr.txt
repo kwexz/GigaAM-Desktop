@@ -1,3 +1,3 @@
    Compiling gigaam-desktop v0.1.2 (C:\Source\GigaAM-UI\src-tauri)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.33s
-     Running unittests src\lib.rs (src-tauri\target\debug\deps\gigaam_desktop_lib-5023096d186180b7.exe)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 52.04s
+     Running unittests src\lib.rs (src-tauri\target\debug\deps\gigaam_desktop_lib-7517bf4e0d3ecea8.exe)
