@@ -111,3 +111,11 @@
 
 - Stop acknowledgement no longer depends on the finalization marker being written: after device ingress is requested to stop, the UI is released even if `begin_live_finalization` failed; the background finalizer still attempts the archive and reports/persists the failure. Windows `cargo check` and the finalization suite (6 tests) passed; long-archive test now asserts the acknowledgement interval is <500 ms explicitly. Full baseline rerun in progress.
 - Independent review of commit `4efe112` is `blocked_external`: the configured review model `opencode-omniroute/cx/gpt-6.1-sol` and the review subagent default both returned `Model unavailable` after the model switch. Self-review performed instead; this is not recorded as an independent review.
+
+## Phase 01 final verification (2026-10-27)
+
+- Final full baseline after all phase01 code changes: all six commands exit 0 (`state/runs/00-baseline/`), 79 Rust library tests, 7 frontend tests.
+- Final real-model Live run: both track labels, 500 ms/1000 ms snapshot cadence, concurrent scoped threads, CER 0.0132 each, anchors exactly once, timestamps within source bounds; 28.39 s (`state/runs/01/final-live-model-and-long-archive.txt`).
+- Final 30-minute production archive run: ACK assertion <500 ms passed (measured 0 ms at millisecond resolution), archive phase 10.9 s, accelerated total 13.9 s; exact 1800 s WAV duration verified via production `LiveCapture::finish`, acknowledgement ordered through the production `finish_after_acknowledgement` seam.
+- Integration lifecycle (`cargo test --test live_lifecycle`): two sequential sessions, pause gap, playback gating, archive commit, per-track edits, rename, TXT/SRT/VTT/JSON export, raw cleanup after commit — passed inside the baseline integration step.
+- Honest boundaries: real Tauri IPC/webview Stop latency, physical USB hotplug, physical capture pause/resume, and macOS GUI/capture are `not-run` (no safe automated capture/device availability on this host). Independent review is `blocked_external` (review models unavailable after the model switch); the changes were self-reviewed against the prior findings, which are not a substitute for independent review.

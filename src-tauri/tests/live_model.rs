@@ -39,7 +39,11 @@ fn chunk_fed_live_retains_three_phrase_anchors_on_each_track() {
     let mut reference = Vec::new();
     file.process(&job, &mut |_| Ok(()), &mut |segment| { reference.push(segment); Ok(()) }, &|| Ok(false)).unwrap();
     let reference = normalized(&reference.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" "));
+    std::thread::scope(|scope| {
+    let mut workers = Vec::new();
     for (track, step) in [(SourceTrack::Microphone, 24_000), (SourceTrack::System, 48_000)] {
+        let (model, audio, source, reference) = (&model, &audio, &source, &reference);
+        workers.push(scope.spawn(move || {
         let mut processor = NativeFileProcessor::load_live(&model).unwrap();
         let mut scanner = LiveScanner::new().unwrap();
         let mut emitted = 0.0;
@@ -67,5 +71,8 @@ fn chunk_fed_live_retains_three_phrase_anchors_on_each_track() {
         assert!(all.iter().all(|s| s.source_track == track));
         assert!(all.windows(2).all(|s| s[0].end_seconds <= s[1].start_seconds));
         assert!(all.iter().all(|s| s.start_seconds >= 0.0 && s.end_seconds <= source.len() as f64 / 16_000.0 + 0.25));
+        }));
     }
+    for worker in workers { worker.join().unwrap(); }
+    });
 }
