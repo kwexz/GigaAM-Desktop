@@ -32,4 +32,8 @@ Release benchmark: clean 186382 bytes / 428 ms; noisy 199135 bytes / 288 ms дл
 
 Текущий encoder-кандидат повышен до 48 кбит/с. Это уменьшает наблюдаемую noisy-разницу, но не доказывает нулевую регрессию. Он по-прежнему существенно меньше измеренного MP3/FLAC. Default FLAC пока сохранён; native header/compactness assertions необходимо повторить для нового профиля.
 
+## Ресурсный процессный замер
+
+`pwsh -NoProfile -File scripts/measure-codec-resources.ps1` успешно запускает release benchmark binary без включения времени компиляции. Текущий замер: CPU 1109.375 ms, elapsed 1416.0384 ms, observed peak working set 23879680 bytes. Это общий процесс для загрузки двух fixtures и всех четырёх codecs, а не отдельный RSS каждого codec. Evidence: state/runs/codec-resources/resources.json и stdout/stderr рядом. Скрипт не измеряет реальную задержку GUI Stop и не выдаёт её за encoder time.
+
 Ogg доступен как явно выбираемый lossy формат; FLAC default пока сохранён. Для выбора compact default требуется завершить сопоставление качества, release CPU/RSS и Stop latency, а также принять измеренную noisy-разницу. Нельзя объявлять этот документ доказательством выполнения задачи 5.4 целиком.
