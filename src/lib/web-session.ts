@@ -72,12 +72,10 @@ export class WebSession {
 		try {
 			await this.capture.start(this.sessionId, source);
 		} catch (error) {
-			await this.capture.stop();
-			await this.pending;
-			this.unsubscribe?.();
-			this.releaseRecordingLock?.();
+			try { await this.capture.stop(); await this.pending; }
+			finally { this.unsubscribe?.(); this.releaseRecordingLock?.(); }
 			this.state = { ...this.state, recording: 'failed' };
-			await putSessionState(this.sessionId, this.state);
+			await putSessionState(this.sessionId, this.state).catch(() => {});
 			throw error;
 		}
 		if (this.remote) void this.remote.start(this.sessionId).catch(() => { this.state = { ...this.state, upload: 'failed' }; });
@@ -108,7 +106,7 @@ export class WebSession {
 	async stop(): Promise<void> {
 		try {
 		this.state = { ...this.state, recording: 'stopping' };
-		await putSessionState(this.sessionId, this.state);
+		await putSessionState(this.sessionId, this.state).catch(() => {});
 		await this.capture.stop();
 		await this.pending;
 		this.unsubscribe?.();
@@ -116,7 +114,11 @@ export class WebSession {
 		await this.archive.finalize(this.sessionId);
 		this.state = { ...this.state, recording: 'completed' };
 		await putSessionState(this.sessionId, this.state);
-		} finally { this.releaseRecordingLock?.(); this.releaseRecordingLock = undefined; }
+		} catch (error) {
+			this.state = { ...this.state, recording: 'failed' };
+			await putSessionState(this.sessionId, this.state).catch(() => {});
+			throw error;
+		} finally { this.unsubscribe?.(); this.releaseRecordingLock?.(); this.releaseRecordingLock = undefined; }
 	}
 
 	status(): SessionState { return this.state; }
