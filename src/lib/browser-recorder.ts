@@ -1,7 +1,7 @@
 import type { ArchiveWriter, AudioBlockEvent, CaptureSource, RecognitionEngine, TranscriptRepository } from './contracts';
 import { assertAudioBlock, assertSegment } from './contracts';
 import { browserRecordingMime } from './recording-format';
-import { archivedBlocks, putArchivedBlock } from './browser-storage';
+import { archivedBlocks, commitArchivedBlock } from './browser-storage';
 import { appendOpfsChunk, changesSince, getSessionState, putArchiveMeta, putSegment, putSessionState, requestPersistentStorage, listBrowserMetadata, readOpfsArchive } from './browser-storage';
 
 export type BrowserCaptureStatus = { microphone: boolean; system: boolean; systemAudioUnavailable: boolean };
@@ -124,16 +124,25 @@ export class OpfsArchiveWriter implements ArchiveWriter {
 		const extension = mime.includes('ogg') ? 'ogg' : 'webm';
 		const path = `sessions/${event.session_id}/${event.track_id}.${extension}`;
 		const key = `${event.session_id}:${event.track_id}`;
-		if (!this.nextSequence.has(key)) this.nextSequence.set(key, (await archivedBlocks(event.session_id)).filter((block) => block.event.track_id === event.track_id).length);
+		if (!this.nextSequence.has(key)) {
+			const blocks = (await archivedBlocks(event.session_id)).filter((block) => block.event.track_id === event.track_id);
+			const committed = blocks.reduce((end, block) => Math.max(end, block.offset + block.bytes), 0);
+			try {
+				const file = await readOpfsArchive(path);
+				if (file.size !== committed) throw new Error('Archive has an uncommitted tail; preserve it for recovery before resuming');
+			} catch (error) {
+				if (!(error instanceof DOMException && error.name === 'NotFoundError' && committed === 0)) throw error;
+			}
+			this.nextSequence.set(key, blocks.length);
+		}
 		const next = this.nextSequence.get(key)!;
 		if (event.seq < next) return;
 		if (event.seq !== next) throw new Error('Archive block sequence gap');
 		const bytes = await appendOpfsChunk(path, new Blob([event.payload.buffer.slice(event.payload.byteOffset, event.payload.byteOffset + event.payload.byteLength) as ArrayBuffer], { type: mime }));
 		const { payload: _payload, ...metadata } = event;
-		await putArchivedBlock({ event: metadata, offset: bytes - event.payload.byteLength, bytes: event.payload.byteLength });
+		await commitArchivedBlock({ event: metadata, offset: bytes - event.payload.byteLength, bytes: event.payload.byteLength }, { session_id: event.session_id, track_id: event.track_id, path, mime_type: mime, bytes, block_count: event.seq + 1, created_ms: Date.now(), duration_samples: event.absolute_sample_start + event.duration_samples });
 		this.nextSequence.set(key, next + 1);
 		this.bytes.set(`${event.session_id}:${event.track_id}`, bytes);
-		await putArchiveMeta({ session_id: event.session_id, track_id: event.track_id, path, mime_type: mime, bytes, block_count: event.seq + 1, created_ms: Date.now(), duration_samples: event.absolute_sample_start + event.duration_samples });
 	}
 	async finalize(sessionId: string): Promise<{ content_hash: string; duration_samples: number }> {
 		const archives = (await listBrowserMetadata()).filter((entry) => entry.session_id === sessionId && String(entry.key).startsWith('archive:'));

@@ -25,6 +25,18 @@ export async function putArchivedBlock(block: ArchivedBlock): Promise<void> {
 	await transaction(META_STORE, 'readwrite', (store) => store.put({ key: `block:${block.event.session_id}:${block.event.track_id}:${block.event.seq}`, ...block }));
 }
 
+export async function commitArchivedBlock(block: ArchivedBlock, archive: BrowserArchiveMeta): Promise<void> {
+	const db = await openDb();
+	await new Promise<void>((resolve, reject) => {
+		const tx = db.transaction(META_STORE, 'readwrite');
+		const store = tx.objectStore(META_STORE);
+		store.put({ key: `block:${block.event.session_id}:${block.event.track_id}:${block.event.seq}`, ...block });
+		store.put({ key: `archive:${archive.session_id}:${archive.track_id}`, ...archive });
+		tx.oncomplete = () => { db.close(); resolve(); };
+		tx.onerror = tx.onabort = () => { db.close(); reject(tx.error ?? new Error('Archive metadata commit failed')); };
+	});
+}
+
 export async function archivedBlocks(sessionId: string): Promise<ArchivedBlock[]> {
 	return (await listBrowserMetadata()).filter((entry) => String(entry.key).startsWith(`block:${sessionId}:`)).map((entry) => entry as unknown as ArchivedBlock).sort((a, b) => a.event.track_id.localeCompare(b.event.track_id) || a.event.seq - b.event.seq);
 }
@@ -86,6 +98,7 @@ export async function appendOpfsChunk(path: string, chunk: Blob): Promise<number
 	await writable.close();
 	return existing.size + chunk.size;
 }
+
 
 export async function readOpfsArchive(path: string): Promise<File> {
 	return (await archiveHandle(path)).getFile();
