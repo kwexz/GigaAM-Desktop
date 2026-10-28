@@ -31,6 +31,7 @@ pub enum ArchiveFormat {
     Flac,
     Wav,
     Mp3,
+    Ogg,
 }
 
 impl Default for ArchiveFormat {
@@ -45,6 +46,7 @@ impl ArchiveFormat {
             Self::Flac => "flac",
             Self::Wav => "wav",
             Self::Mp3 => "mp3",
+            Self::Ogg => "ogg",
         }
     }
 }
@@ -484,6 +486,7 @@ fn transcode_raw_cancellable(
             ArchiveFormat::Flac => transcode_raw_to_flac_cancellable(input, &partial, cancel),
             ArchiveFormat::Wav => transcode_raw_to_wav_cancellable(input, &partial, cancel),
             ArchiveFormat::Mp3 => transcode_raw_to_mp3_cancellable(input, &partial, cancel),
+            ArchiveFormat::Ogg => transcode_raw_to_ogg_cancellable(input, &partial, cancel),
         }?;
         check_archive_cancel(cancel)?;
         fs::OpenOptions::new()
@@ -503,6 +506,46 @@ fn check_archive_cancel(cancel: Option<&AtomicBool>) -> Result<()> {
     if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
         anyhow::bail!("Live finalization cancelled; raw audio retained");
     }
+    Ok(())
+}
+
+fn transcode_raw_to_ogg_cancellable(input: &Path, output: &Path, cancel: Option<&AtomicBool>) -> Result<()> {
+    use std::io::Read;
+    use opus_pure::{Application, MAX_PACKET_BYTES, OggOpusWriter, OpusEncoder, OpusHead, OpusTags};
+    let mut source = std::io::BufReader::new(fs::File::open(input)?);
+    let mut encoder = OpusEncoder::new(48_000, 1, Application::Audio).map_err(|e| anyhow::anyhow!("Opus encoder: {e}"))?;
+    encoder.bitrate_bps = 48_000;
+    let head = OpusHead::for_encoder(&encoder, 48_000);
+    let pre_skip = head.pre_skip;
+    let input_bytes = source.get_ref().metadata()?.len();
+    anyhow::ensure!(input_bytes % 4 == 0, "Truncated raw audio");
+    let total_samples = input_bytes / 4;
+    let frames = (total_samples + u64::from(pre_skip)).div_ceil(960);
+    let final_granule = total_samples + u64::from(pre_skip);
+    let mut writer = OggOpusWriter::with_tags(std::io::BufWriter::new(fs::File::create(output)?), head, OpusTags::new())?;
+    let mut raw = [0u8; 960 * 4];
+    let mut samples = [0f32; 960];
+    let mut packet = vec![0u8; MAX_PACKET_BYTES];
+    for frame_index in 0..frames {
+        check_archive_cancel(cancel)?;
+        let mut bytes = 0;
+        while bytes < raw.len() {
+            let count = source.read(&mut raw[bytes..])?;
+            if count == 0 { break; }
+            bytes += count;
+        }
+        anyhow::ensure!(bytes % 4 == 0, "Truncated raw audio");
+        samples.fill(0.0);
+        for (sample, chunk) in samples.iter_mut().zip(raw[..bytes].chunks_exact(4)) {
+            *sample = f32::from_le_bytes(chunk.try_into().unwrap());
+            anyhow::ensure!(sample.is_finite(), "Non-finite raw audio sample");
+        }
+        let count = encoder.encode(&samples, 960, &mut packet).map_err(|e| anyhow::anyhow!("Opus encode: {e}"))?;
+        if frame_index + 1 == frames {
+            writer.write_packet_with_duration(&packet[..count], (final_granule - writer.granule() as u64) as u32)?;
+        } else { writer.write_packet(&packet[..count])?; }
+    }
+    writer.finish()?;
     Ok(())
 }
 
@@ -635,6 +678,13 @@ pub(crate) fn encode_raw_48k(input: &Path, output: &Path, format: ArchiveFormat)
 
 pub(crate) fn encode_mono_48k(samples: &[f32], output: &Path, format: ArchiveFormat) -> Result<()> {
     match format {
+        ArchiveFormat::Ogg => {
+            let raw = output.with_extension("mix.raw");
+            write_raw_samples(&raw, samples)?;
+            let result = transcode_raw_to_ogg_cancellable(&raw, output, None);
+            let _ = fs::remove_file(raw);
+            result
+        }
         ArchiveFormat::Wav => crate::pipeline::write_mono_48k_wav(samples, output),
         ArchiveFormat::Flac => {
             let raw = output.with_extension("mix.raw");
@@ -707,6 +757,33 @@ fn rms_tail(samples: &[f32]) -> f32 {
 #[cfg(target_os = "windows")]
 pub mod platform {
     use super::*;
+
+    #[test]
+    fn ogg_live_finish_keeps_raw_until_commit() {
+        let directory = std::env::temp_dir().join(format!("gigaam-ogg-live-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir(&directory).unwrap();
+        let mut capture = LiveCapture::new("ogg-live".into(), 0, LiveSource::SystemAndMicrophone, None, true, ArchiveFormat::Ogg, 1.0, directory.clone(), None);
+        capture.initialize_paths().unwrap();
+        capture.append_timed(true, 10_000_000, vec![0.1; 4800]);
+        capture.append_timed(false, 15_000_000, vec![0.1; 4800]);
+        let raw = capture.microphone_path.clone();
+        let archive = capture.finish().unwrap();
+        assert_eq!(archive.len(), 2);
+        let manifest: serde_json::Value = serde_json::from_slice(&fs::read(directory.join("tracks.json")).unwrap()).unwrap();
+        let mic = manifest.as_array().unwrap().iter().find(|entry| entry["file"].as_str().unwrap().starts_with("microphone")).unwrap();
+        let system = manifest.as_array().unwrap().iter().find(|entry| entry["file"].as_str().unwrap().starts_with("system")).unwrap();
+        assert!((system["offset_seconds"].as_f64().unwrap() - mic["offset_seconds"].as_f64().unwrap() - 0.5).abs() < 0.001);
+        assert!(raw.exists(), "raw retained until metadata commit");
+        for entry in fs::read_dir(&directory).unwrap().flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|extension| extension == "ogg") {
+                assert_eq!(&fs::read(path).unwrap()[..4], b"OggS");
+            }
+        }
+        drop(capture);
+        for entry in fs::read_dir(&directory).unwrap().flatten() { fs::remove_file(entry.path()).unwrap(); }
+        fs::remove_dir(directory).unwrap();
+    }
     use crate::capture_recovery::{CaptureAttempt, SupervisorEvent};
     use rubato::{FftFixedIn, Resampler};
     use std::{
@@ -1315,6 +1392,79 @@ pub mod platform {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "explicit speech codec benchmark; run with --ignored --nocapture"]
+    fn compare_speech_archive_profiles() {
+        let root = std::env::temp_dir().join(format!("gigaam-codec-profile-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for fixture in ["besarab-clean.wav", "besarab-noisy.wav"] {
+            let input = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures").join(fixture);
+            let mut reader = hound::WavReader::open(input).unwrap();
+            let spec = reader.spec();
+            let source: Vec<f32> = reader.samples::<i16>().map(|s| s.unwrap() as f32 / 32768.0).collect();
+            let mono: Vec<f32> = source.chunks(spec.channels as usize).map(|frame| frame.iter().sum::<f32>() / spec.channels as f32).collect();
+            let samples: Vec<f32> = (0..(mono.len() as u64 * 48_000 / spec.sample_rate as u64) as usize).map(|i| mono[(i as u64 * spec.sample_rate as u64 / 48_000) as usize]).collect();
+            for format in [super::ArchiveFormat::Wav, super::ArchiveFormat::Flac, super::ArchiveFormat::Mp3, super::ArchiveFormat::Ogg] {
+                let output = root.join(format!("{fixture}.{}", format.extension()));
+                let start = std::time::Instant::now();
+                super::encode_mono_48k(&samples, &output, format).unwrap();
+                println!("profile fixture={fixture} format={} bytes={} samples={} elapsed_ms={}", format.extension(), std::fs::metadata(&output).unwrap().len(), samples.len(), start.elapsed().as_millis());
+				if std::env::var_os("GIGAAM_KEEP_CODEC_OUTPUT").is_none() { std::fs::remove_file(output).unwrap(); }
+            }
+        }
+        if std::env::var_os("GIGAAM_KEEP_CODEC_OUTPUT").is_none() { std::fs::remove_dir(root).unwrap(); }
+    }
+    #[test]
+    fn ogg_opus_archive_has_real_container_and_is_compact() {
+        let output = std::env::temp_dir().join(format!("gigaam-{}-{}.ogg", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let samples: Vec<f32> = (0..48_000).map(|i| ((i as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin()) * 0.1).collect();
+        super::encode_mono_48k(&samples, &output, super::ArchiveFormat::Ogg).unwrap();
+        let bytes = std::fs::read(&output).unwrap();
+        std::fs::remove_file(output).unwrap();
+        assert_eq!(&bytes[..4], b"OggS");
+        assert!(bytes.windows(8).any(|window| window == b"OpusHead"));
+        assert!(bytes.len() < 12_000, "one second archive: {} bytes", bytes.len());
+        // Independently inspect container EOS granule, not just decoder output
+        // which includes codec lookahead/padding before RFC 7845 trimming.
+        let mut offset = 0;
+        let mut eos_granule = None;
+        while offset < bytes.len() {
+            assert_eq!(&bytes[offset..offset + 4], b"OggS");
+            let segments = bytes[offset + 26] as usize;
+            let body: usize = bytes[offset + 27..offset + 27 + segments].iter().map(|value| *value as usize).sum();
+            if bytes[offset + 5] & 4 != 0 {
+                eos_granule = Some(u64::from_le_bytes(bytes[offset + 6..offset + 14].try_into().unwrap()));
+            }
+            offset += 27 + segments + body;
+        }
+        let mut reader = opus_pure::OggOpusReader::new(std::io::Cursor::new(bytes)).unwrap();
+        let head = reader.head().clone();
+        assert_eq!(eos_granule.unwrap() - u64::from(head.pre_skip), 48_000);
+        let mut decoder = head.decoder(48_000).unwrap();
+        let mut decoded = vec![0.0f32; opus_pure::MAX_PACKET_SAMPLES];
+        let mut frames = 0;
+        for packet in reader.packets() {
+            let packet = packet.unwrap();
+            frames += decoder.decode(&packet.data, opus_pure::MAX_PACKET_SAMPLES, &mut decoded).unwrap();
+            assert!(decoded.iter().all(|sample| sample.is_finite()));
+        }
+        assert!(frames >= 48_000);
+    }
+    #[test]
+    fn ogg_cancel_retains_raw_and_does_not_publish_partial_archive() {
+        let root = std::env::temp_dir().join(format!("gigaam-ogg-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let raw = root.join("source.raw");
+        let output = root.join("archive.ogg");
+        super::write_raw_samples(&raw, &[0.0; 960]).unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+        assert!(super::transcode_raw_cancellable(&raw, &output, super::ArchiveFormat::Ogg, Some(&cancel)).is_err());
+        assert!(raw.exists());
+        assert!(!output.exists());
+        assert!(!output.with_extension("ogg.partial").exists());
+        std::fs::remove_file(raw).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
     use super::*;
 
     #[test]
@@ -1380,7 +1530,7 @@ mod tests {
         let input = directory.join("audio.f32");
         fs::write(&input, vec![0u8; 16_384]).unwrap();
         let cancel = AtomicBool::new(true);
-        for format in [ArchiveFormat::Wav, ArchiveFormat::Flac, ArchiveFormat::Mp3] {
+        for format in [ArchiveFormat::Wav, ArchiveFormat::Flac, ArchiveFormat::Mp3, ArchiveFormat::Ogg] {
             let output = directory.join(format!("audio.{}", format.extension()));
             assert!(
                 transcode_raw_cancellable(&input, &output, format, Some(&cancel))
