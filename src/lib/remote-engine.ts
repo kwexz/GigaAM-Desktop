@@ -55,6 +55,7 @@ export class RemoteEngine implements RecognitionEngine {
 		if (event.session_id !== this.sessionId) throw new Error('remote session mismatch');
 		if (event.seq <= this.durableSequence(event.track_id) || this.queue.some((item) => item.event.idempotency_key === event.idempotency_key)) return;
 		if (this.queue.length + this.pendingEnqueues >= this.options.maxQueuedBlocks) throw new Error('remote transport backlog is full');
+		if (event.payload && event.payload.byteLength > 16 * 1024 * 1024) throw new Error('remote block exceeds size limit');
 		this.pendingEnqueues += 1;
 		try {
 			const wire = { ...event, payload: undefined, checksum: await checksum(event.payload ?? new Uint8Array()) };
