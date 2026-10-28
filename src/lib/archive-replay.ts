@@ -1,5 +1,15 @@
 import type { AudioBlockEvent } from './contracts';
 import { archivedBlocks, listBrowserMetadata, readOpfsArchive } from './browser-storage';
+import type { RemoteEngine } from './remote-engine';
+
+export async function replayToRemote(sessionId: string, engine: RemoteEngine, signal?: AbortSignal): Promise<void> {
+	for await (const block of replayArchivedBlocks(sessionId)) {
+		if (signal?.aborted) throw new Error('Replay cancelled');
+		if (block.seq <= engine.durableSequence(block.track_id)) continue;
+		await engine.waitForCapacity(signal);
+		await engine.enqueue(block);
+	}
+}
 
 /** Reconstruct bounded payloads from durable OPFS ranges, not a RAM backlog. */
 export async function* replayArchivedBlocks(sessionId: string): AsyncGenerator<AudioBlockEvent> {

@@ -26,6 +26,7 @@ export class RemoteEngine implements RecognitionEngine {
 	private readonly durable = new Map<AudioBlockEvent['track_id'], number>();
 	private readonly sent = new Set<string>();
 	private pendingEnqueues = 0;
+	private readonly ackListeners = new Set<() => void>();
 	private reconnectTimer?: number;
 	private stopped = false;
 	private connecting = false;
@@ -46,11 +47,13 @@ export class RemoteEngine implements RecognitionEngine {
 		this.socket?.close(1000, 'cancelled');
 		this.socket = undefined;
 		this.queue.length = 0;
+		for (const listener of [...this.ackListeners]) listener();
 	}
 
 	async enqueue(event: AudioBlockEvent): Promise<void> {
 		assertAudioBlock(event);
 		if (event.session_id !== this.sessionId) throw new Error('remote session mismatch');
+		if (event.seq <= this.durableSequence(event.track_id) || this.queue.some((item) => item.event.idempotency_key === event.idempotency_key)) return;
 		if (this.queue.length + this.pendingEnqueues >= this.options.maxQueuedBlocks) throw new Error('remote transport backlog is full');
 		this.pendingEnqueues += 1;
 		try {
@@ -63,6 +66,17 @@ export class RemoteEngine implements RecognitionEngine {
 
 	durableSequence(track: AudioBlockEvent['track_id']): number { return this.durable.get(track) ?? -1; }
 	backlog(): number { return this.queue.length; }
+
+	async waitForCapacity(signal?: AbortSignal): Promise<void> {
+		if (signal?.aborted) throw new Error('Replay cancelled');
+		if (this.queue.length + this.pendingEnqueues < this.options.maxQueuedBlocks) return;
+		await new Promise<void>((resolve, reject) => {
+			const cleanup = () => { this.ackListeners.delete(check); signal?.removeEventListener('abort', abort); };
+			const abort = () => { cleanup(); reject(new Error('Replay cancelled')); };
+			const check = () => { if (this.stopped) { abort(); return; } if (this.queue.length + this.pendingEnqueues < this.options.maxQueuedBlocks) { cleanup(); resolve(); } };
+			this.ackListeners.add(check); signal?.addEventListener('abort', abort, { once: true }); check();
+		});
+	}
 
 	onSegment(listener: (event: TranscriptSegmentEvent) => void): () => void {
 	this.listeners.add(listener);
@@ -103,6 +117,7 @@ export class RemoteEngine implements RecognitionEngine {
 			this.sent.delete(key);
 			const index = this.queue.findIndex((item) => item.event.track_id === value.track_id && item.event.seq === value.seq);
 			if (index >= 0) this.queue.splice(index, 1);
+			for (const listener of this.ackListeners) listener();
 			this.flush();
 		}
 		if (value.segment) {
