@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Page from './+page.svelte';
+import * as browserStorage from '../lib/browser-storage';
 
 const { invoke, open, save, revealItemInDir, openUrl, onDragDropEvent } = vi.hoisted(() => ({
 	invoke: vi.fn(),
@@ -47,6 +48,7 @@ function mockBackend(options: { installed?: boolean; items?: Item[] } = {}) {
 	invoke.mockImplementation(async (command: string) => {
 		switch (command) {
 			case 'list_history': return items;
+			case 'load_organization': return [];
 			case 'list_queue': return [];
 			case 'model_status': return { installed, downloading: false, downloaded_bytes: 0, total_bytes: 227_222_878, error: null };
 			case 'list_microphones': return ['Test microphone'];
@@ -91,6 +93,29 @@ describe('GigaAM page', () => {
 
 	it('renders history and loads a selected transcript', async () => {
 		mockBackend({ items: [historyItem] });
+	it('creates a folder through the desktop organization contract', async () => {
+		render(Page);
+		await screen.findByText('╨Ч╨░╨┐╨╕╤Б╨╕');
+		await fireEvent.input(screen.getByRole('textbox', { name: '╨Э╨░╨╖╨▓╨░╨╜╨╕╨╡ ╨┐╨░╨┐╨║╨╕' }), { target: { value: 'Folder' } });
+		await fireEvent.click(screen.getByRole('button', { name: '╨б╨╛╨╖╨┤╨░╤В╤М ╨┐╨░╨┐╨║╤Г' }));
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('save_organization', {
+			nodes: [expect.objectContaining({ kind: 'folder', name: 'Folder', parent_id: null })], previous: []
+		}));
+		expect(await screen.findByRole('button', { name: 'ЁЯУБ Folder' })).toBeInTheDocument();
+	});
+
+	it('browser shell loads history without invoking Desktop IPC', async () => {
+		Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
+		const metadata = vi.spyOn(browserStorage, 'listBrowserMetadata').mockResolvedValue([]);
+		const organization = vi.spyOn(browserStorage, 'loadBrowserOrganization').mockResolvedValue([]);
+		try {
+			render(Page);
+			await screen.findByTestId('web-mode-banner');
+			await waitFor(() => expect(metadata).toHaveBeenCalled());
+			expect(invoke).not.toHaveBeenCalled();
+		} finally { cleanup(); metadata.mockRestore(); organization.mockRestore(); }
+	});
+
 		render(Page);
 
 		await fireEvent.click(await screen.findByText('meeting.wav'));
@@ -100,6 +125,24 @@ describe('GigaAM page', () => {
 
 	it('exports the selected transcript using the extension chosen in the save dialog', async () => {
 		mockBackend({ items: [historyItem] });
+	it('offers an accessible recording rename action independent of double click', async () => {
+		mockBackend({ items: [historyItem] });
+		render(Page);
+		await screen.findByText('meeting.wav');
+		await fireEvent.click(screen.getByRole('button', { name: '╨Я╨╡╤А╨╡╨╕╨╝╨╡╨╜╨╛╨▓╨░╤В╤М ╨╖╨░╨┐╨╕╤Б╤М' }));
+		await waitFor(() => expect(document.querySelector('input[data-place="list"]')).not.toBeNull());
+	});
+
+	it('passes explicitly selected Ogg format to native recording', async () => {
+		mockBackend({ installed: true });
+		render(Page);
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('model_status'));
+		await fireEvent.click(await screen.findByRole('button', { name: '╨Ч╨░╨┐╨╕╤Б╨░╤В╤М', exact: true }));
+		await fireEvent.change(screen.getByRole('combobox', { name: '╨д╨╛╤А╨╝╨░╤В ╨╖╨░╨┐╨╕╤Б╨╕' }), { target: { value: 'ogg' } });
+		await fireEvent.click(screen.getByRole('button', { name: /тЧП\s*╨Ч╨░╨┐╨╕╤Б╤М/ }));
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('start_live', expect.objectContaining({ archiveFormat: 'ogg' })));
+	});
+
 		save.mockResolvedValue('C:\\exports\\meeting.srt');
 		render(Page);
 
