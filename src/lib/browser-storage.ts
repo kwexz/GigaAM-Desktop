@@ -30,8 +30,10 @@ export async function commitArchivedBlock(block: ArchivedBlock, archive: Browser
 	await new Promise<void>((resolve, reject) => {
 		const tx = db.transaction(META_STORE, 'readwrite');
 		const store = tx.objectStore(META_STORE);
-		store.put({ key: `block:${block.event.session_id}:${block.event.track_id}:${block.event.seq}`, ...block });
-		store.put({ key: `archive:${archive.session_id}:${archive.track_id}`, ...archive });
+		try {
+			store.put({ key: `block:${block.event.session_id}:${block.event.track_id}:${block.event.seq}`, ...block });
+			store.put({ key: `archive:${archive.session_id}:${archive.track_id}`, ...archive });
+		} catch (error) { tx.abort(); db.close(); reject(error); return; }
 		tx.oncomplete = () => { db.close(); resolve(); };
 		tx.onerror = tx.onabort = () => { db.close(); reject(tx.error ?? new Error('Archive metadata commit failed')); };
 	});
@@ -65,7 +67,9 @@ function openDb(): Promise<IDBDatabase> {
 function transaction<T>(store: string, mode: IDBTransactionMode, action: (objectStore: IDBObjectStore) => IDBRequest<T> | void): Promise<T | undefined> {
 	return openDb().then((db) => new Promise((resolve, reject) => {
 		const tx = db.transaction(store, mode);
-		const request = action(tx.objectStore(store));
+		let request: IDBRequest<T> | void;
+		try { request = action(tx.objectStore(store)); }
+		catch (error) { tx.abort(); db.close(); reject(error); return; }
 		tx.onerror = tx.onabort = () => { db.close(); reject(tx.error ?? new Error('IndexedDB transaction failed')); };
 		tx.oncomplete = () => { db.close(); resolve(request && 'result' in request ? request.result : undefined); };
 	}));
