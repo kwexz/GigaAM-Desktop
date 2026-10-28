@@ -1465,6 +1465,22 @@ mod tests {
         std::fs::remove_file(raw).unwrap();
         std::fs::remove_dir(root).unwrap();
     }
+
+    #[test]
+    fn ogg_retry_replaces_only_staged_output_and_keeps_raw() {
+        let root = std::env::temp_dir().join(format!("gigaam-ogg-retry-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let raw = root.join("source.raw");
+        let output = root.join("archive.ogg");
+        super::write_raw_samples(&raw, &[0.1; 4800]).unwrap();
+        std::fs::write(output.with_extension("ogg.partial"), b"interrupted output").unwrap();
+        super::transcode_raw_cancellable(&raw, &output, super::ArchiveFormat::Ogg, None).unwrap();
+        assert_eq!(&std::fs::read(&output).unwrap()[..4], b"OggS");
+        assert!(raw.exists());
+        assert!(!output.with_extension("ogg.partial").exists());
+        for path in [raw, output] { std::fs::remove_file(path).unwrap(); }
+        std::fs::remove_dir(root).unwrap();
+    }
     use super::*;
 
     #[test]
