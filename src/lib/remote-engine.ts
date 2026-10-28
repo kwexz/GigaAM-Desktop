@@ -25,6 +25,7 @@ export class RemoteEngine implements RecognitionEngine {
 	private readonly listeners = new Set<(event: TranscriptSegmentEvent) => void>();
 	private readonly durable = new Map<AudioBlockEvent['track_id'], number>();
 	private readonly sent = new Set<string>();
+	private pendingEnqueues = 0;
 	private reconnectTimer?: number;
 	private stopped = false;
 	private connecting = false;
@@ -50,10 +51,14 @@ export class RemoteEngine implements RecognitionEngine {
 	async enqueue(event: AudioBlockEvent): Promise<void> {
 		assertAudioBlock(event);
 		if (event.session_id !== this.sessionId) throw new Error('remote session mismatch');
-		const wire = { ...event, payload: undefined, checksum: await checksum(event.payload ?? new Uint8Array()) };
-		if (this.queue.length >= this.options.maxQueuedBlocks) throw new Error('remote transport backlog is full');
-		this.queue.push({ event, wire });
-		this.flush();
+		if (this.queue.length + this.pendingEnqueues >= this.options.maxQueuedBlocks) throw new Error('remote transport backlog is full');
+		this.pendingEnqueues += 1;
+		try {
+			const wire = { ...event, payload: undefined, checksum: await checksum(event.payload ?? new Uint8Array()) };
+			if (this.stopped) throw new Error('remote transport stopped');
+			this.queue.push({ event, wire });
+			this.flush();
+		} finally { this.pendingEnqueues -= 1; }
 	}
 
 	durableSequence(track: AudioBlockEvent['track_id']): number { return this.durable.get(track) ?? -1; }
@@ -90,6 +95,9 @@ export class RemoteEngine implements RecognitionEngine {
 		let value: { type?: string; track_id?: AudioBlockEvent['track_id']; seq?: number; durable?: boolean; segment?: TranscriptSegmentEvent };
 		try { value = JSON.parse(data); } catch { return; }
 		if (value.type === 'ack' && value.durable && value.track_id && value.seq !== undefined) {
+			if (!Number.isSafeInteger(value.seq) || value.seq < 0 || !['microphone', 'system', 'file'].includes(value.track_id)) return;
+			const acknowledged = this.queue.find((item) => item.event.track_id === value.track_id && item.event.seq === value.seq);
+			if (!acknowledged || !this.sent.has(acknowledged.event.idempotency_key)) return;
 			this.durable.set(value.track_id, Math.max(this.durableSequence(value.track_id), value.seq));
 			const key = `${this.sessionId}:${value.track_id}:${value.seq}`;
 			this.sent.delete(key);
@@ -104,10 +112,9 @@ export class RemoteEngine implements RecognitionEngine {
 
 	private flush(): void {
 		if (this.socket?.readyState !== WebSocket.OPEN) { this.scheduleReconnect(); return; }
-		while (this.queue.length) {
-			const item = this.queue[0];
+		for (const item of this.queue) {
 			const key = item.event.idempotency_key;
-			if (this.sent.has(key)) { this.queue.push(this.queue.shift()!); continue; }
+			if (this.sent.has(key)) continue;
 			if (this.socket.bufferedAmount > 4 * 1024 * 1024) return;
 			this.sent.add(key);
 			this.socket.send(JSON.stringify(item.wire));
