@@ -1,6 +1,7 @@
 import type { ArchiveWriter, AudioBlockEvent, CaptureSource, RecognitionEngine, TranscriptRepository } from './contracts';
 import { assertAudioBlock, assertSegment } from './contracts';
-import { appendOpfsChunk, changesSince, getSessionState, putArchiveMeta, putSegment, putSessionState, requestPersistentStorage } from './browser-storage';
+import { browserRecordingMime } from './recording-format';
+import { appendOpfsChunk, changesSince, getSessionState, putArchiveMeta, putSegment, putSessionState, requestPersistentStorage, listBrowserMetadata, readOpfsArchive } from './browser-storage';
 
 export type BrowserCaptureStatus = { microphone: boolean; system: boolean; systemAudioUnavailable: boolean };
 
@@ -9,16 +10,28 @@ export class BrowserCaptureSource implements CaptureSource {
 	private recorders = new Map<AudioBlockEvent['track_id'], MediaRecorder>();
 	private sequence = new Map<AudioBlockEvent['track_id'], number>();
 	private started = new Map<AudioBlockEvent['track_id'], number>();
+	private origin = 0;
+	private conversion = new Map<AudioBlockEvent['track_id'], Promise<void>>();
 	private lastEventAt = new Map<AudioBlockEvent['track_id'], number>();
 	private streams: MediaStream[] = [];
+	private pending = new Set<Promise<void>>();
+	private pendingBytes = 0;
+	private failure?: Error;
+	private readonly errors = new Set<(error: Error) => void>();
+	onError(listener: (error: Error) => void): () => void { this.errors.add(listener); return () => this.errors.delete(listener); }
+	private report(error: Error): void { this.failure = error; for (const listener of this.errors) listener(error); }
 	status: BrowserCaptureStatus = { microphone: false, system: false, systemAudioUnavailable: false };
 
-	async start(sessionId: string): Promise<void> {
+	async start(sessionId: string, source: 'microphone' | 'system' | 'system_and_microphone' = 'system_and_microphone'): Promise<void> {
 		await requestPersistentStorage();
+		this.origin = performance.now();
+		if (source !== 'system') {
 		const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
 		this.streams.push(mic);
 		this.startTrack(sessionId, 'microphone', mic);
 		this.status.microphone = true;
+		}
+		if (source === 'microphone') return;
 		try {
 			const display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
 			this.streams.push(display);
@@ -33,24 +46,38 @@ export class BrowserCaptureSource implements CaptureSource {
 		} catch {
 			this.status.systemAudioUnavailable = true;
 		}
+		if (source === 'system' && !this.status.system) throw new Error('System audio is unavailable; select microphone explicitly');
 	}
 
 	private startTrack(sessionId: string, trackId: AudioBlockEvent['track_id'], stream: MediaStream): void {
-		const mime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm'].find((candidate) => MediaRecorder.isTypeSupported(candidate));
-		if (!mime) throw new Error('No supported Opus/WebM or Ogg recorder');
-		const recorder = new MediaRecorder(stream, { mimeType: mime });
+		const requestedMime = browserRecordingMime((candidate) => MediaRecorder.isTypeSupported(candidate));
+		const recorder = new MediaRecorder(stream, { mimeType: requestedMime });
+		const mime = recorder.mimeType || requestedMime;
+		recorder.onerror = () => { this.report(new Error('Browser recorder failed')); void this.stop().catch(() => {}); };
+		for (const track of stream.getAudioTracks()) track.addEventListener('ended', () => {
+			if (recorder.state !== 'inactive') { this.report(new Error(`Audio track ${trackId} ended unexpectedly`)); void this.stop().catch(() => {}); }
+		}, { once: true });
 		this.sequence.set(trackId, 0);
-		this.started.set(trackId, performance.now());
+		this.started.set(trackId, this.origin);
 		this.lastEventAt.set(trackId, performance.now());
-		recorder.ondataavailable = async (event) => {
+		recorder.ondataavailable = (event) => {
 			if (!event.data.size) return;
+			if (this.pending.size >= 256 || this.pendingBytes + event.data.size > 16 * 1024 * 1024) {
+				this.report(new Error('Browser audio conversion backlog exceeded; capture stopped'));
+				for (const active of this.recorders.values()) if (active.state !== 'inactive') active.stop();
+				this.streams.forEach((source) => source.getTracks().forEach((track) => track.stop()));
+				return;
+			}
+			this.pendingBytes += event.data.size;
 			const seq = this.sequence.get(trackId) ?? 0;
+			this.sequence.set(trackId, seq + 1);
 			const rate = 48_000;
 			const now = performance.now();
 			const previous = this.lastEventAt.get(trackId) ?? now;
 			const start = Math.round((previous - (this.started.get(trackId) ?? previous)) * rate / 1000);
 			const duration = Math.max(1, Math.round((now - previous) * rate / 1000));
 			this.lastEventAt.set(trackId, now);
+			const task = (this.conversion.get(trackId) ?? Promise.resolve()).then(async () => {
 			const payload = new Uint8Array(await event.data.arrayBuffer());
 			const block: AudioBlockEvent = {
 				version: 1, session_id: sessionId, track_id: trackId, seq, sample_rate: rate,
@@ -59,8 +86,11 @@ export class BrowserCaptureSource implements CaptureSource {
 				flags: { final: false, discontinuity: false }, idempotency_key: `${sessionId}:${trackId}:${seq}`,
 				payload,
 			};
-			this.sequence.set(trackId, seq + 1);
 			for (const listener of this.listeners) listener(block);
+			});
+			this.conversion.set(trackId, task);
+			this.pending.add(task);
+			void task.then(() => { this.pending.delete(task); this.pendingBytes -= event.data.size; }, (error) => { this.pending.delete(task); this.pendingBytes -= event.data.size; this.report(error instanceof Error ? error : new Error('Audio conversion failed')); });
 		};
 		recorder.start(250);
 		this.recorders.set(trackId, recorder);
@@ -69,10 +99,16 @@ export class BrowserCaptureSource implements CaptureSource {
 	async pause(): Promise<void> { for (const recorder of this.recorders.values()) recorder.pause(); }
 	async resume(): Promise<void> { for (const recorder of this.recorders.values()) recorder.resume(); }
 	async stop(): Promise<void> {
-		for (const recorder of this.recorders.values()) if (recorder.state !== 'inactive') recorder.stop();
+		await Promise.all([...this.recorders.values()].map((recorder) => new Promise<void>((resolve) => {
+			if (recorder.state === 'inactive') { resolve(); return; }
+			recorder.addEventListener('stop', () => resolve(), { once: true });
+			recorder.stop();
+		})));
+		await Promise.all([...this.pending]);
 		this.streams.forEach((stream) => stream.getTracks().forEach((track) => track.stop()));
 		this.recorders.clear();
 		this.streams = [];
+		if (this.failure) throw this.failure;
 	}
 	onBlock(listener: (event: AudioBlockEvent) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
 }
@@ -82,13 +118,28 @@ export class OpfsArchiveWriter implements ArchiveWriter {
 	async append(event: AudioBlockEvent): Promise<void> {
 		assertAudioBlock(event);
 		if (!event.payload) throw new Error('audio block payload is required');
-		const path = `sessions/${event.session_id}/${event.track_id}.webm`;
-		const bytes = await appendOpfsChunk(path, new Blob([event.payload.buffer.slice(event.payload.byteOffset, event.payload.byteOffset + event.payload.byteLength) as ArrayBuffer], { type: 'audio/webm' }));
+		const mime = event.codec_config ?? 'audio/webm';
+		const extension = mime.includes('ogg') ? 'ogg' : 'webm';
+		const path = `sessions/${event.session_id}/${event.track_id}.${extension}`;
+		const bytes = await appendOpfsChunk(path, new Blob([event.payload.buffer.slice(event.payload.byteOffset, event.payload.byteOffset + event.payload.byteLength) as ArrayBuffer], { type: mime }));
 		this.bytes.set(`${event.session_id}:${event.track_id}`, bytes);
-		await putArchiveMeta({ session_id: event.session_id, track_id: event.track_id, path, mime_type: 'audio/webm', bytes, block_count: event.seq + 1, created_ms: Date.now() });
+		await putArchiveMeta({ session_id: event.session_id, track_id: event.track_id, path, mime_type: mime, bytes, block_count: event.seq + 1, created_ms: Date.now() });
 	}
 	async finalize(sessionId: string): Promise<{ content_hash: string; duration_samples: number }> {
-		return { content_hash: `${sessionId}:opfs`, duration_samples: 0 };
+		const archives = (await listBrowserMetadata()).filter((entry) => entry.session_id === sessionId && String(entry.key).startsWith('archive:'));
+		const hashes: string[] = [];
+		for (const archive of archives) {
+			const file = await readOpfsArchive(String(archive.path));
+			if (file.size !== Number(archive.bytes)) throw new Error('Local archive size mismatch');
+			// WebCrypto digest requires a complete buffer. Large archives remain
+			// explicitly unhashed rather than allocating unbounded recording memory.
+			if (file.size > 16 * 1024 * 1024) continue;
+			const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+			const content_hash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+			await putArchiveMeta({ session_id: sessionId, track_id: archive.track_id as AudioBlockEvent['track_id'], path: String(archive.path), mime_type: String(archive.mime_type), bytes: file.size, block_count: Number(archive.block_count), created_ms: Number(archive.created_ms), content_hash });
+			hashes.push(content_hash);
+		}
+		return { content_hash: hashes.length === 1 ? hashes[0] : '', duration_samples: 0 };
 	}
 	async abort(_sessionId: string): Promise<void> {}
 }
