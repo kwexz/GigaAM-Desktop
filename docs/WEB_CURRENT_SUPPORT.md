@@ -18,6 +18,9 @@ npm run dev -- --host 127.0.0.1 --port 4173 --strictPort
 - Сохранение аудио в OPFS, метаданных в IndexedDB; reload, playback и скачивание.
 - Явный fallback при отказе display capture, создание вложенных папок и перенос записи через select и drag-and-drop, сохранение после reload.
 - Проверка SHA-256 небольшого архива. Архивы больше 16 МиБ не получают выдуманный hash: streaming integrity для них ещё не завершена.
+- Восстановление interrupted-state без фиктивного completion, durable range/sequence replay из OPFS, отказ gap и идемпотентный duplicate append.
+- Mock WebSocket reconnect до ACK и последующий durable ACK/drain; это тест протокола, не реальный VPS inference.
+- Инъекция metadata quota failure сохраняет уже записанные OPFS-байты; Stop останавливает захват при отказе хранилища.
 
 Автоматическая проверка: `$env:PLAYWRIGHT_CHANNEL='msedge'; npm run test:web -- --workers=1`. Основной сценарий — `tests/web/application.spec.ts`; два capture-harness теста — отдельные низкоуровневые проверки. Они используют синтетические источники, не физические устройства.
 
