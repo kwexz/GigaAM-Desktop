@@ -205,9 +205,22 @@ export async function renameBrowserRecording(id: string, name: string): Promise<
 }
 
 export async function editBrowserSegment(sessionId: string, segmentId: string, text: string): Promise<void> {
-	const segment = (await browserSegments(sessionId)).find((entry) => entry.segment_id === segmentId);
-	if (!segment || !text.trim()) throw new Error('Unknown or empty segment');
-	await putSegment({ ...segment, text, revision: segment.revision + 1, idempotency_key: crypto.randomUUID() });
+	if (!text.trim()) throw new Error('Empty segment');
+	const db = await openDb();
+	await new Promise<void>((resolve, reject) => {
+		const tx = db.transaction([SEGMENT_STORE, CHANGE_STORE], 'readwrite');
+		const store = tx.objectStore(SEGMENT_STORE);
+		const request = store.get([sessionId, segmentId]);
+		request.onsuccess = () => {
+			const previous = request.result as TranscriptSegmentEvent | undefined;
+			if (!previous) { tx.abort(); return; }
+			const segment = { ...previous, text, revision: previous.revision + 1, idempotency_key: crypto.randomUUID() };
+			store.put(segment);
+			tx.objectStore(CHANGE_STORE).put({ change_id: segment.idempotency_key, session_id: sessionId, kind: 'segment_upsert', revision: segment.revision, payload: segment });
+		};
+		tx.oncomplete = () => { db.close(); resolve(); };
+		tx.onerror = tx.onabort = () => { db.close(); reject(tx.error ?? new Error('Segment edit failed')); };
+	});
 }
 
 /** Metadata is removed only after audio deletion succeeds. Interrupted cleanup
