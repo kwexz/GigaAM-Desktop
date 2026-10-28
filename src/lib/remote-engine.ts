@@ -68,12 +68,24 @@ export class RemoteEngine implements RecognitionEngine {
 	backlog(): number { return this.queue.length; }
 
 	async waitForCapacity(signal?: AbortSignal): Promise<void> {
+		if (this.stopped) throw new Error('Remote transport stopped');
 		if (signal?.aborted) throw new Error('Replay cancelled');
 		if (this.queue.length + this.pendingEnqueues < this.options.maxQueuedBlocks) return;
 		await new Promise<void>((resolve, reject) => {
 			const cleanup = () => { this.ackListeners.delete(check); signal?.removeEventListener('abort', abort); };
 			const abort = () => { cleanup(); reject(new Error('Replay cancelled')); };
 			const check = () => { if (this.stopped) { abort(); return; } if (this.queue.length + this.pendingEnqueues < this.options.maxQueuedBlocks) { cleanup(); resolve(); } };
+			this.ackListeners.add(check); signal?.addEventListener('abort', abort, { once: true }); check();
+		});
+	}
+
+	async waitForDrain(signal?: AbortSignal): Promise<void> {
+		if (signal?.aborted || this.stopped) throw new Error('Replay cancelled');
+		if (!this.queue.length && !this.pendingEnqueues) return;
+		await new Promise<void>((resolve, reject) => {
+			const cleanup = () => { this.ackListeners.delete(check); signal?.removeEventListener('abort', abort); };
+			const abort = () => { cleanup(); reject(new Error('Replay cancelled')); };
+			const check = () => { if (this.stopped) { abort(); return; } if (!this.queue.length && !this.pendingEnqueues) { cleanup(); resolve(); } };
 			this.ackListeners.add(check); signal?.addEventListener('abort', abort, { once: true }); check();
 		});
 	}

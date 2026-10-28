@@ -9,6 +9,7 @@ export async function replayToRemote(sessionId: string, engine: RemoteEngine, si
 		await engine.waitForCapacity(signal);
 		await engine.enqueue(block);
 	}
+	await engine.waitForDrain(signal);
 }
 
 /** Reconstruct bounded payloads from durable OPFS ranges, not a RAM backlog. */

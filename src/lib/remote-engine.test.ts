@@ -21,10 +21,16 @@ describe('RemoteEngine', () => {
 			expect(engine.durableSequence('microphone')).toBe(-1);
 			expect(engine.backlog()).toBe(1);
 			const ack = JSON.stringify({ type: 'ack', durable: true, track_id: 'microphone', seq: 0 });
+			let drained = false;
+			const drain = engine.waitForDrain().then(() => { drained = true; });
+			await Promise.resolve();
+			expect(drained).toBe(false);
 			socket!.onmessage?.({ data: ack });
 			socket!.onmessage?.({ data: ack });
 			expect(engine.backlog()).toBe(0);
 			expect(engine.durableSequence('microphone')).toBe(0);
+			await drain;
+			expect(drained).toBe(true);
 		} finally { vi.unstubAllGlobals(); }
 	});
 	it('does not spin when flushing an already sent block awaiting ACK', async () => {

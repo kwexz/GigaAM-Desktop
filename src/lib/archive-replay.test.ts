@@ -12,9 +12,11 @@ describe('durable replay transport', () => {
 		vi.spyOn(storage, 'readOpfsArchive').mockResolvedValue(new File([new Uint8Array([0, 1, 2])], 'audio.webm'));
 		const engine = new RemoteEngine({ url: 'ws://localhost' });
 		const capacity = vi.spyOn(engine, 'waitForCapacity').mockResolvedValue();
+		const drain = vi.spyOn(engine, 'waitForDrain').mockResolvedValue();
 		const enqueue = vi.spyOn(engine, 'enqueue').mockResolvedValue();
 		await replayToRemote('session', engine);
 		expect(capacity).toHaveBeenCalledOnce();
+		expect(drain).toHaveBeenCalledOnce();
 		expect(enqueue.mock.calls[0][0].payload).toEqual(new Uint8Array([1, 2]));
 	});
 });
