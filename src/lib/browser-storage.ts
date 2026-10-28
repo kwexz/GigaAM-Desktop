@@ -15,8 +15,19 @@ export type BrowserArchiveMeta = {
 	bytes: number;
 	block_count: number;
 	content_hash?: string;
+	duration_samples?: number;
 	created_ms: number;
 };
+
+export type ArchivedBlock = { event: Omit<AudioBlockEvent, 'payload'>; offset: number; bytes: number };
+
+export async function putArchivedBlock(block: ArchivedBlock): Promise<void> {
+	await transaction(META_STORE, 'readwrite', (store) => store.put({ key: `block:${block.event.session_id}:${block.event.track_id}:${block.event.seq}`, ...block }));
+}
+
+export async function archivedBlocks(sessionId: string): Promise<ArchivedBlock[]> {
+	return (await listBrowserMetadata()).filter((entry) => String(entry.key).startsWith(`block:${sessionId}:`)).map((entry) => entry as unknown as ArchivedBlock).sort((a, b) => a.event.track_id.localeCompare(b.event.track_id) || a.event.seq - b.event.seq);
+}
 
 function openDb(): Promise<IDBDatabase> {
 	return new Promise((resolve, reject) => {
