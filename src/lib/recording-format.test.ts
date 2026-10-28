@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { browserRecordingMime, savedRecordingFormat } from './recording-format';
+import { browserRecordingMime, savedRecordingFormat, saveRecordingFormat } from './recording-format';
 
 describe('recording format preferences', () => {
+	it('does not fail capture when preference storage is unavailable', () => {
+		expect(() => saveRecordingFormat({ setItem: () => { throw new Error('disabled'); } }, 'ogg')).not.toThrow();
+		expect(savedRecordingFormat({ getItem: () => { throw new Error('disabled'); } })).toBeUndefined();
+	});
 	it('preserves explicit supported choices and rejects stale values', () => {
 		expect(savedRecordingFormat({ getItem: () => 'flac' })).toBe('flac');
 		expect(savedRecordingFormat({ getItem: () => 'ogg' })).toBe('ogg');
