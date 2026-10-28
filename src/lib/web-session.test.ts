@@ -4,6 +4,18 @@ import * as storage from './browser-storage';
 
 describe('WebSession', () => {
 	afterEach(() => vi.restoreAllMocks());
+	it('stops capture even if storage fails when Stop begins', async () => {
+		const persist = vi.spyOn(storage, 'putSessionState').mockResolvedValue();
+		const session = new WebSession('quota-stop');
+		vi.spyOn(session.capture, 'start').mockResolvedValue();
+		const stop = vi.spyOn(session.capture, 'stop').mockResolvedValue();
+		vi.spyOn(session.archive, 'finalize').mockResolvedValue({ content_hash: '', duration_samples: 0 });
+		await session.start();
+		persist.mockRejectedValue(new DOMException('Quota exceeded', 'QuotaExceededError'));
+		await expect(session.stop()).rejects.toThrow('Quota exceeded');
+		expect(stop).toHaveBeenCalledOnce();
+		expect(session.status().recording).toBe('failed');
+	});
 	it('persists final capture blocks before finalizing the archive', async () => {
 		vi.spyOn(storage, 'putSessionState').mockResolvedValue();
 		const session = new WebSession('final-block');
