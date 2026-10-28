@@ -1,5 +1,5 @@
 export type RecordingFormat = 'flac' | 'wav' | 'mp3' | 'ogg';
-export const DEFAULT_RECORDING_FORMAT: RecordingFormat = 'flac';
+export const DEFAULT_RECORDING_FORMAT: RecordingFormat = 'ogg';
 
 export function savedRecordingFormat(storage: Pick<Storage, 'getItem'>): RecordingFormat | undefined {
 	try {

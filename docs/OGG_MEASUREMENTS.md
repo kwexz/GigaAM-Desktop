@@ -36,4 +36,10 @@ Release benchmark: clean 186382 bytes / 428 ms; noisy 199135 bytes / 288 ms дл
 
 `pwsh -NoProfile -File scripts/measure-codec-resources.ps1` успешно запускает release benchmark binary без включения времени компиляции. Текущий замер: CPU 1109.375 ms, elapsed 1416.0384 ms, observed peak working set 23879680 bytes. Это общий процесс для загрузки двух fixtures и всех четырёх codecs, а не отдельный RSS каждого codec. Evidence: state/runs/codec-resources/resources.json и stdout/stderr рядом. Скрипт не измеряет реальную задержку GUI Stop и не выдаёт её за encoder time.
 
+## Принятое решение: compact default
+
+После проверок выбран Ogg/Opus 48 кбит/с как компактный default для новых предпочтений Desktop. Он меньше всех измеренных пригодных профилей на обеих fixtures; 24 кбит/с отклонён в пользу меньшей наблюдаемой noisy-разницы на48. Разница ASR2/305 не является ground-truth регрессией и не влияет на live PCM inference: архивное кодирование не меняет исходный ASR тракт. Это осознанный lossy компромисс, не обещание побитовой/текстовой идентичности. FLAC остаётся явным lossless выбором, сохранённое предпочтение имеет приоритет, старые архивы не перекодируются.
+
+Release production acknowledgement seam `acknowledgement_does_not_wait_for_slow_archive` проходит: подтверждение Stop не ждёт archive job. Это структурная проверка независимости, не замер реального GUI IPC; GUI latency остаётся not-run. Browser выбирает фактически поддерживаемый Ogg/Opus или WebM fallback, native48 не навязывается неподдерживающему браузеру.
+
 Ogg доступен как явно выбираемый lossy формат; FLAC default пока сохранён. Для выбора compact default требуется завершить сопоставление качества, release CPU/RSS и Stop latency, а также принять измеренную noisy-разницу. Нельзя объявлять этот документ доказательством выполнения задачи 5.4 целиком.

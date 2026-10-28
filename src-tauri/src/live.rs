@@ -36,7 +36,7 @@ pub enum ArchiveFormat {
 
 impl Default for ArchiveFormat {
     fn default() -> Self {
-        Self::Flac
+        Self::Ogg
     }
 }
 
