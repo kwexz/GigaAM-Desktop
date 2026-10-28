@@ -73,7 +73,101 @@ impl Store {
                created_ms INTEGER NOT NULL,
                started_ms INTEGER,
                completed_ms INTEGER,
+    pub fn list_folders(&self) -> rusqlite::Result<Vec<(String, Option<String>, String, i64)>> {
+        let mut statement = self.connection.prepare("SELECT id,parent_id,name,position FROM recording_folders ORDER BY position,id")?;
+        statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?.collect()
+    }
+
+    pub fn load_organization(&self) -> rusqlite::Result<serde_json::Value> {
+        let mut nodes = Vec::new();
+        for (id, parent, name, position) in self.list_folders()? {
+            nodes.push(serde_json::json!({"id":id,"parent_id":parent,"name":name,"position":position,"kind":"folder"}));
+        }
+        let mut statement = self.connection.prepare("SELECT t.id,p.folder_id,t.source_filename,COALESCE(p.position,ROW_NUMBER() OVER (ORDER BY t.created_ms DESC,t.id)-1) FROM transcriptions t LEFT JOIN recording_positions p ON p.recording_id=t.id ORDER BY t.created_ms DESC,t.id")?;
+        for row in statement.query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,String>(2)?,row.get::<_,i64>(3)?)))? {
+            let (id,parent,name,position)=row?;
+            nodes.push(serde_json::json!({"id":id,"parent_id":parent,"name":name,"position":position,"kind":"recording"}));
+        }
+        Ok(serde_json::Value::Array(nodes))
+    }
+
+    pub fn save_organization_if_unchanged(&mut self, previous: serde_json::Value, nodes: serde_json::Value) -> Result<(), String> {
+        let normalize = |value: serde_json::Value| {
+            let mut entries = value.as_array().cloned().unwrap_or_default();
+            entries.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+            entries
+        };
+        if !previous.is_array() || normalize(self.load_organization().map_err(|error| error.to_string())?) != normalize(previous) {
+            return Err("Organization changed; refresh and retry".into());
+        }
+        self.save_organization(nodes)
+    }
+
+    pub fn save_organization(&mut self, nodes: serde_json::Value) -> Result<(), String> {
+        let nodes = nodes.as_array().ok_or("Expected organization array")?;
+        if nodes.len() > 100_000 { return Err("Organization limit exceeded".into()); }
+        let mut ids = std::collections::HashSet::new();
+        let mut folders = std::collections::HashMap::new();
+        for node in nodes {
+            let id=node["id"].as_str().filter(|id| !id.is_empty()).ok_or("Missing ID")?;
+            if id.len() > 256 { return Err("Item ID too long".into()); }
+            if !ids.insert(id) { return Err("Duplicate ID".into()); }
+            if node["position"].as_u64().filter(|n| *n <= i64::MAX as u64).is_none() { return Err("Invalid position".into()); }
+            if node["kind"] == "folder" {
+                let existing_recording: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM transcriptions WHERE id=?1)", [id], |row| row.get(0)).map_err(|error| error.to_string())?;
+                if existing_recording { return Err("Folder ID collides with recording".into()); }
+                if node["name"].as_str().filter(|s| !s.trim().is_empty() && s.len() <= 1024).is_none() { return Err("Invalid folder name".into()); }
+                folders.insert(id, node["parent_id"].as_str());
+            } else if node["kind"] != "recording" { return Err("Invalid item kind".into()); }
+            if !node["parent_id"].is_null() && !node["parent_id"].is_string() { return Err("Invalid parent".into()); }
+        }
+        for node in nodes {
+            let id=node["id"].as_str().unwrap();
+            let mut parent=node["parent_id"].as_str();
+            let mut seen=std::collections::HashSet::from([id]);
+            while let Some(p)=parent {
+                if !seen.insert(p) { return Err("Folder cycle".into()); }
+                parent=*folders.get(p).ok_or("Unknown parent")?;
+            }
+        }
+        let tx=self.connection.transaction().map_err(|e|e.to_string())?;
+        let count: usize = tx.query_row("SELECT COUNT(*) FROM transcriptions", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if nodes.iter().filter(|node| node["kind"] == "recording").count() != count {
+            return Err("Recording list changed; refresh before changing organization".into());
+        }
+        tx.execute("DELETE FROM recording_positions", []).map_err(|e|e.to_string())?;
+        tx.execute("UPDATE recording_folders SET parent_id=NULL", []).map_err(|e|e.to_string())?;
+        tx.execute("DELETE FROM recording_folders", []).map_err(|e|e.to_string())?;
+        for node in nodes.iter().filter(|node| node["kind"]=="folder") {
+            tx.execute("INSERT INTO recording_folders(id,name,position) VALUES(?1,?2,?3)", rusqlite::params![node["id"].as_str(),node["name"].as_str(),node["position"].as_i64()]).map_err(|e|e.to_string())?;
+        }
+        for node in nodes {
+            if node["kind"]=="folder" {
+                tx.execute("UPDATE recording_folders SET parent_id=?2 WHERE id=?1",rusqlite::params![node["id"].as_str(),node["parent_id"].as_str()]).map_err(|e|e.to_string())?;
+            } else {
+                let exists: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM transcriptions WHERE id=?1)",[node["id"].as_str()],|row|row.get(0)).map_err(|e|e.to_string())?;
+                if !exists { return Err("Unknown recording".into()); }
+                tx.execute("INSERT INTO recording_positions(recording_id,folder_id,position) VALUES(?1,?2,?3)",rusqlite::params![node["id"].as_str(),node["parent_id"].as_str(),node["position"].as_i64()]).map_err(|e|e.to_string())?;
+            }
+        }
+        tx.commit().map_err(|e|e.to_string())
+    }
+
+
                status TEXT NOT NULL CHECK(status IN ('queued','preparing','transcribing','completed','cancelled','failed','interrupted')),
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS recording_folders (
+                id TEXT PRIMARY KEY,
+                parent_id TEXT REFERENCES recording_folders(id),
+                name TEXT NOT NULL CHECK(length(trim(name)) > 0),
+                position INTEGER NOT NULL CHECK(position >= 0)
+             );
+             CREATE TABLE IF NOT EXISTS recording_positions (
+                recording_id TEXT PRIMARY KEY REFERENCES transcriptions(id) ON DELETE CASCADE,
+                folder_id TEXT REFERENCES recording_folders(id),
+                position INTEGER NOT NULL CHECK(position >= 0)
+             );"
+        )?;
                duration_seconds REAL CHECK(duration_seconds IS NULL OR duration_seconds >= 0),
                model_version TEXT NOT NULL,
                error TEXT,
@@ -702,6 +796,80 @@ mod tests {
             source_modified_ms: 1,
             created_ms: 2,
             started_ms: None,
+    #[test]
+    fn organization_stale_writer_cannot_overwrite_new_folder() {
+        let mut store = super::Store::memory().unwrap();
+        let previous = store.load_organization().unwrap();
+        let next = serde_json::json!([{"id":"new","kind":"folder","parent_id":null,"name":"New","position":0}]);
+        store.save_organization_if_unchanged(previous.clone(), next.clone()).unwrap();
+        assert!(store.save_organization_if_unchanged(previous, serde_json::json!([])).is_err());
+        assert_eq!(store.load_organization().unwrap(), next);
+    }
+    #[test]
+    fn organization_migration_and_moves_preserve_recordings_segments_and_queue() {
+        let mut store = super::Store::memory().unwrap();
+        let mut original = transcription("recording", TranscriptionStatus::Queued);
+        original.audio_path = Some("preserved.ogg".into());
+        store.enqueue(&original).unwrap();
+        let segment = TranscriptSegment::new("recording", 0, 0.0, 1.0, "original text".into(), SourceTrack::File, SegmentState::Final).unwrap();
+        store.append_segment(&segment).unwrap();
+        let queue = store.list_queue().unwrap();
+        store.migrate().unwrap();
+        let nodes = store.load_organization().unwrap();
+        assert_eq!(nodes[0]["id"], "recording");
+        assert!(nodes[0]["parent_id"].is_null());
+        let organized = serde_json::json!([
+            {"id":"folder","kind":"folder","parent_id":null,"name":"Folder","position":0},
+            {"id":"recording","kind":"recording","parent_id":"folder","name":"recording.wav","position":0}
+        ]);
+        store.save_organization(organized).unwrap();
+        let saved = store.get("recording").unwrap().unwrap();
+        assert_eq!(saved.audio_path, original.audio_path);
+        assert_eq!(saved.source_path, original.source_path);
+        assert_eq!(store.segments("recording").unwrap(), [segment]);
+        assert_eq!(store.list_queue().unwrap().iter().map(|row| &row.id).collect::<Vec<_>>(), queue.iter().map(|row| &row.id).collect::<Vec<_>>());
+        // A filtered/stale snapshot must not silently remove this recording's placement.
+        assert!(store.save_organization(serde_json::json!([])).is_err());
+        assert_eq!(store.load_organization().unwrap()[1]["parent_id"], "folder");
+    }
+    #[test]
+    fn folder_identity_survives_database_reopen_and_repeated_migration() {
+        let path = std::env::temp_dir().join(format!("gigaam-organization-{}-{}.sqlite", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        {
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            let mut store = super::Store { connection };
+            store.migrate().unwrap();
+            store.save_organization(serde_json::json!([{"id":"folder","kind":"folder","parent_id":null,"name":"Folder","position":0}])).unwrap();
+        }
+        {
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            let mut store = super::Store { connection };
+            store.migrate().unwrap();
+            let nodes = store.load_organization().unwrap();
+            assert_eq!(nodes[0]["id"], "folder");
+            assert_eq!(nodes[0]["name"], "Folder");
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn organization_rejects_cycles_and_rolls_back_invalid_recordings() {
+        let mut store = super::Store::memory().unwrap();
+        let valid = serde_json::json!([
+            {"id":"parent","kind":"folder","parent_id":null,"name":"Parent","position":0},
+            {"id":"child","kind":"folder","parent_id":"parent","name":"Child","position":0}
+        ]);
+        store.save_organization(valid.clone()).unwrap();
+        let saved = store.load_organization().unwrap();
+        assert_eq!(saved.as_array().unwrap().len(), 2);
+        let cycle = serde_json::json!([
+            {"id":"parent","kind":"folder","parent_id":"child","name":"Parent","position":0},
+            {"id":"child","kind":"folder","parent_id":"parent","name":"Child","position":0}
+        ]);
+        assert!(store.save_organization(cycle).is_err());
+        let invalid = serde_json::json!([{"id":"missing","kind":"recording","parent_id":null,"name":"Missing","position":0}]);
+        assert!(store.save_organization(invalid).is_err());
+        assert_eq!(store.load_organization().unwrap(), saved);
+    }
             completed_ms: None,
             status,
             duration_seconds: None,

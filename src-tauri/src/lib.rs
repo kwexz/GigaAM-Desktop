@@ -282,6 +282,17 @@ fn list_queue(state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<Vec<Transcri
 }
 
 #[tauri::command]
+fn load_organization(state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<serde_json::Value, String> {
+    lock_store(&state)?.load_organization().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_organization(nodes: serde_json::Value, previous: serde_json::Value, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(), String> {
+    let mut store = lock_store(&state)?;
+    store.save_organization_if_unchanged(previous, nodes)
+}
+
+#[tauri::command]
 fn list_history(state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<Vec<Transcription>, String> {
     lock_store(&state)?
         .list_history()
@@ -588,6 +599,7 @@ fn mixed_session_audio(id: String, app: tauri::AppHandle) -> Result<String, Stri
         let format = match extension.as_str() {
             "flac" => ArchiveFormat::Flac,
             "mp3" => ArchiveFormat::Mp3,
+            "ogg" => ArchiveFormat::Ogg,
             _ => ArchiveFormat::Wav,
         };
         let raw = output.with_extension("mix.raw.partial");
@@ -1303,6 +1315,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            load_organization,
+            save_organization,
             enqueue_files,
             start_transcription,
             list_queue,
