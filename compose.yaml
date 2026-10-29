@@ -1,0 +1,18 @@
+name: gigaam
+services:
+  web:
+    image: gigaam-web-asr:f9a2428
+    build: .
+    ports:
+      - "127.0.0.1:8080:80"
+    environment:
+      GIGAAM_SERVER_TOKEN: ${GIGAAM_SERVER_TOKEN:?Set a server token}
+    volumes:
+      - type: bind
+        source: ${GIGAAM_MODELS_DIR:?Set the existing model directory}
+        target: /models
+        read_only: true
+      - data:/data
+    restart: unless-stopped
+volumes:
+  data:

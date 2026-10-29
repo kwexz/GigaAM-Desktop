@@ -2,8 +2,10 @@ import type { AudioBlockEvent, SessionState } from './contracts';
 import { BrowserCaptureSource, IndexedDbTranscriptRepository, OpfsArchiveWriter } from './browser-recorder';
 import { putSessionState } from './browser-storage';
 import { RemoteEngine } from './remote-engine';
+import { LiveAsr } from './live-asr';
 
 export type WebSessionOptions = {
+	liveAsr?: boolean;
 	remoteUrl?: string;
 	token?: string;
 };
@@ -24,10 +26,19 @@ export class WebSession {
 	private archiveError?: unknown;
 	private queuedBytes = 0;
 	private queuedBlocks = 0;
+	private liveAsr?: LiveAsr;
 	private releaseRecordingLock?: () => void;
 
 	constructor(sessionId: string = crypto.randomUUID(), options: WebSessionOptions = {}) {
 		this.sessionId = sessionId;
+		if (options.liveAsr) {
+			this.liveAsr = new LiveAsr();
+			this.capture.onStream = (track, stream, offset) => this.liveAsr!.attach(track, stream, offset);
+			this.liveAsr.onError = () => { this.state = { ...this.state, recognition: 'failed' }; void putSessionState(this.sessionId, this.state).catch(() => {}); };
+			this.liveAsr.onResult = async (track, start, segments) => {
+				for (const [index, segment] of segments.entries()) await this.repository.putSegment({ version: 1, session_id: this.sessionId, segment_id: `${track}:${start}:${index}`, track_id: track as 'microphone' | 'system', seq: index, start_seconds: start + segment.start_seconds, end_seconds: start + segment.end_seconds, text: segment.text, final: true, revision: 1, idempotency_key: `${this.sessionId}:${track}:${start}:${index}` });
+			};
+		}
 		this.capture.onError((error) => {
 			this.archiveError = error;
 			this.state = { ...this.state, recording: 'failed' };
@@ -112,6 +123,7 @@ export class WebSession {
 		this.unsubscribe?.();
 		if (this.archiveError) throw this.archiveError;
 		await this.archive.finalize(this.sessionId);
+		if (this.liveAsr) void this.liveAsr.stop().catch(() => { this.state = { ...this.state, recognition: 'failed' }; });
 		this.state = { ...this.state, recording: 'completed' };
 		await putSessionState(this.sessionId, this.state);
 		} catch (error) {

@@ -7,6 +7,7 @@ import { appendOpfsChunk, changesSince, getSessionState, putArchiveMeta, putSegm
 export type BrowserCaptureStatus = { microphone: boolean; system: boolean; systemAudioUnavailable: boolean };
 
 export class BrowserCaptureSource implements CaptureSource {
+	onStream?: (track: string, stream: MediaStream, offset: number) => void;
 	private listeners = new Set<(event: AudioBlockEvent) => void>();
 	private recorders = new Map<AudioBlockEvent['track_id'], MediaRecorder>();
 	private sequence = new Map<AudioBlockEvent['track_id'], number>();
@@ -67,6 +68,7 @@ export class BrowserCaptureSource implements CaptureSource {
 	}
 
 	private startTrack(sessionId: string, trackId: AudioBlockEvent['track_id'], stream: MediaStream): void {
+		this.onStream?.(trackId, stream, (performance.now() - this.origin) / 1000);
 		this.meterContext ??= new AudioContext();
 		void this.meterContext.resume().catch(() => {});
 		const meter = this.meterContext.createAnalyser(); meter.fftSize = 1024;

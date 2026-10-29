@@ -567,7 +567,7 @@
 						const url = new URL(remoteUrl);
 						if (url.protocol !== 'wss:' && !(url.protocol === 'ws:' && ['127.0.0.1', 'localhost'].includes(url.hostname))) throw new Error('Remote ASR requires secure WebSocket');
 					}
-					webSession = new WebSession(undefined, { remoteUrl: remoteUrl.trim() || undefined, token: remoteToken });
+					webSession = new WebSession(undefined, { liveAsr: true, remoteUrl: remoteUrl.trim() || undefined, token: remoteToken });
 					liveStarted = Date.now();
 					await putBrowserRecording({ id: webSession.sessionId, name: recordingName(), created_ms: liveStarted, duration_seconds: 0 });
 					await webSession.start(liveSource);
@@ -679,7 +679,8 @@
 			void refreshBrowser();
 			const timer = window.setInterval(() => {
 				uiNow = Date.now();
-				const levels = webSession?.capture.levels();
+				if (recording && webSession && selectedId === webSession.sessionId) void browserSegments(selectedId).then((rows) => { segments = rows.map((row,index) => ({ id: row.segment_id, index, start_seconds: row.start_seconds, end_seconds: row.end_seconds, text: row.text, source_track: row.track_id })); });
+                const levels = webSession?.capture.levels();
 				micLevel = levels?.microphone ?? 0; systemLevel = levels?.system ?? 0;
 				if (webSession?.status().recording === 'failed') {
 					recording = false;
@@ -809,6 +810,7 @@
 {/if}
 
 <style>
+	.modal{display:flex;flex-direction:column;gap:16px}.modal h2{margin:0!important}.modal p{margin:0!important;white-space:normal!important;line-height:1.5}.modal>input{width:100%;min-width:0;padding:10px 12px;border:1px solid #c9cdc2;border-radius:8px;font:inherit}.modal .modal-actions{margin-top:4px;gap:10px}.modal-actions>button{min-height:36px;padding:8px 14px}
 	.header-web-status{font-size:11px;color:#65766b;margin-left:auto;margin-right:18px;order:1}.header-actions{order:2}
 	.tree-row{position:relative}.tree-row.drop-before::before,.tree-row.drop-after::after{content:'';position:absolute;left:4px;right:4px;height:2px;background:#28705a;z-index:3}.tree-row.drop-before::before{top:0}.tree-row.drop-after::after{bottom:0}.tree-row.drop-inside{outline:2px solid #28705a;outline-offset:-2px;background:#dcebe1}
 	.tree-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}.tree-heading .tree-toolbar{padding:0}.tree-heading .ghost{font-size:12px;padding:5px 9px}.tree-delete{margin-left:auto;flex:none;display:grid;place-items:center;border:0;background:transparent;color:#a14b43;width:28px;height:28px;opacity:0;cursor:pointer}.tree-row:hover .tree-delete,.tree-row:focus-within .tree-delete,.tree-delete:focus-visible{opacity:1}
