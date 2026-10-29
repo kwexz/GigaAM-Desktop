@@ -24,4 +24,15 @@ test('tree expands, collapses, renames on double click and moves records by drag
 		const { loadBrowserOrganization } = await import('/src/lib/browser-storage.ts');
 		return (await loadBrowserOrganization()).find((node) => node.id === 'tree-audio')?.parent_id;
 	})).toBeNull();
+	const heading = await page.locator('.tree-heading').boundingBox();
+	const add = await page.getByRole('button', { name: '＋ Папка' }).boundingBox();
+	expect(add!.y).toBeGreaterThanOrEqual(heading!.y);
+	expect(add!.y + add!.height).toBeLessThanOrEqual(heading!.y + heading!.height + 1);
+	const trash = page.getByRole('button', { name: 'Удалить папку' });
+	await page.getByRole('button', { name: '📁 Renamed', exact: true }).hover();
+	await expect(trash).toHaveCSS('opacity', '1');
+	page.once('dialog', (dialog) => dialog.accept());
+	await trash.click();
+	await expect(page.getByRole('button', { name: '📁 Renamed', exact: true })).toHaveCount(0);
+	await expect(page.getByTestId('recording-item')).toBeVisible();
 });
