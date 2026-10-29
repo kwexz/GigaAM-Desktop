@@ -176,7 +176,10 @@ export async function updateBrowserOrganization(update: (nodes: OrganizationNode
 				const value = (event.target as IDBRequest).result as { nodes?: OrganizationNode[]; revision?: number } | undefined;
 				next = update(value?.nodes ?? []);
 				validateOrganization(next);
-				const revision = (value?.revision ?? 0) + 1;
+				// Earlier snapshots used millisecond journal revisions without storing
+				// a counter. Start above that legacy range so existing cursors keep
+				// seeing changes after upgrade; then increment transactionally.
+				const revision = Math.max(value?.revision ?? 0, Date.now()) + 1;
 				store.put({ key: 'organization:v1', revision, nodes: JSON.parse(JSON.stringify(next)) });
 				const change: TranscriptChange = { change_id: crypto.randomUUID(), session_id: 'organization', kind: 'session_update', revision, payload: { version: 1, nodes: JSON.parse(JSON.stringify(next)) } };
 				tx.objectStore(CHANGE_STORE).put(change);

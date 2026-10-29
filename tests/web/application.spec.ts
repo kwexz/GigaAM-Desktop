@@ -255,7 +255,9 @@ test('organization journal advances revision for rapid consecutive changes', asy
 		await s.updateBrowserOrganization((nodes) => nodes.map((node) => ({ ...node, name: 'After' })));
 		return (await s.changesSince('organization', -1)).map((change) => change.revision).sort((a, b) => a - b);
 	});
-	expect(revisions).toEqual([1, 2]);
+	expect(revisions).toHaveLength(2);
+	expect(revisions[1]).toBeGreaterThan(revisions[0]);
+	expect(revisions[0]).toBeGreaterThan(1_000_000_000_000);
 });
 
 // Synthetic device integration through the actual product route, not capture-harness.
