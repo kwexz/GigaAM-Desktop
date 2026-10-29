@@ -212,3 +212,8 @@ pm run check passed. The adapter is contract-compatible with RecognitionEngine a
 - Edge browser matrix: serial synthetic capture/OPFS tests passed earlier (2/2); real physical devices remain not-run.
 - Secrets pattern scan: no API-key/private-key/bearer-token patterns found in tracked source outside generated evidence.
 - No production/public deployment, DNS, OAuth credentials, private audio or model weights were added.
+
+
+## OpenSpec local follow-up (2026-10-29)
+
+Current checklist: openspec/changes/audit-web-cloud-and-organize-recordings/tasks.md. Audit: state/APPLY_AUDIT.md. Full local matrix: state/runs/final-local-matrix/results.json and REVISION.md (all six commands exit0; explicitly dirty-tree verification). Browser recovery/runtime: state/runs/web-recovery-final and state/runs/browser-runtime-final. Codec/model evidence: docs/OGG_MEASUREMENTS.md, state/runs/ogg48-model-comparison.json, state/runs/codec-resources. Real OAuth Google/Yandex user-deferred; real remote ONNX/VPS, physical devices and macOS unverified. Independent review model unavailable; no new passed checkpoint. Historical markers retained, not reinterpreted as current acceptance.

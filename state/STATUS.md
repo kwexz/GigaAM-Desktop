@@ -1,11 +1,15 @@
 # GigaAM Desktop — состояние автономного плана
 
 - `current_phase`: `11`
-- `phase_state`: `passed`
+- `phase_state`: `in_progress` (OpenSpec follow-up audit/web/folders/codec)
 - `last_verified_commit`: `a931188`
 - `current_branch`: `feature/gigaam-desktop-web-autonomy`
-- `blocking_issue`: `roadmap complete; remaining boundaries are physical devices/macOS, real VPS dual-ASR, OAuth consent, and local GGUF resource blocker`
-- `last_update_utc`: `2026-10-27`
+- `blocking_issue`: `Roadmap completion claim not substantiated by audit. Google/Yandex user-deferred; review agent unavailable; remaining local acceptance tracked in OpenSpec.`
+- `last_update_utc`: `2026-10-29`
+
+## Текущая follow-up проверка
+
+Change: `openspec/changes/audit-web-cloud-and-organize-recordings/tasks.md`,15/25 complete. Full local matrix all6 exit0 on dirty working copy based on7f45ec6; see `state/runs/final-local-matrix/REVISION.md` and `state/APPLY_AUDIT.md`. Historical last_verified_commit above is not verification of current HEAD/dirty tree. Real OAuth, real remote ONNX/VPS, physical devices and macOS remain unverified; synthetic/mock coverage is not production acceptance. No new passed checkpoint created.
 
 ## Источник истины
 

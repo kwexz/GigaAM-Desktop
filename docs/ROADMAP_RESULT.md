@@ -1,5 +1,7 @@
 # GigaAM Desktop — roadmap result
 
+> Follow-up audit 2026-10-29: historical completion claims below are not current full acceptance. STATUS09/10 and historical evidence conflict; see state/APPLY_AUDIT.md. Current local matrix passes on a dirty working copy, with synthetic browser/mock transport scope only (state/runs/final-local-matrix/REVISION.md). Google/Yandex deferred by user; real remote ONNX/VPS, physical devices and macOS not verified. OpenSpec follow-up remains in progress; no new completion checkpoint.
+
 Date: 2026-10-28
 Branch: `feature/gigaam-desktop-web-autonomy`
 
