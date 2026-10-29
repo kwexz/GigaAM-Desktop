@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends nginx libwebkit
 COPY --from=backend /source/src-tauri/target/release/gigaam-server /usr/local/bin/gigaam-server
 COPY build /usr/share/nginx/html
 COPY deploy/container-start.sh /usr/local/bin/container-start
-RUN chmod +x /usr/local/bin/container-start && mkdir -p /data && chown -R www-data:www-data /data
+RUN sed -i 's/\r$//' /usr/local/bin/container-start && chmod +x /usr/local/bin/container-start && mkdir -p /data && chown -R www-data:www-data /data
 ENV GIGAAM_SERVER_BIND=127.0.0.1:8787 GIGAAM_SERVER_DATA=/data GIGAAM_SERVER_MODELS=/models
 EXPOSE 80
 ENTRYPOINT ["/usr/local/bin/container-start"]
