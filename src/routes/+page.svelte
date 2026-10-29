@@ -12,6 +12,7 @@
 	import { visibleTree } from '#lib/organization-tree.ts';
 	import { mixBrowserAudio } from '#lib/browser-mix.ts';
 	import { archivedBlocks } from '#lib/browser-storage.ts';
+	import { prepareAsrUpload } from '#lib/asr-upload.ts';
 	import { savedRecordingFormat, saveRecordingFormat, DEFAULT_RECORDING_FORMAT } from '#lib/recording-format.ts';
 	import { mergeBrowserOrganization } from '#lib/browser-storage.ts';
 	import { renameBrowserRecording, editBrowserSegment } from '#lib/browser-storage.ts';
@@ -316,7 +317,7 @@
 					if (!archives.length) throw new Error('Audio archive is missing');
 					for (const archive of archives) {
 						const file = await readOpfsArchive(String(archive.path));
-						const response = await fetch('/api/v1/transcribe', { method: 'POST', body: file });
+						const response = await fetch('/api/v1/transcribe', { method: 'POST', body: await prepareAsrUpload(file) });
 						if (!response.ok) throw new Error(`ASR server: ${response.status}`);
 						const recognized = await response.json() as Segment[];
 						for (const [index, segment] of recognized.entries()) await putSegment({ version: 1, session_id: id, segment_id: `${archive.track_id}:${index}`, track_id: archive.track_id as 'microphone' | 'system' | 'file', seq: index, start_seconds: segment.start_seconds, end_seconds: segment.end_seconds, text: segment.text, final: true, revision: Date.now(), idempotency_key: crypto.randomUUID() });

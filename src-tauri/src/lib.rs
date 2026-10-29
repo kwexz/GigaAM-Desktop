@@ -461,7 +461,7 @@ fn session_audio_files(
                 let path = entry.path();
                 if matches!(
                     path.extension().and_then(|ext| ext.to_str()),
-                    Some("flac" | "wav" | "mp3")
+                    Some("flac" | "wav" | "mp3" | "ogg")
                 ) && path.file_stem().and_then(|stem| stem.to_str()) != Some("mixed")
                 {
                     files.push(path.to_string_lossy().into_owned());
@@ -538,7 +538,7 @@ fn mixed_session_audio(id: String, app: tauri::AppHandle) -> Result<String, Stri
         .filter(|path| {
             matches!(
                 path.extension().and_then(|ext| ext.to_str()),
-                Some("flac" | "wav" | "mp3")
+                Some("flac" | "wav" | "mp3" | "ogg")
             ) && path.file_stem().and_then(|stem| stem.to_str()) != Some("mixed")
         })
         .collect();

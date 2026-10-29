@@ -76,6 +76,14 @@ pub(crate) trait AudioBlockSource {
 }
 
 pub(crate) fn open_audio_blocks(path: &Path) -> Result<Box<dyn AudioBlockSource>> {
+    {
+        use std::io::Read;
+        let mut magic = [0u8; 4];
+        let mut file = std::fs::File::open(path)?;
+        if file.read(&mut magic)? == 4 && &magic == b"OggS" {
+            return Ok(Box::new(OpusBlockSource::open(path)?));
+        }
+    }
     if path
         .extension()
         .and_then(|value| value.to_str())
@@ -84,6 +92,35 @@ pub(crate) fn open_audio_blocks(path: &Path) -> Result<Box<dyn AudioBlockSource>
         return Ok(Box::new(WavBlockSource::open(path)?));
     }
     Ok(Box::new(SymphoniaBlockSource::open(path)?))
+}
+
+struct OpusBlockSource {
+    reader: opus_pure::OggOpusReader<std::io::BufReader<std::fs::File>>,
+    decoder: opus_pure::OpusDecoder,
+    channels: usize,
+    skip: usize,
+}
+impl OpusBlockSource {
+    fn open(path: &Path) -> Result<Self> {
+        let reader = opus_pure::OggOpusReader::new(std::io::BufReader::new(std::fs::File::open(path)?))?;
+        let head = reader.head().clone();
+        Ok(Self { decoder: head.decoder(48000)?, channels: head.channel_count as usize, skip: head.pre_skip as usize, reader })
+    }
+}
+impl AudioBlockSource for OpusBlockSource {
+    fn sample_rate(&self) -> usize { 48000 }
+    fn total_frames_hint(&self) -> Option<u64> { None }
+    fn next_block(&mut self) -> Result<Option<Vec<f32>>> {
+        loop {
+            let Some(packet) = self.reader.packets().next() else { return Ok(None); };
+            let packet = packet?;
+            let mut samples = vec![0.0; opus_pure::MAX_PACKET_SAMPLES * self.channels];
+            let frames = self.decoder.decode(&packet.data, opus_pure::MAX_PACKET_SAMPLES, &mut samples)?;
+            let skip = self.skip.min(frames); self.skip -= skip;
+            let mono: Vec<f32> = samples[skip * self.channels..frames * self.channels].chunks(self.channels).map(|frame| frame.iter().sum::<f32>() / self.channels as f32).collect();
+            if !mono.is_empty() { return Ok(Some(mono)); }
+        }
+    }
 }
 
 struct WavBlockSource {
