@@ -195,10 +195,14 @@ export async function renameBrowserRecording(id: string, name: string): Promise<
 	if (!name || name.length > 1024) throw new Error('Invalid recording name');
 	const db = await openDb();
 	await new Promise<void>((resolve, reject) => {
-		const tx = db.transaction(META_STORE, 'readwrite');
+		const tx = db.transaction([META_STORE, CHANGE_STORE], 'readwrite');
 		const store = tx.objectStore(META_STORE);
 		const request = store.get(`recording:${id}`);
-		request.onsuccess = () => { if (!request.result) { tx.abort(); return; } store.put({ ...request.result, name }); };
+		request.onsuccess = () => {
+			if (!request.result) { tx.abort(); return; }
+			store.put({ ...request.result, name });
+			tx.objectStore(CHANGE_STORE).put({ change_id: crypto.randomUUID(), session_id: id, kind: 'session_update', revision: Date.now(), payload: { name } });
+		};
 		tx.oncomplete = () => { db.close(); resolve(); };
 		tx.onerror = tx.onabort = () => { db.close(); reject(tx.error ?? new Error('Recording rename failed')); };
 	});
