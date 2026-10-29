@@ -173,11 +173,12 @@ export async function updateBrowserOrganization(update: (nodes: OrganizationNode
 		let failure: unknown;
 		store.get('organization:v1').onsuccess = (event) => {
 			try {
-				const value = (event.target as IDBRequest).result as { nodes?: OrganizationNode[] } | undefined;
+				const value = (event.target as IDBRequest).result as { nodes?: OrganizationNode[]; revision?: number } | undefined;
 				next = update(value?.nodes ?? []);
 				validateOrganization(next);
-				store.put({ key: 'organization:v1', nodes: JSON.parse(JSON.stringify(next)) });
-				const change: TranscriptChange = { change_id: crypto.randomUUID(), session_id: 'organization', kind: 'session_update', revision: Date.now(), payload: { version: 1, nodes: JSON.parse(JSON.stringify(next)) } };
+				const revision = (value?.revision ?? 0) + 1;
+				store.put({ key: 'organization:v1', revision, nodes: JSON.parse(JSON.stringify(next)) });
+				const change: TranscriptChange = { change_id: crypto.randomUUID(), session_id: 'organization', kind: 'session_update', revision, payload: { version: 1, nodes: JSON.parse(JSON.stringify(next)) } };
 				tx.objectStore(CHANGE_STORE).put(change);
 			} catch (error) { failure = error; tx.abort(); }
 		};

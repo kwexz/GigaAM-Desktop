@@ -234,6 +234,30 @@ test('disabled theme localStorage does not block browser initialization', async 
 	await expect(page.getByRole('button', { name: 'Открыть', exact: true })).toBeEnabled();
 });
 
+test('recording rename updates metadata and logical journal together', async ({ page }) => {
+	await page.goto('/');
+	const result = await page.evaluate(async () => {
+		const s = await import('/src/lib/browser-storage.ts');
+		await s.putBrowserRecording({ id: 'rename-journal', name: 'Before', created_ms: 1, duration_seconds: 1 });
+		await s.renameBrowserRecording('rename-journal', 'After');
+		return { record: (await s.listBrowserMetadata()).find((entry) => entry.id === 'rename-journal'), changes: await s.changesSince('rename-journal', -1) };
+	});
+	expect(result.record?.name).toBe('After');
+	expect(result.changes).toHaveLength(1);
+	expect(result.changes[0].payload).toEqual({ name: 'After' });
+});
+
+test('organization journal advances revision for rapid consecutive changes', async ({ page }) => {
+	await page.goto('/');
+	const revisions = await page.evaluate(async () => {
+		const s = await import('/src/lib/browser-storage.ts');
+		await s.updateBrowserOrganization(() => [{ id: 'folder', kind: 'folder', parent_id: null, name: 'Before', position: 0 }]);
+		await s.updateBrowserOrganization((nodes) => nodes.map((node) => ({ ...node, name: 'After' })));
+		return (await s.changesSince('organization', -1)).map((change) => change.revision).sort((a, b) => a - b);
+	});
+	expect(revisions).toEqual([1, 2]);
+});
+
 // Synthetic device integration through the actual product route, not capture-harness.
 test('main web application records, reloads and exports local audio without Tauri', async ({ page, context }) => {
 	const pageErrors: string[] = [];
