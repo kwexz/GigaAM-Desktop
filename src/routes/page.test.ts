@@ -114,10 +114,10 @@ describe('GigaAM page', () => {
 		} finally { cleanup(); metadata.mockRestore(); organization.mockRestore(); }
 	});
 
-		render(Page);
-
 	it('renders history and loads a selected transcript', async () => {
 		mockBackend({ items: [historyItem] });
+		render(Page);
+
 		await fireEvent.click(await screen.findByText('meeting.wav'));
 		expect(await screen.findByText('Проверочный текст')).toBeInTheDocument();
 		expect(invoke).toHaveBeenCalledWith('get_segments', { id: 'tx-1' });
@@ -141,8 +141,6 @@ describe('GigaAM page', () => {
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('start_live', expect.objectContaining({ archiveFormat: 'ogg' })));
 	});
 
-		save.mockResolvedValue('C:\\exports\\meeting.srt');
-		render(Page);
 	it('keeps a saved lossless preference instead of replacing it with compact default', async () => {
 		localStorage.setItem('gigaam.archive-format', 'flac');
 		mockBackend({ installed: true });
@@ -155,6 +153,8 @@ describe('GigaAM page', () => {
 
 	it('exports the selected transcript using the extension chosen in the save dialog', async () => {
 		mockBackend({ items: [historyItem] });
+		save.mockResolvedValue('C:\\exports\\meeting.srt');
+		render(Page);
 
 		await fireEvent.click(await screen.findByText('meeting.wav'));
 		await screen.findByText('Проверочный текст');
@@ -212,9 +212,9 @@ describe('GigaAM page', () => {
 		await fireEvent.click(stop);
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('stop_live'));
 		expect(stop).toBeDisabled();
-		resolveStop();
-	});
 		// A pending native acknowledgement must not freeze unrelated UI controls.
 		await fireEvent.click(screen.getByRole('button', { name: /^RU$/ }));
 		expect(screen.getByRole('button', { name: 'EN' })).toBeInTheDocument();
+		resolveStop();
+	});
 });
