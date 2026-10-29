@@ -155,6 +155,7 @@ impl Store {
                 position INTEGER NOT NULL CHECK(position >= 0)
              );"
         )?;
+
         self.connection.execute_batch(
             "PRAGMA foreign_keys = ON;
              CREATE TABLE IF NOT EXISTS transcriptions (
@@ -168,19 +169,6 @@ impl Store {
                started_ms INTEGER,
                completed_ms INTEGER,
                status TEXT NOT NULL CHECK(status IN ('queued','preparing','transcribing','completed','cancelled','failed','interrupted')),
-               segment_index INTEGER NOT NULL CHECK(segment_index >= 0),
-               start_seconds REAL NOT NULL CHECK(start_seconds >= 0),
-               end_seconds REAL NOT NULL CHECK(end_seconds > start_seconds),
-               text TEXT NOT NULL,
-               source_track TEXT NOT NULL CHECK(source_track IN ('file','microphone','system')),
-               speaker_id TEXT,
-               state TEXT NOT NULL CHECK(state IN ('provisional','final')),
-               UNIQUE(transcription_id, segment_index)
-             );
-             CREATE INDEX IF NOT EXISTS idx_transcriptions_queue ON transcriptions(queue_visible, created_ms);
-             CREATE INDEX IF NOT EXISTS idx_transcriptions_filename ON transcriptions(source_filename);
-             CREATE INDEX IF NOT EXISTS idx_segments_transcription ON transcript_segments(transcription_id, segment_index);",
-        )?;
                duration_seconds REAL CHECK(duration_seconds IS NULL OR duration_seconds >= 0),
                model_version TEXT NOT NULL,
                error TEXT,
@@ -194,6 +182,19 @@ impl Store {
              CREATE TABLE IF NOT EXISTS transcript_segments (
                id TEXT PRIMARY KEY,
                transcription_id TEXT NOT NULL REFERENCES transcriptions(id) ON DELETE CASCADE,
+               segment_index INTEGER NOT NULL CHECK(segment_index >= 0),
+               start_seconds REAL NOT NULL CHECK(start_seconds >= 0),
+               end_seconds REAL NOT NULL CHECK(end_seconds > start_seconds),
+               text TEXT NOT NULL,
+               source_track TEXT NOT NULL CHECK(source_track IN ('file','microphone','system')),
+               speaker_id TEXT,
+               state TEXT NOT NULL CHECK(state IN ('provisional','final')),
+               UNIQUE(transcription_id, segment_index)
+             );
+             CREATE INDEX IF NOT EXISTS idx_transcriptions_queue ON transcriptions(queue_visible, created_ms);
+             CREATE INDEX IF NOT EXISTS idx_transcriptions_filename ON transcriptions(source_filename);
+             CREATE INDEX IF NOT EXISTS idx_segments_transcription ON transcript_segments(transcription_id, segment_index);",
+        )?;
         self.connection.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_single_active_transcription
              ON transcriptions((1)) WHERE status IN ('preparing','transcribing');",
@@ -857,6 +858,7 @@ mod tests {
         assert!(store.save_organization(invalid).is_err());
         assert_eq!(store.load_organization().unwrap(), saved);
     }
+
     use super::*;
     use crate::domain::TranscriptionKind;
 
@@ -870,19 +872,6 @@ mod tests {
             source_modified_ms: 1,
             created_ms: 2,
             started_ms: None,
-    fn persists_segments_and_searches_without_source_file() {
-        let mut store = Store::memory().unwrap();
-        store
-            .enqueue(&transcription("tx", TranscriptionStatus::Queued))
-            .unwrap();
-        let segment = TranscriptSegment::new(
-            "tx",
-            0,
-            1.0,
-            2.0,
-            "важный текст".into(),
-            SourceTrack::File,
-            SegmentState::Final,
             completed_ms: None,
             status,
             duration_seconds: None,
@@ -896,6 +885,19 @@ mod tests {
     }
 
     #[test]
+    fn persists_segments_and_searches_without_source_file() {
+        let mut store = Store::memory().unwrap();
+        store
+            .enqueue(&transcription("tx", TranscriptionStatus::Queued))
+            .unwrap();
+        let segment = TranscriptSegment::new(
+            "tx",
+            0,
+            1.0,
+            2.0,
+            "важный текст".into(),
+            SourceTrack::File,
+            SegmentState::Final,
         )
         .unwrap();
         store.append_segment(&segment).unwrap();
