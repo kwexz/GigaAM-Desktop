@@ -19,5 +19,5 @@
 - Windows: locked library build и тест OggS/OpusHead/packet decode проходят. Память encoder ограничена frame buffers; raw input читается потоково. Проверка отмены выполняется между frames, выход staging `.partial` удаляется при ошибке.
 - macOS CI/build: **not-run**, успешная Windows сборка не доказывает macOS совместимость.
 - Speech size benchmark — `cargo test --locked --manifest-path src-tauri/Cargo.toml --lib compare_speech_archive_profiles -- --ignored --nocapture`. Он opt-in, не утяжеляет обычную unit suite.
-- Кандидат 24 kbit/s меньше MP3/FLAC на текущих clean/noisy fixtures, но default нельзя менять только по размеру: ASR/quality/duration/RSS acceptance пока не завершены.
-- До завершения acceptance FLAC default сохраняется; существующие аудиофайлы автоматически не перекодируются.
+- После сравнения24/48 kbit/s выбран48 kbit/s как compact default новых настроек: независимое декодирование, speech ASR comparison, duration и aggregate process resources описаны в OGG_MEASUREMENTS.md. Это lossy-компромисс, не обещание идентичности текста.
+- Явное сохранённое предпочтение FLAC/WAV/MP3/Ogg имеет приоритет. FLAC остаётся lossless выбором; существующие аудиофайлы автоматически не перекодируются. GUI IPC latency и macOS остаются not-run.
