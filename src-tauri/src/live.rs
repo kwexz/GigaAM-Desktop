@@ -1405,6 +1405,9 @@ mod tests {
             let mono: Vec<f32> = source.chunks(spec.channels as usize).map(|frame| frame.iter().sum::<f32>() / spec.channels as f32).collect();
             let samples: Vec<f32> = (0..(mono.len() as u64 * 48_000 / spec.sample_rate as u64) as usize).map(|i| mono[(i as u64 * spec.sample_rate as u64 / 48_000) as usize]).collect();
             for format in [super::ArchiveFormat::Wav, super::ArchiveFormat::Flac, super::ArchiveFormat::Mp3, super::ArchiveFormat::Ogg] {
+                if let Ok(selected) = std::env::var("GIGAAM_CODEC_PROFILE") {
+                    if selected != format.extension() { continue; }
+                }
                 let output = root.join(format!("{fixture}.{}", format.extension()));
                 let start = std::time::Instant::now();
                 super::encode_mono_48k(&samples, &output, format).unwrap();

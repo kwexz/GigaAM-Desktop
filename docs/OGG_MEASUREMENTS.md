@@ -44,4 +44,17 @@ Release production acknowledgement seam `acknowledgement_does_not_wait_for_slow_
 
 Повторяемость resource evidence: scripts/measure-codec-resources.ps1 теперь записывает SHA-256 фактически запущенного binary, base Git commit и dirty-state. Повторный замер state/runs/codec-resources-current/resources.json: CPU1125ms, elapsed1408.9739ms, peak23920640B, exit0. Binary hash отличает реально измеренный executable от текущего исходника: скрипт сам не пересобирает его и не доказывает совпадение с HEAD.
 
+## Отдельные процессы по codec
+
+После пересборки release binary с фильтром профиля выполнены четыре запуска, каждый обрабатывает обе fixtures только выбранным codec. Все exit0; binary SHA256 `2a0f6203e9cdabb847eaeeb1911cbcee101e3520176594f1773bfe3626a94bad`.
+
+| Codec | CPU ms | Process elapsed ms | Observed peak bytes |
+|---|---:|---:|---:|
+| WAV | 46.875 | 237.7774 | 22233088 |
+| FLAC | 203.125 | 410.3463 | 22806528 |
+| MP3 | 390.625 | 525.5975 | 22540288 |
+| Ogg48 | 515.625 | 711.9811 | 23330816 |
+
+Включены загрузка/resampling fixtures и test harness; это не isolated encoder allocation. Evidence: state/runs/codec-resources-{wav,flac,mp3,ogg}/{resources.json,stdout.txt,stderr.txt}. GUI Stop latency всё ещё не измерена и не выводится из этих чисел.
+
 Ogg доступен как явно выбираемый lossy формат; FLAC default пока сохранён. Для выбора compact default требуется завершить сопоставление качества, release CPU/RSS и Stop latency, а также принять измеренную noisy-разницу. Нельзя объявлять этот документ доказательством выполнения задачи 5.4 целиком.
