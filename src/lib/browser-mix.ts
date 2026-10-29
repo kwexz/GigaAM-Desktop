@@ -1,17 +1,18 @@
 /** Explicit playback/export mix; capture archives remain independent. */
-export async function mixBrowserAudio(files: Blob[]): Promise<Blob> {
+export async function mixBrowserAudio(files: Blob[], offsets: number[] = []): Promise<Blob> {
 	if (files.reduce((sum, file) => sum + file.size, 0) > 64 * 1024 * 1024) throw new Error('Audio is too large for in-memory browser mixing');
 	const context = new AudioContext();
 	try {
 		const buffers = await Promise.all(files.map(async (file) => context.decodeAudioData(await file.arrayBuffer())));
-		const duration = Math.max(...buffers.map((buffer) => buffer.duration));
+		const starts = buffers.map((_, index) => Math.max(0, offsets[index] ?? 0));
+		const duration = Math.max(...buffers.map((buffer, index) => buffer.duration + starts[index]));
 		if (duration > 3600) throw new Error('Recording exceeds browser mix limit');
 		const rate = 48000;
 		const offline = new OfflineAudioContext(1, Math.ceil(duration * rate), rate);
-		for (const buffer of buffers) {
+		for (const [index, buffer] of buffers.entries()) {
 			const source = offline.createBufferSource(); source.buffer = buffer;
 			const gain = offline.createGain(); gain.gain.value = 1 / buffers.length;
-			source.connect(gain).connect(offline.destination); source.start();
+			source.connect(gain).connect(offline.destination); source.start(starts[index]);
 		}
 		const rendered = await offline.startRendering();
 		const samples = rendered.getChannelData(0);

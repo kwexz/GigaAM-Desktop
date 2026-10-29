@@ -11,6 +11,7 @@
 	import { organizationLabels } from '#lib/organization.ts';
 	import { visibleTree } from '#lib/organization-tree.ts';
 	import { mixBrowserAudio } from '#lib/browser-mix.ts';
+	import { archivedBlocks } from '#lib/browser-storage.ts';
 	import { savedRecordingFormat, saveRecordingFormat, DEFAULT_RECORDING_FORMAT } from '#lib/recording-format.ts';
 	import { mergeBrowserOrganization } from '#lib/browser-storage.ts';
 	import { renameBrowserRecording, editBrowserSegment } from '#lib/browser-storage.ts';
@@ -63,7 +64,9 @@
 		if (path === 'mix') {
 			try {
 				mixing = true;
-				const blob = await mixBrowserAudio(await Promise.all(browserTracks.map((track) => readOpfsArchive(track.path))));
+				const blocks = await archivedBlocks(selectedId);
+				const offsets = browserTracks.map((track) => { const first = blocks.find((block) => block.event.track_id === track.track); return first ? first.event.absolute_sample_start / first.event.sample_rate : 0; });
+				const blob = await mixBrowserAudio(await Promise.all(browserTracks.map((track) => readOpfsArchive(track.path))), offsets);
 				if (browserAudioUrl) URL.revokeObjectURL(browserAudioUrl);
 				browserAudioUrl = URL.createObjectURL(blob); mixedSrc = browserAudioUrl; browserDownloadName = 'recording-mixed.wav';
 			} catch { error = locale === 'ru' ? 'Не удалось смешать дорожки. Отдельные дорожки сохранены.' : 'Could not mix tracks. Separate archives are preserved.'; }
