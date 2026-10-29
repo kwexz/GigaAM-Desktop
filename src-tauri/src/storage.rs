@@ -155,19 +155,6 @@ impl Store {
                 position INTEGER NOT NULL CHECK(position >= 0)
              );"
         )?;
-               duration_seconds REAL CHECK(duration_seconds IS NULL OR duration_seconds >= 0),
-               model_version TEXT NOT NULL,
-               error TEXT,
-               audio_path TEXT,
-               start_requested INTEGER NOT NULL DEFAULT 0 CHECK(start_requested IN (0,1)),
-               completed_chunks INTEGER NOT NULL DEFAULT 0 CHECK(completed_chunks >= 0),
-               total_chunks INTEGER CHECK(total_chunks IS NULL OR total_chunks >= 0),
-               cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK(cancel_requested IN (0,1)),
-               queue_visible INTEGER NOT NULL DEFAULT 1 CHECK(queue_visible IN (0,1))
-             );
-             CREATE TABLE IF NOT EXISTS transcript_segments (
-               id TEXT PRIMARY KEY,
-               transcription_id TEXT NOT NULL REFERENCES transcriptions(id) ON DELETE CASCADE,
         self.connection.execute_batch(
             "PRAGMA foreign_keys = ON;
              CREATE TABLE IF NOT EXISTS transcriptions (
@@ -194,6 +181,19 @@ impl Store {
              CREATE INDEX IF NOT EXISTS idx_transcriptions_filename ON transcriptions(source_filename);
              CREATE INDEX IF NOT EXISTS idx_segments_transcription ON transcript_segments(transcription_id, segment_index);",
         )?;
+               duration_seconds REAL CHECK(duration_seconds IS NULL OR duration_seconds >= 0),
+               model_version TEXT NOT NULL,
+               error TEXT,
+               audio_path TEXT,
+               start_requested INTEGER NOT NULL DEFAULT 0 CHECK(start_requested IN (0,1)),
+               completed_chunks INTEGER NOT NULL DEFAULT 0 CHECK(completed_chunks >= 0),
+               total_chunks INTEGER CHECK(total_chunks IS NULL OR total_chunks >= 0),
+               cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK(cancel_requested IN (0,1)),
+               queue_visible INTEGER NOT NULL DEFAULT 1 CHECK(queue_visible IN (0,1))
+             );
+             CREATE TABLE IF NOT EXISTS transcript_segments (
+               id TEXT PRIMARY KEY,
+               transcription_id TEXT NOT NULL REFERENCES transcriptions(id) ON DELETE CASCADE,
         self.connection.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_single_active_transcription
              ON transcriptions((1)) WHERE status IN ('preparing','transcribing');",
@@ -857,19 +857,6 @@ mod tests {
         assert!(store.save_organization(invalid).is_err());
         assert_eq!(store.load_organization().unwrap(), saved);
     }
-            completed_ms: None,
-            status,
-            duration_seconds: None,
-            model_version: "v3_e2e_ctc.int8".into(),
-            error: None,
-            audio_path: None,
-            completed_chunks: 0,
-            total_chunks: None,
-            queue_visible: true,
-        }
-    }
-
-    #[test]
     use super::*;
     use crate::domain::TranscriptionKind;
 
@@ -896,6 +883,19 @@ mod tests {
             "важный текст".into(),
             SourceTrack::File,
             SegmentState::Final,
+            completed_ms: None,
+            status,
+            duration_seconds: None,
+            model_version: "v3_e2e_ctc.int8".into(),
+            error: None,
+            audio_path: None,
+            completed_chunks: 0,
+            total_chunks: None,
+            queue_visible: true,
+        }
+    }
+
+    #[test]
         )
         .unwrap();
         store.append_segment(&segment).unwrap();
