@@ -262,6 +262,24 @@ test('organization journal advances revision for rapid consecutive changes', asy
 	expect(revisions[0]).toBeGreaterThan(1_000_000_000_000);
 });
 
+test('deleting a recording retains unrelated folder and journals its removal', async ({ page }) => {
+	await page.goto('/');
+	const result = await page.evaluate(async () => {
+		const s = await import('/src/lib/browser-storage.ts');
+		await s.putBrowserRecording({ id: 'delete-organized', name: 'Delete', created_ms: 1, duration_seconds: 1 });
+		await s.saveBrowserOrganization([
+			{ id: 'retained-folder', kind: 'folder', parent_id: null, name: 'Keep', position: 0 },
+			{ id: 'delete-organized', kind: 'recording', parent_id: 'retained-folder', name: 'Delete', position: 0 }
+		]);
+		await s.deleteBrowserRecording('delete-organized');
+		return { nodes: await s.loadBrowserOrganization(), changes: await s.changesSince('organization', -1) };
+	});
+	expect(result.nodes).toEqual([{ id: 'retained-folder', kind: 'folder', parent_id: null, name: 'Keep', position: 0 }]);
+	expect(result.changes).toHaveLength(2);
+	expect(result.changes[1].revision).toBeGreaterThan(result.changes[0].revision);
+	expect(result.changes[1].payload).toMatchObject({ nodes: result.nodes });
+});
+
 // Synthetic device integration through the actual product route, not capture-harness.
 test('main web application records, reloads and exports local audio without Tauri', async ({ page, context }) => {
 	const pageErrors: string[] = [];
