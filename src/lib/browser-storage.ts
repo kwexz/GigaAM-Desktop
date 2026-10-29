@@ -204,8 +204,9 @@ export async function renameBrowserRecording(id: string, name: string): Promise<
 		const request = store.get(`recording:${id}`);
 		request.onsuccess = () => {
 			if (!request.result) { tx.abort(); return; }
-			store.put({ ...request.result, name });
-			tx.objectStore(CHANGE_STORE).put({ change_id: crypto.randomUUID(), session_id: id, kind: 'session_update', revision: Date.now(), payload: { name } });
+			const revision = Math.max(Number(request.result.revision ?? 0), Date.now()) + 1;
+			store.put({ ...request.result, name, revision });
+			tx.objectStore(CHANGE_STORE).put({ change_id: crypto.randomUUID(), session_id: id, kind: 'session_update', revision, payload: { name } });
 		};
 		tx.oncomplete = () => { db.close(); resolve(); };
 		tx.onerror = tx.onabort = () => { db.close(); reject(tx.error ?? new Error('Recording rename failed')); };

@@ -240,11 +240,13 @@ test('recording rename updates metadata and logical journal together', async ({ 
 		const s = await import('/src/lib/browser-storage.ts');
 		await s.putBrowserRecording({ id: 'rename-journal', name: 'Before', created_ms: 1, duration_seconds: 1 });
 		await s.renameBrowserRecording('rename-journal', 'After');
+		await s.renameBrowserRecording('rename-journal', 'Final');
 		return { record: (await s.listBrowserMetadata()).find((entry) => entry.id === 'rename-journal'), changes: await s.changesSince('rename-journal', -1) };
 	});
-	expect(result.record?.name).toBe('After');
-	expect(result.changes).toHaveLength(1);
-	expect(result.changes[0].payload).toEqual({ name: 'After' });
+	expect(result.record?.name).toBe('Final');
+	expect(result.changes).toHaveLength(2);
+	expect(result.changes[1].payload).toEqual({ name: 'Final' });
+	expect(result.changes[1].revision).toBeGreaterThan(result.changes[0].revision);
 });
 
 test('organization journal advances revision for rapid consecutive changes', async ({ page }) => {
