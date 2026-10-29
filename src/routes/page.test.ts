@@ -64,6 +64,8 @@ describe('GigaAM page', () => {
 	beforeEach(() => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });
 		localStorage.clear();
+		// Desktop tests run with the Tauri IPC bridge present.
+		Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} });
 		mockBackend();
 	});
 

@@ -4,7 +4,21 @@
 	import { getCurrentWebview } from '@tauri-apps/api/webview';
 	import { open, save } from '@tauri-apps/plugin-dialog';
 	import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
-	import { onMount } from 'svelte';
+	import { isTauriRuntime } from '#lib/runtime.ts';
+	import { WebSession } from '#lib/web-session.ts';
+	import { listBrowserMetadata, putBrowserRecording, readOpfsArchive, loadBrowserOrganization, updateBrowserOrganization, browserSegments, appendOpfsChunk, putArchiveMeta } from '#lib/browser-storage.ts';
+	import { moveNode, deleteFolder, compareNodes, type OrganizationNode } from '#lib/organization.ts';
+	import { organizationLabels } from '#lib/organization.ts';
+	import { savedRecordingFormat, saveRecordingFormat, DEFAULT_RECORDING_FORMAT } from '#lib/recording-format.ts';
+	import { mergeBrowserOrganization } from '#lib/browser-storage.ts';
+	import { renameBrowserRecording, editBrowserSegment } from '#lib/browser-storage.ts';
+	import { deleteBrowserRecording } from '#lib/browser-storage.ts';
+	import { browserRecordingStatus } from '#lib/browser-storage.ts';
+	import { putSessionState, getSessionState, putSegment } from '#lib/browser-storage.ts';
+	import { RemoteEngine } from '#lib/remote-engine.ts';
+	import { replayToRemote } from '#lib/archive-replay.ts';
+	import { runtimeCapabilities } from '#lib/runtime-capabilities.ts';
+	import { onMount, tick } from 'svelte';
 
 	type Status = 'queued' | 'preparing' | 'transcribing' | 'completed' | 'cancelled' | 'failed' | 'interrupted';
 	type Item = { id: string; kind: 'file' | 'live'; source_filename: string; source_path: string; audio_path?: string; created_ms: number; status: Status; error?: string; duration_seconds?: number; completed_chunks: number; total_chunks?: number };
@@ -31,8 +45,94 @@
 	let micLevel = $state(0);
 	let systemLevel = $state(0);
 	let liveStarted = $state(0);
-	let archiveFormat = $state<'flac' | 'wav' | 'mp3'>('flac');
+	let archiveFormat = $state<'flac' | 'wav' | 'mp3' | 'ogg'>(DEFAULT_RECORDING_FORMAT);
 	let theme = $state<'system' | 'dark' | 'light'>('system');
+	let browserMode = $state(false);
+	let capabilities = $derived(runtimeCapabilities(!browserMode));
+	let webSession: WebSession | undefined;
+	let browserAudioUrl = '';
+	let browserDownloadName = $state('recording.webm');
+	let remoteUrl = $state('');
+	let remoteToken = $state('');
+	let replayEngine: RemoteEngine | undefined;
+	let replayController: AbortController | undefined;
+	async function resumeRemoteUpload(id: string) {
+		if (!remoteUrl.trim()) { error = locale === 'ru' ? 'Укажите Remote ASR URL в панели записи.' : 'Set Remote ASR URL in the recording panel.'; return; }
+		try {
+			const url = new URL(remoteUrl);
+			if (url.protocol !== 'wss:' && !(url.protocol === 'ws:' && ['127.0.0.1', 'localhost'].includes(url.hostname))) throw new Error('Secure WebSocket required');
+			replayController?.abort();
+			if (replayEngine) await replayEngine.cancel(id);
+			replayController = new AbortController();
+			replayEngine = new RemoteEngine({ url: remoteUrl.trim(), token: remoteToken });
+			replayEngine.onSegment((segment) => { void putSegment(segment).then(() => { if (selectedId === id) void refresh(); }).catch(() => { error = 'Transcript persistence failed'; }); });
+			const previous = await getSessionState(id) ?? { recording: 'completed' as const, upload: 'not_started' as const, recognition: 'not_started' as const, sync: 'disabled' as const };
+			await putSessionState(id, { ...previous, upload: 'uploading' });
+			await replayEngine.start(id);
+			await replayToRemote(id, replayEngine, replayController.signal);
+			const current = await getSessionState(id) ?? previous;
+			await putSessionState(id, { ...current, upload: 'durable' });
+		} catch { error = locale === 'ru' ? 'Отправка не завершена. Локальный звук сохранён; повторите позже.' : 'Upload incomplete. Local audio is preserved; retry later.'; }
+	}
+	let organization = $state<OrganizationNode[]>([]);
+	let currentFolder = $state<string | null>(null);
+	let folderName = $state('');
+	let organizationBusy = false;
+	let visibleFolders = $derived(organization.filter((node) => node.kind === 'folder' && node.parent_id === currentFolder).sort(compareNodes));
+	let visibleItems = $derived(items.filter((item) => query.trim() || (organization.find((node) => node.id === item.id)?.parent_id ?? null) === currentFolder).sort((a, b) => (organization.find((node) => node.id === a.id)?.position ?? 0) - (organization.find((node) => node.id === b.id)?.position ?? 0)));
+	async function loadOrganization() {
+		if (organizationBusy) return;
+		organization = browserMode ? await loadBrowserOrganization() : await invoke<OrganizationNode[]>('load_organization');
+		for (const item of items) if (!organization.some((node) => node.id === item.id)) organization.push({ id: item.id, kind: 'recording', parent_id: null, name: item.source_filename, position: organization.length });
+	}
+	async function persistOrganization(next: OrganizationNode[]) {
+		if (organizationBusy) return;
+		organizationBusy = true;
+		try {
+			if (browserMode) organization = await mergeBrowserOrganization(organization.map((node) => ({ ...node })), next);
+			else { await invoke('save_organization', { nodes: next, previous: organization }); organization = next; }
+		} catch { error = locale === 'ru' ? 'Не удалось сохранить папки.' : 'Could not save folders.'; }
+		finally { organizationBusy = false; }
+	}
+	async function createFolder() {
+		if (!folderName.trim()) return;
+		await persistOrganization([...organization, { id: crypto.randomUUID(), kind: 'folder', parent_id: currentFolder, name: folderName.trim(), position: organization.length }]);
+		folderName = '';
+	}
+	async function moveOrganization(id: string, parent: string | null, index = organization.length) {
+		try {
+			if (browserMode) {
+				organization = await updateBrowserOrganization((stored) => {
+					const merged = [...stored, ...organization.filter((node) => !stored.some((entry) => entry.id === node.id)).map((node) => ({ ...node }))];
+					return moveNode(merged, id, parent, index);
+				});
+			} else await persistOrganization(moveNode(organization, id, parent, index));
+		}
+		catch { error = locale === 'ru' ? 'Нельзя переместить папку в её потомка.' : 'Cannot move a folder into its descendant.'; }
+	}
+	function dropOrganization(event: DragEvent, parent: string | null) {
+		event.preventDefault(); event.stopPropagation();
+		const id = event.dataTransfer?.getData('application/x-gigaam-item');
+		if (id) void moveOrganization(id, parent);
+	}
+	async function refreshBrowser() {
+		const metadata = await listBrowserMetadata();
+		items = metadata.filter((entry) => String(entry.key).startsWith('recording:')).map((entry) => ({
+			id: String(entry.id), kind: 'live' as const, source_filename: String(entry.name), source_path: '',
+			created_ms: Number(entry.created_ms), duration_seconds: Number(entry.duration_seconds), status: Number(entry.duration_seconds) > 0 ? 'completed' as const : 'interrupted' as const, completed_chunks: 0
+		})).filter((entry) => !query.trim() || entry.source_filename.toLowerCase().includes(query.toLowerCase()));
+		for (const archive of metadata.filter((entry) => String(entry.key).startsWith('archive:'))) {
+			const id = String(archive.session_id);
+			if (items.some((item) => item.id === id)) continue;
+			if (metadata.some((entry) => entry.id === id && String(entry.key).startsWith('recording:'))) continue;
+			items.push({ id, kind: 'live', source_filename: locale === 'ru' ? 'Восстановленная запись' : 'Recovered recording', source_path: '', created_ms: Number(archive.created_ms), status: 'interrupted', completed_chunks: 0 });
+		}
+		for (const item of items) {
+			const state = metadata.find((entry) => entry.key === `session:${item.id}`);
+			if (state) item.status = await browserRecordingStatus(item.id);
+		}
+		await loadOrganization();
+	}
 	let editingNameId = $state('');
 	let editingName = $state('');
 	let editingNamePlace = $state<'list' | 'header' | ''>('');
@@ -68,10 +168,20 @@
 	}
 
 	async function refresh() {
+		if (browserMode) {
+			await refreshBrowser();
+			const id = selectedId;
+			if (id) {
+				const next = await browserSegments(id);
+				if (selectedId === id) segments = next.map((segment, index) => ({ id: segment.segment_id, index, start_seconds: segment.start_seconds, end_seconds: segment.end_seconds, text: segment.text, source_track: segment.track_id }));
+			}
+			return;
+		}
 		try {
 			items = query.trim()
 				? await invoke<Item[]>('search_history', { query })
 				: await invoke<Item[]>('list_history');
+			await loadOrganization();
 			if (selectedId && !items.some((item) => item.id === selectedId)) selectedId = '';
 			if (selectedId) {
 				const requestId = selectedId;
@@ -86,6 +196,7 @@
 	}
 
 	async function selectItem(id: string) {
+		if (editingNameId === id) return;
 		selectedId = id;
 		segments = [];
 		audioFiles = [];
@@ -93,6 +204,22 @@
 		mixing = false;
 		playhead = 0;
 		audioPaused = true;
+		if (browserMode) {
+			if (browserAudioUrl) URL.revokeObjectURL(browserAudioUrl);
+			const metadata = await listBrowserMetadata();
+			if (selectedId !== id) return;
+			const archive = metadata.find((entry) => entry.session_id === id && String(entry.key).startsWith('archive:'));
+			if (archive) {
+				const file = await readOpfsArchive(String(archive.path));
+				if (selectedId !== id) return;
+				browserDownloadName = file.name;
+				browserAudioUrl = URL.createObjectURL(new Blob([file], { type: String(archive.mime_type) }));
+				mixedSrc = browserAudioUrl;
+			}
+			const next = await browserSegments(id);
+			if (selectedId === id) segments = next.map((segment, index) => ({ id: segment.segment_id, index, start_seconds: segment.start_seconds, end_seconds: segment.end_seconds, text: segment.text, source_track: segment.track_id }));
+			return;
+		}
 		void syncLiveAudio(id);
 		const request = ++segmentRequest;
 		try {
@@ -104,6 +231,7 @@
 	}
 
 	async function enqueue(paths: string[]) {
+		if (browserMode) { error = locale === 'ru' ? 'Используйте браузерный выбор аудиофайлов.' : 'Use the browser audio file picker.'; return; }
 		if (!paths.length) return;
 		if (!model.installed) { await invoke('download_model'); return; }
 		try {
@@ -115,6 +243,21 @@
 
 	async function pickFiles() {
 		try {
+			if (browserMode) {
+				const input = document.createElement('input'); input.type = 'file'; input.accept = 'audio/*'; input.multiple = true;
+				input.onchange = () => { void (async () => {
+					for (const file of Array.from(input.files ?? [])) {
+						const id = crypto.randomUUID();
+						const extension = file.name.split('.').at(-1)?.replace(/[^a-zA-Z0-9]/g, '') || 'audio';
+						const path = `sessions/${id}/file.${extension}`;
+						await appendOpfsChunk(path, file);
+						await putArchiveMeta({ session_id: id, track_id: 'file', path, mime_type: file.type || 'application/octet-stream', bytes: file.size, block_count: 1, created_ms: Date.now() });
+						await putBrowserRecording({ id, name: file.name, created_ms: Date.now(), duration_seconds: 0 });
+					}
+					await refreshBrowser();
+				})().catch(() => { error = locale === 'ru' ? 'Не удалось импортировать аудио.' : 'Audio import failed.'; }); };
+				input.click(); return;
+			}
 			const selected = await open({ multiple: true, directory: false, filters: [{ name: 'Media', extensions: ['wav', 'mp3', 'flac', 'ogg', 'm4a', 'mp4', 'mkv', 'avi', 'mov'] }] });
 			await enqueue(selected ? (Array.isArray(selected) ? selected : [selected]) : []);
 		} catch {
@@ -125,6 +268,14 @@
 	async function action(command: string, id: string) {
 		try {
 			error = '';
+			if (browserMode) {
+				if (command !== 'delete_history') throw new Error(locale === 'ru' ? 'Распознавание этой записи ещё не подключено.' : 'Recognition is not connected for this recording yet.');
+				if (recording && webSession?.sessionId === id) throw new Error('Cannot delete active recording');
+				await deleteBrowserRecording(id);
+				selectedId = ''; segments = []; mixedSrc = '';
+				await refreshBrowser();
+				return;
+			}
 			await invoke(command, { id });
 			if (command === 'retry_transcription') await invoke('start_transcription', { id });
 			if (command === 'cancel_transcription' && selected?.source_path === '') { recording = false; paused = false; }
@@ -139,7 +290,7 @@
 		editingNameId = item.id;
 		editingName = item.source_filename;
 		editingNamePlace = place;
-		queueMicrotask(() => document.querySelector<HTMLInputElement>(`.rename-input[data-place="${place}"]`)?.select());
+		void tick().then(() => document.querySelector<HTMLInputElement>(`.rename-input[data-place="${place}"]`)?.select());
 	}
 	async function commitRename() {
 		const id = editingNameId;
@@ -147,7 +298,7 @@
 		editingNameId = '';
 		editingNamePlace = '';
 		if (!id || !name) return;
-		try { await invoke('rename_transcription', { id, name }); await refresh(); }
+		try { if (browserMode) await renameBrowserRecording(id, name); else await invoke('rename_transcription', { id, name }); await refresh(); }
 		catch (err) { error = String(err); }
 	}
 	function setTheme(next: 'system' | 'dark' | 'light') {
@@ -155,7 +306,7 @@
 		if (next === 'system') delete document.body.dataset.theme;
 		else document.body.dataset.theme = next;
 		document.documentElement.style.colorScheme = next === 'system' ? 'light dark' : next;
-		localStorage.setItem('theme', next);
+		try { localStorage.setItem('theme', next); } catch { /* Theme persistence is optional. */ }
 	}
 	function nextTheme() {
 		setTheme(theme === 'system' ? 'light' : theme === 'light' ? 'dark' : 'system');
@@ -164,6 +315,7 @@
 	async function reveal(path: string) {
 		try {
 			error = '';
+			if (browserMode) { error = locale === 'ru' ? 'Аудио хранится в приватном хранилище браузера. Используйте «Скачать аудио».' : 'Audio is in private browser storage. Use Download audio.'; return; }
 			await revealItemInDir(path);
 		} catch {
 			error = locale === 'ru' ? 'Не удалось показать файл. Возможно, он перемещён или удалён.' : 'Could not reveal the file. It may have been moved or deleted.';
@@ -206,6 +358,12 @@
 	async function exportResult() {
 		if (!selected) return;
 		try {
+			if (browserMode) {
+				const url = URL.createObjectURL(new Blob([segments.map((segment) => `[${time(segment.start_seconds)}] ${segment.text}`).join('\n')], { type: 'text/plain;charset=utf-8' }));
+				const link = document.createElement('a'); link.href = url; link.download = `${selected.source_filename}.txt`; link.click();
+				window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+				return;
+			}
 			const path = await save({ defaultPath: exportName(), filters: [{ name: 'Text', extensions: ['txt'] }, { name: 'SubRip', extensions: ['srt'] }, { name: 'WebVTT', extensions: ['vtt'] }, { name: 'JSON', extensions: ['json'] }] });
 			if (!path) return;
 			const extension = path.split('.').pop()?.toLowerCase();
@@ -245,7 +403,8 @@
 		const text = editText.trim();
 		if (!text || !selected) return;
 		try {
-			await invoke('update_segment_text', { transcriptionId: selected.id, index: segment.index, text });
+			if (browserMode) await editBrowserSegment(selected.id, segment.id, text);
+			else await invoke('update_segment_text', { transcriptionId: selected.id, index: segment.index, text });
 			segments = segments.map((item) => item.id === segment.id ? { ...item, text } : item);
 			editingId = null;
 		} catch (err) {
@@ -306,7 +465,31 @@
 		if (busy || finalizing) return;
 		busy = true;
 		error = '';
+		saveRecordingFormat(localStorage, archiveFormat);
 		try {
+			if (browserMode) {
+				if (recording && webSession) {
+					finalizing = true;
+					await webSession.stop();
+					await putBrowserRecording({ id: webSession.sessionId, name: recordingName(), created_ms: liveStarted, duration_seconds: (Date.now() - liveStarted) / 1000 });
+					recording = false;
+					await refreshBrowser();
+					sidebarMode = 'files';
+					await selectItem(webSession.sessionId);
+				} else {
+					if (remoteUrl.trim()) {
+						const url = new URL(remoteUrl);
+						if (url.protocol !== 'wss:' && !(url.protocol === 'ws:' && ['127.0.0.1', 'localhost'].includes(url.hostname))) throw new Error('Remote ASR requires secure WebSocket');
+					}
+					webSession = new WebSession(undefined, { remoteUrl: remoteUrl.trim() || undefined, token: remoteToken });
+					liveStarted = Date.now();
+					await putBrowserRecording({ id: webSession.sessionId, name: recordingName(), created_ms: liveStarted, duration_seconds: 0 });
+					await webSession.start(liveSource);
+					recording = true;
+					captureHealth = webSession.capture.status.systemAudioUnavailable ? 'Системное аудио недоступно: запись микрофона' : '';
+				}
+				return;
+			}
 			if (!model.installed) { await invoke('download_model'); return; }
 			if (recording) {
 				finalizing = true;
@@ -344,7 +527,7 @@
 			modelReady = true;
 			paused = false;
 			error = locale === 'ru' ? 'Не удалось начать запись.' : 'Could not start recording.';
-		} finally { busy = false; }
+		} finally { busy = false; if (browserMode) finalizing = false; }
 	}
 
 	function openRecordPanel() {
@@ -376,6 +559,11 @@
 		if (busy || !recording) return;
 		busy = true;
 		try {
+			if (browserMode && webSession) {
+				if (paused) await webSession.resume(); else await webSession.pause();
+				paused = !paused;
+				return;
+			}
 			if (paused) {
 				await invoke('resume_live');
 				liveStarted = Date.now() - pausedElapsed;
@@ -395,8 +583,24 @@
 	}
 
 	onMount(() => {
-		const savedTheme = localStorage.getItem('theme');
+		archiveFormat = savedRecordingFormat(localStorage) ?? DEFAULT_RECORDING_FORMAT;
+		let savedTheme: string | null = null;
+		try { savedTheme = localStorage.getItem('theme'); } catch { /* Do not block recording initialization. */ }
 		setTheme(savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : 'system');
+		if (!isTauriRuntime()) {
+			// Browser lifecycle never polls Desktop IPC.
+			browserMode = true;
+			void refreshBrowser();
+			const timer = window.setInterval(() => {
+				uiNow = Date.now();
+				if (webSession?.status().recording === 'failed') {
+					recording = false;
+					paused = false;
+					error = locale === 'ru' ? 'Ошибка локального архива. Запись остановлена; сохранённый звук доступен в истории.' : 'Local archive error. Capture stopped; saved audio remains in history.';
+				}
+			}, 250);
+			return () => { window.clearInterval(timer); replayController?.abort(); if (replayEngine) void replayEngine.cancel(''); if (browserAudioUrl) URL.revokeObjectURL(browserAudioUrl); };
+		}
 		let refreshing = false;
 		const poll = () => {
 			if (refreshing) return;
@@ -441,28 +645,63 @@
 <svelte:head><title>GigaAM</title></svelte:head>
 <svelte:window onkeydown={onKeydown} />
 
+{#if browserMode}
+	<div class="web-banner" role="status" data-testid="web-mode-banner">
+		<strong>{locale === 'ru' ? 'Веб-версия GigaAM' : 'GigaAM web build'}</strong>
+		<span>{locale === 'ru'
+			? 'Звук сохраняется локально в браузере. Облачное распознавание пока не подключено; системное аудио зависит от браузера.'
+			: 'Audio is saved locally in this browser. Remote recognition is not connected yet; system audio depends on browser support.'}</span>
+	</div>
+{/if}
+
 <div class="app-shell" style={`--sidebar-width:${sidebarWidth}px`}>
-	{#if !model.installed}<div class="model-banner"><div><strong>{locale === 'ru' ? 'Требуется модель распознавания' : 'Recognition model required'}</strong><span>{(model.total_bytes / 1024 / 1024).toFixed(0)} MB</span>{#if model.downloading}<progress max={model.total_bytes} value={model.downloaded_bytes}></progress>{/if}</div>{#if model.downloading}<button onclick={() => invoke('cancel_model_download')}>{t.cancel}</button>{:else}<button onclick={() => invoke('download_model')}>{model.error ? t.retry : locale === 'ru' ? 'Загрузить' : 'Download'}</button>{/if}</div>{/if}
+	{#if browserMode && capabilities.system_audio === 'optional'}<span class="hint" role="note">{locale === 'ru' ? 'Системное аудио доступно только если браузер вернул аудиодорожку.' : 'System audio is available only when the browser returns an audio track.'}</span>{/if}
+	{#if !model.installed && !browserMode}<div class="model-banner"><div><strong>{locale === 'ru' ? 'Требуется модель распознавания' : 'Recognition model required'}</strong><span>{(model.total_bytes / 1024 / 1024).toFixed(0)} MB</span>{#if model.downloading}<progress max={model.total_bytes} value={model.downloaded_bytes}></progress>{/if}</div>{#if model.downloading}<button onclick={() => invoke('cancel_model_download')}>{t.cancel}</button>{:else}<button onclick={() => invoke('download_model')}>{model.error ? t.retry : locale === 'ru' ? 'Загрузить' : 'Download'}</button>{/if}</div>{/if}
 	<header>
-		<div class="brand"><span class="mark">G</span><strong>GigaAM</strong><span>Desktop</span><button class="version-link" title="GitHub" onclick={() => void openUrl('https://github.com/kwexz/GigaAM-Desktop')}>{locale === 'ru' ? 'Версия' : 'Version'} {__APP_VERSION__} b{__BUILD_ID__}</button></div>
+		<div class="brand"><span class="mark">G</span><strong>GigaAM</strong><span>Desktop</span><button class="version-link" title="GitHub" onclick={() => { if (browserMode) window.open('https://github.com/kwexz/GigaAM-Desktop', '_blank', 'noopener,noreferrer'); else void openUrl('https://github.com/kwexz/GigaAM-Desktop'); }}>{locale === 'ru' ? 'Версия' : 'Version'} {__APP_VERSION__} b{__BUILD_ID__}</button></div>
 		<div class="header-actions"><button class="ghost theme-toggle" title={theme === 'system' ? (locale === 'ru' ? 'Тема: системная' : 'Theme: system') : theme === 'light' ? (locale === 'ru' ? 'Тема: светлая' : 'Theme: light') : (locale === 'ru' ? 'Тема: тёмная' : 'Theme: dark')} onclick={nextTheme}>{theme === 'system' ? '◐' : theme === 'light' ? '☀' : '☾'}</button><button class="ghost" onclick={() => locale = locale === 'ru' ? 'en' : 'ru'}>{locale.toUpperCase()}</button></div>
 	</header>
 
 	<aside>
 		{#if sidebarMode === 'files'}
 			<div class="section-title">{t.timeline}</div>
+			<div class="sidebar-actions">
+				<input aria-label={locale === 'ru' ? 'Название папки' : 'Folder name'} bind:value={folderName} placeholder={locale === 'ru' ? 'Новая папка' : 'New folder'} />
+				<button onclick={() => void createFolder()}>{locale === 'ru' ? 'Создать папку' : 'Create folder'}</button>
+			</div>
+			<button ondragover={(event) => event.preventDefault()} ondrop={(event) => dropOrganization(event, currentFolder === null ? null : organization.find((node) => node.id === currentFolder)?.parent_id ?? null)} onclick={() => currentFolder = organization.find((node) => node.id === currentFolder)?.parent_id ?? null}>{currentFolder ? '← ' + (organization.find((node) => node.id === currentFolder)?.name ?? '') : (locale === 'ru' ? 'Все записи' : 'All recordings')}</button>
+			{#each visibleFolders as folder (folder.id)}
+				<div class="sidebar-actions">
+					<button draggable="true" ondragstart={(event) => event.dataTransfer?.setData('application/x-gigaam-item', folder.id)} ondragover={(event) => event.preventDefault()} ondrop={(event) => dropOrganization(event, folder.id)} onclick={() => currentFolder = folder.id}>📁 {folder.name}</button>
+					<button aria-label={organizationLabels[locale].rename} onclick={() => { const name = window.prompt(locale === 'ru' ? 'Название папки' : 'Folder name', folder.name); if (name?.trim()) void persistOrganization(organization.map((node) => node.id === folder.id ? { ...node, name: name.trim() } : node)); }}>✎</button>
+					<button aria-label={organizationLabels[locale].delete} onclick={() => { if (window.confirm(locale === 'ru' ? 'Удалить папку? Записи будут сохранены.' : 'Delete folder? Recordings will be kept.')) void persistOrganization(deleteFolder(organization, folder.id)); }}>×</button>
+					<button aria-label={organizationLabels[locale].folderUp} onclick={() => void moveOrganization(folder.id, currentFolder, Math.max(0, folder.position - 1))}>↑</button>
+					<select aria-label={organizationLabels[locale].folderMove} value={folder.parent_id ?? ''} onchange={(event) => void moveOrganization(folder.id, event.currentTarget.value || null)}><option value="">/</option>{#each organization.filter((node) => node.kind === 'folder' && node.id !== folder.id) as parent}<option value={parent.id}>{parent.name}</option>{/each}</select>
+				</div>
+			{/each}
 			<label class="search"><span>⌕</span><input bind:value={query} oninput={() => void refresh()} placeholder={t.search} /></label>
 			<div class="list">
-				{#each items as item (item.id)}
-					<button class="item" class:selected={selectedId === item.id} onclick={() => void selectItem(item.id)} ondblclick={(event) => { event.stopPropagation(); beginRename(item, 'list'); }}>
+				{#each visibleItems as item (item.id)}
+					<button draggable="true" ondragstart={(event) => event.dataTransfer?.setData('application/x-gigaam-item', item.id)} ondragover={(event) => event.preventDefault()} ondrop={(event) => { event.preventDefault(); const id = event.dataTransfer?.getData('application/x-gigaam-item'); if (id) void moveOrganization(id, currentFolder, organization.find((node) => node.id === item.id)?.position ?? 0); }} data-testid="recording-item" class="item" class:selected={selectedId === item.id} onclick={() => void selectItem(item.id)} ondblclick={(event) => { event.stopPropagation(); beginRename(item, 'list'); }}>
 						<span class="status" data-status={item.status}></span><span class="item-copy">{#if editingNameId === item.id && editingNamePlace === 'list'}<input class="rename-input" data-place="list" bind:value={editingName} onclick={(event) => event.stopPropagation()} onkeydown={(event) => { if (event.key === 'Enter') void commitRename(); if (event.key === 'Escape') { editingNameId = ''; editingNamePlace = ''; } }} onblur={() => void commitRename()} />{:else}<strong>{item.source_filename}</strong>{/if}<small>{item.duration_seconds != null ? `${duration(item.duration_seconds)} · ` : ''}{new Date(item.created_ms).toLocaleString(locale)}</small></span><em>{statuses[locale][item.status]}</em>
 					</button>
+					<div class="sidebar-actions">
+						<button aria-label={locale === 'ru' ? 'Переименовать запись' : 'Rename recording'} onclick={() => beginRename(item, 'list')}>✎</button>
+						<button aria-label={organizationLabels[locale].recordingUp} onclick={() => void moveOrganization(item.id, currentFolder, Math.max(0, (organization.find((node) => node.id === item.id)?.position ?? 0) - 1))}>↑</button>
+						<button aria-label={organizationLabels[locale].recordingDown} onclick={() => void moveOrganization(item.id, currentFolder, (organization.find((node) => node.id === item.id)?.position ?? 0) + 1)}>↓</button>
+						<select aria-label={organizationLabels[locale].recordingMove} value={organization.find((node) => node.id === item.id)?.parent_id ?? ''} onchange={(event) => void moveOrganization(item.id, event.currentTarget.value || null)}><option value="">/</option>{#each organization.filter((node) => node.kind === 'folder') as parent}<option value={parent.id}>{parent.name}</option>{/each}</select>
+					</div>
 				{/each}
 				{#if !items.length}<div class="empty-list">{t.empty}</div>{/if}
 			</div>
-			<div class="sidebar-actions"><button class="add" disabled={!model.installed} onclick={pickFiles}>Открыть</button><button class="record-toggle" onclick={openRecordPanel}>Записать</button></div>
+			<div class="sidebar-actions"><button class="add" disabled={!model.installed && !browserMode} onclick={pickFiles}>Открыть</button><button class="record-toggle" onclick={openRecordPanel}>Записать</button></div>
 		{:else}
-			<div class="record-panel"><div class="section-title">{locale === 'ru' ? 'Запись' : 'Recording'}</div><label>{locale === 'ru' ? 'Тип источника' : 'Audio source'}<select bind:value={liveSource} disabled={recording}><option value="system_and_microphone">{locale === 'ru' ? 'Система + микрофон' : 'System + microphone'}</option><option value="system">{locale === 'ru' ? 'Система' : 'System'}</option><option value="microphone">{locale === 'ru' ? 'Микрофон' : 'Microphone'}</option></select></label>{#if liveSource !== 'system'}<label>{locale === 'ru' ? 'Микрофон' : 'Microphone'}<select bind:value={microphone} disabled={recording}>{#if !microphones.length}<option value="">{locale === 'ru' ? 'Микрофон по умолчанию' : 'Default microphone'}</option>{/if}{#each microphones as device}<option value={device}>{device}</option>{/each}</select></label>{/if}{#if liveSource !== 'system'}<label>{locale === 'ru' ? 'Усиление микрофона' : 'Microphone gain'}<span class="gain-row"><input type="range" min="0.5" max="10" step="0.5" bind:value={micGain} oninput={() => void invoke('set_mic_gain', { micGain }).catch(() => {})} /><b>{micGain.toFixed(1)}×</b></span></label>{/if}<label>{locale === 'ru' ? 'Формат записи' : 'Recording format'}<select bind:value={archiveFormat} disabled={recording}><option value="flac">FLAC</option><option value="wav">WAV</option><option value="mp3">MP3</option></select></label><span class="hint">{locale === 'ru' ? 'Отдельные дорожки mic/system сохраняются в выбранном формате.' : 'Separate microphone/system tracks use the selected format.'}</span><div class="transport"><button class="record-action" disabled={recording || busy} onclick={() => void startRecording()}><span class="transport-large">●</span>{locale === 'ru' ? 'Запись' : 'Record'}</button><button class="ghost pause-action" class:pressed={paused} aria-pressed={paused} disabled={!recording || busy} onclick={() => void togglePause()}><span class="pause-bars transport-pause" class:pause-blink={paused} aria-hidden="true"><i></i><i></i></span>{t.pause}</button><button class="ghost" disabled={!recording || busy} onclick={() => void stopRecording()}><span class="transport-large">■</span>{locale === 'ru' ? 'Стоп' : 'Stop'}</button></div><button class="list-wide" disabled={recording || busy} onclick={showList}>{locale === 'ru' ? 'Список' : 'List'}</button></div>
+			{#if browserMode}
+				<label>Remote ASR URL<input bind:value={remoteUrl} placeholder="wss://your-server.example" disabled={recording} /></label>
+				<label>Remote ASR token<input type="password" bind:value={remoteToken} autocomplete="off" disabled={recording} /></label>
+				<span class="hint">{locale === 'ru' ? 'Необязательно. Токен хранится только в памяти; запись не зависит от сервера.' : 'Optional. Token stays in memory; recording does not depend on the server.'}</span>
+			{/if}
+			<div class="record-panel"><div class="section-title">{locale === 'ru' ? 'Запись' : 'Recording'}</div><label>{locale === 'ru' ? 'Тип источника' : 'Audio source'}<select bind:value={liveSource} disabled={recording}><option value="system_and_microphone">{locale === 'ru' ? 'Система + микрофон' : 'System + microphone'}</option><option value="system">{locale === 'ru' ? 'Система' : 'System'}</option><option value="microphone">{locale === 'ru' ? 'Микрофон' : 'Microphone'}</option></select></label>{#if liveSource !== 'system'}<label>{locale === 'ru' ? 'Микрофон' : 'Microphone'}<select bind:value={microphone} disabled={recording}>{#if !microphones.length}<option value="">{locale === 'ru' ? 'Микрофон по умолчанию' : 'Default microphone'}</option>{/if}{#each microphones as device}<option value={device}>{device}</option>{/each}</select></label>{/if}{#if liveSource !== 'system'}<label>{locale === 'ru' ? 'Усиление микрофона' : 'Microphone gain'}<span class="gain-row"><input type="range" min="0.5" max="10" step="0.5" bind:value={micGain} oninput={() => { if (!browserMode) void invoke('set_mic_gain', { micGain }).catch(() => {}); }} /><b>{micGain.toFixed(1)}×</b></span></label>{/if}<label>{locale === 'ru' ? 'Формат записи' : 'Recording format'}<select bind:value={archiveFormat} disabled={recording}><option value="flac">FLAC</option><option value="wav">WAV</option><option value="mp3">MP3</option><option value="ogg">Ogg/Opus · 48 kbit/s</option></select></label><span class="hint">{locale === 'ru' ? 'Отдельные дорожки mic/system сохраняются в выбранном формате.' : 'Separate microphone/system tracks use the selected format.'}</span><div class="transport"><button class="record-action" disabled={recording || busy} onclick={() => void startRecording()}><span class="transport-large">●</span>{locale === 'ru' ? 'Запись' : 'Record'}</button><button class="ghost pause-action" class:pressed={paused} aria-pressed={paused} disabled={!recording || busy} onclick={() => void togglePause()}><span class="pause-bars transport-pause" class:pause-blink={paused} aria-hidden="true"><i></i><i></i></span>{t.pause}</button><button class="ghost" disabled={!recording || busy} onclick={() => void stopRecording()}><span class="transport-large">■</span>{locale === 'ru' ? 'Стоп' : 'Stop'}</button></div><button class="list-wide" disabled={recording || busy} onclick={showList}>{locale === 'ru' ? 'Список' : 'List'}</button></div>
 		{/if}
 	</aside>
 	<div class="sidebar-resizer" role="separator" aria-label={locale === 'ru' ? 'Изменить ширину списка' : 'Resize list'} onpointerdown={beginSidebarResize} onpointermove={resizeSidebar} onpointerup={endSidebarResize} onpointercancel={endSidebarResize}></div>
@@ -470,8 +709,10 @@
 	<main>
 		{#if recording}<div class="live-strip"><strong>REC</strong><span>{new Date(Math.max(0, paused ? pausedElapsed : uiNow - liveStarted)).toISOString().slice(11,19)}</span>{#if paused}<span class="pause-blink">{locale === 'ru' ? 'Пауза' : 'Paused'}</span>{/if}{#if !modelReady}<span>{locale === 'ru' ? 'Загрузка модели…' : 'Loading model…'}</span>{:else}<span>MIC <i style={`--level:${Math.min(1,micLevel*4)}`}></i></span><span>SYS <i style={`--level:${Math.min(1,systemLevel*4)}`}></i></span>{/if}</div>{/if}
 		{#if selected}
-			<div class="document-head"><div class="document-title">{#if editingNameId === selected.id && editingNamePlace === 'header'}<input class="title-rename rename-input" data-place="header" bind:value={editingName} onkeydown={(event) => { if (event.key === 'Enter') void commitRename(); if (event.key === 'Escape') { editingNameId = ''; editingNamePlace = ''; } }} onblur={() => void commitRename()} />{:else}<h1><button class="title-button" onclick={() => beginRename(selected, 'header')} title={locale === 'ru' ? 'Переименовать' : 'Rename'}>{selected.source_filename}</button></h1>{/if}</div><div class="tools">{#if ['queued', 'failed', 'cancelled', 'interrupted', 'completed'].includes(selected.status)}<button class="primary" onclick={() => void action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', selected.id)}>{t.start}</button>{/if}{#if ['preparing', 'transcribing'].includes(selected.status)}<button class="primary" onclick={() => void action('cancel_transcription', selected.id)}>{locale === 'ru' ? 'Остановить' : 'Stop'}</button>{/if}</div><div class="document-meta"><p><span>{selected.status === 'completed' ? duration(selected.duration_seconds) : `${statuses[locale][selected.status]}${selected.total_chunks ? ` · ${selected.completed_chunks} / ${selected.total_chunks}` : ''}`}{friendlyError(selected) ? ` · ${friendlyError(selected)}` : ''}</span>{#if selectedPath}<button class="path-link" title={locale === 'ru' ? 'Показать файл' : 'Show file'} onclick={() => void reveal(selectedPath)}>{selectedPath}</button>{/if}</p></div>{#if selected.status !== 'completed' && selected.total_chunks}<progress class="transcribe-progress" max={selected.total_chunks} value={selected.completed_chunks}></progress>{:else if audioSrc}<div class="player-row">{#key audioSrc}<audio bind:this={audio} src={convertFileSrc(audioSrc)} ontimeupdate={() => playhead = audio?.currentTime ?? 0} onplay={() => audioPaused = false} onpause={() => audioPaused = true} onerror={audioFailed} controls></audio>{/key}{#if mixing}<span class="mix-hint">{locale === 'ru' ? 'Готовим общий звук…' : 'Preparing mixed audio…'}</span>{/if}</div>{/if}</div>
+			<div class="document-head"><div class="document-title">{#if editingNameId === selected.id && editingNamePlace === 'header'}<input class="title-rename rename-input" data-place="header" bind:value={editingName} onkeydown={(event) => { if (event.key === 'Enter') void commitRename(); if (event.key === 'Escape') { editingNameId = ''; editingNamePlace = ''; } }} onblur={() => void commitRename()} />{:else}<h1><button class="title-button" onclick={() => beginRename(selected, 'header')} title={locale === 'ru' ? 'Переименовать' : 'Rename'}>{selected.source_filename}</button></h1>{/if}</div><div class="tools">{#if ['queued', 'failed', 'cancelled', 'interrupted', 'completed'].includes(selected.status)}<button class="primary" onclick={() => void action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', selected.id)}>{t.start}</button>{/if}{#if ['preparing', 'transcribing'].includes(selected.status)}<button class="primary" onclick={() => void action('cancel_transcription', selected.id)}>{locale === 'ru' ? 'Остановить' : 'Stop'}</button>{/if}</div><div class="document-meta"><p><span>{selected.status === 'completed' ? duration(selected.duration_seconds) : `${statuses[locale][selected.status]}${selected.total_chunks ? ` · ${selected.completed_chunks} / ${selected.total_chunks}` : ''}`}{friendlyError(selected) ? ` · ${friendlyError(selected)}` : ''}</span>{#if selectedPath}<button class="path-link" title={locale === 'ru' ? 'Показать файл' : 'Show file'} onclick={() => void reveal(selectedPath)}>{selectedPath}</button>{/if}</p></div>{#if selected.status !== 'completed' && selected.total_chunks}<progress class="transcribe-progress" max={selected.total_chunks} value={selected.completed_chunks}></progress>{:else if audioSrc}<div class="player-row">{#key audioSrc}<audio bind:this={audio} src={browserMode ? audioSrc : convertFileSrc(audioSrc)} ontimeupdate={() => playhead = audio?.currentTime ?? 0} onplay={() => audioPaused = false} onpause={() => audioPaused = true} onerror={audioFailed} controls></audio>{/key}{#if mixing}<span class="mix-hint">{locale === 'ru' ? 'Готовим общий звук…' : 'Preparing mixed audio…'}</span>{/if}</div>{/if}</div>
 			<section class="transcript">
+				{#if browserMode}<button onclick={() => void resumeRemoteUpload(selected.id)}>{locale === 'ru' ? 'Повторить отправку из архива' : 'Resume archive upload'}</button>{/if}
+				{#if browserMode && mixedSrc}<a class="ghost" href={mixedSrc} download={browserDownloadName}>Скачать аудио</a>{/if}
 				{#each segments as segment (segment.id)}
 					<div class="segment" class:playing={playhead >= segment.start_seconds && playhead < segment.end_seconds}><button class="seg-play" title={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} aria-label={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} onclick={() => togglePlay(segment)}>{#if !audioPaused && playhead >= segment.start_seconds && playhead < segment.end_seconds}<span class="pause-bars" aria-hidden="true"><i></i><i></i></span>{:else}<span class="play-triangle" aria-hidden="true">▶</span>{/if}</button><time>{time(segment.start_seconds)}</time><div class="seg-body">{#if segment.source_track !== 'file'}<b>{segment.speaker_id ?? (segment.source_track === 'microphone' ? (locale === 'ru' ? 'Я' : 'Me') : (locale === 'ru' ? 'Система' : 'System'))}</b>{/if}{#if editingId === segment.id}<textarea bind:value={editText} rows={3} onkeydown={(event) => editKeys(event, segment)}></textarea><div class="edit-actions"><button class="primary" onclick={() => void saveEdit(segment)}>{locale === 'ru' ? 'Сохранить' : 'Save'}</button><button class="ghost" onclick={() => editingId = null}>{t.cancel}</button></div>{:else}<button class="seg-text" title={locale === 'ru' ? 'Нажмите, чтобы редактировать' : 'Click to edit'} onclick={() => startEdit(segment)} onkeydown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); startEdit(segment); } }}>{segment.text}</button>{/if}</div></div>
 				{/each}
@@ -479,7 +720,7 @@
 			</section>
 			<footer><div class="export"><button onclick={() => void exportResult()}>{t.export}</button><button onclick={() => void copyTranscript()}>{t.copy}</button></div><div class="danger">{#if !['queued', 'preparing', 'transcribing'].includes(selected.status)}<button onclick={() => requestDelete()}>{t.remove}</button>{/if}</div></footer>
 		{:else}
-			<div class="welcome"><div class="wave">∿</div><h1>{t.waiting}</h1><p>{t.empty}</p><button class="add-large" disabled={!model.installed} onclick={pickFiles}>＋ {t.add}</button></div>
+			<div class="welcome"><div class="wave">∿</div><h1>{t.waiting}</h1><p>{t.empty}</p><button class="add-large" disabled={!model.installed && !browserMode} onclick={pickFiles}>＋ {t.add}</button></div>
 		{/if}
 		{#if captureHealth}<div class="toast" role="status">{captureHealth}</div>{/if}
 		{#if error}<div class="toast" role="alert">{error}</div>{/if}
