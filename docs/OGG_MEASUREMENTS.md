@@ -42,4 +42,6 @@ Release benchmark: clean 186382 bytes / 428 ms; noisy 199135 bytes / 288 ms дл
 
 Release production acknowledgement seam `acknowledgement_does_not_wait_for_slow_archive` проходит: подтверждение Stop не ждёт archive job. Это структурная проверка независимости, не замер реального GUI IPC; GUI latency остаётся not-run. Browser выбирает фактически поддерживаемый Ogg/Opus или WebM fallback, native48 не навязывается неподдерживающему браузеру.
 
+Повторяемость resource evidence: scripts/measure-codec-resources.ps1 теперь записывает SHA-256 фактически запущенного binary, base Git commit и dirty-state. Повторный замер state/runs/codec-resources-current/resources.json: CPU1125ms, elapsed1408.9739ms, peak23920640B, exit0. Binary hash отличает реально измеренный executable от текущего исходника: скрипт сам не пересобирает его и не доказывает совпадение с HEAD.
+
 Ogg доступен как явно выбираемый lossy формат; FLAC default пока сохранён. Для выбора compact default требуется завершить сопоставление качества, release CPU/RSS и Stop latency, а также принять измеренную noisy-разницу. Нельзя объявлять этот документ доказательством выполнения задачи 5.4 целиком.

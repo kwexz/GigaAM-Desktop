@@ -15,6 +15,9 @@ while (-not $process.HasExited) {
 $process.Refresh()
 @{
     binary = $binary.Name
+    binary_sha256 = (Get-FileHash -Algorithm SHA256 $binary.FullName).Hash.ToLowerInvariant()
+    base_commit = (git rev-parse HEAD)
+    working_tree_dirty = [bool](git status --porcelain)
     exit_code = $process.ExitCode
     started_utc = $started.ToString('o')
     elapsed_ms = ([DateTime]::UtcNow - $started).TotalMilliseconds
