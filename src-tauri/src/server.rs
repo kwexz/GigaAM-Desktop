@@ -86,6 +86,7 @@ pub fn router(config: ServerConfig) -> Router {
         .route("/health", get(health))
         .route("/v1/model", get(model_status))
         .route("/v1/transcribe", post(transcribe_audio))
+        .route("/v1/compact", post(compact_audio))
         .route("/v1/sessions/{session_id}/live", get(live_socket))
         .route("/v1/sessions", get(list_sessions))
         .route("/v1/sessions/{session_id}", get(session_status))
@@ -99,6 +100,30 @@ pub fn router(config: ServerConfig) -> Router {
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), auth))
         .with_state(state)
+}
+
+async fn compact_audio(State(state): State<ServerState>, body: Body) -> Response {
+    let permit = match state.jobs.clone().try_acquire_owned() { Ok(permit) => permit, Err(_) => return StatusCode::TOO_MANY_REQUESTS.into_response() };
+    let bytes = match axum::body::to_bytes(body, 64 * 1024 * 1024).await { Ok(bytes) => bytes, Err(_) => return too_large() };
+    let directory = state.config.data_dir.join("exports");
+    if let Err(error) = fs::create_dir_all(&directory).await { return internal(error); }
+    let input = directory.join(format!("{}.wav", crate::new_id()));
+    let output = input.with_extension("ogg");
+    if let Err(error) = fs::write(&input, bytes).await { return internal(error); }
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
+        let _permit = permit;
+        let result = (|| {
+            let samples = crate::pipeline::decode_mono_48k(&input)?;
+            crate::live::encode_mono_48k(&samples, &output, crate::live::ArchiveFormat::Ogg)?;
+            Ok(std::fs::read(&output)?)
+        })();
+        let _ = std::fs::remove_file(input); let _ = std::fs::remove_file(output);
+        result
+    }).await;
+    match result {
+        Ok(Ok(bytes)) => ([(header::CONTENT_TYPE, "audio/ogg"), (header::CONTENT_DISPOSITION, "attachment; filename=recording.ogg")], bytes).into_response(),
+        _ => (StatusCode::BAD_REQUEST, "Could not encode audio").into_response(),
+    }
 }
 
 async fn transcribe_audio(State(state): State<ServerState>, body: Body) -> Response {

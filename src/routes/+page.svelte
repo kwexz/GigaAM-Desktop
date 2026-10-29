@@ -56,6 +56,19 @@
 	let webSession: WebSession | undefined;
 	let browserAudioUrl = '';
 	let browserDownloadName = $state('recording.webm');
+	async function downloadCompactAudio() {
+		try {
+			const source = await fetch(mixedSrc).then((response) => response.blob());
+			if (!browserDownloadName.endsWith('.wav')) {
+				const link = document.createElement('a'); link.href = mixedSrc; link.download = browserDownloadName; link.click(); return;
+			}
+			const response = await fetch('/api/v1/compact', { method: 'POST', body: source });
+			if (!response.ok) throw new Error('Compact export failed');
+			const url = URL.createObjectURL(await response.blob());
+			const link = document.createElement('a'); link.href = url; link.download = 'recording-mixed.ogg'; link.click();
+			setTimeout(() => URL.revokeObjectURL(url), 1000);
+		} catch { error = locale === 'ru' ? 'Компактный экспорт недоступен. Исходные дорожки сохранены.' : 'Compact export unavailable. Original tracks are preserved.'; }
+	}
 	let browserTracks = $state<Array<{ path: string; mime: string; track: string }>>([]);
 	let playbackDuration = $state(0);
 	function updatePlaybackDuration() {
@@ -720,9 +733,9 @@
 
 	<aside>
 		{#if sidebarMode === 'files'}
-			<div class="section-title">{t.timeline}</div>
+			<div class="tree-heading"><div class="section-title">{t.timeline}</div>
 
-			<div class="tree-toolbar"><button onclick={() => { const name = window.prompt(locale === 'ru' ? 'Название папки' : 'Folder name'); if (name?.trim()) { folderName = name; void createFolder(); } }}>＋ {locale === 'ru' ? 'Папка' : 'Folder'}</button></div>
+			<div class="tree-toolbar"><button class="ghost" onclick={() => { const name = window.prompt(locale === 'ru' ? 'Название папки' : 'Folder name'); if (name?.trim()) { folderName = name; void createFolder(); } }}>＋ {locale === 'ru' ? 'Папка' : 'Folder'}</button></div></div>
 			<label class="search"><span>⌕</span><input bind:value={query} oninput={() => void refresh()} placeholder={t.search} /></label>
 			<div class="list" tabindex="0" role="tree" aria-label={locale === 'ru' ? 'Записи и папки' : 'Recordings and folders'} ondragover={(event) => event.preventDefault()} ondrop={(event) => dropOrganization(event, null)}>
 			{#each treeRows.filter((node) => !query.trim() || node.kind === 'folder' || items.some((item) => item.id === node.id)) as node (node.id)}
@@ -734,6 +747,7 @@
 					{@const item = items.find((entry) => entry.id === node.id)}
 					{#if item}<button data-testid="recording-item" class="item tree-recording" class:selected={selectedId === item.id} onclick={() => void selectItem(item.id)} ondblclick={() => beginRename(item, 'list')}><span class="status" data-status={item.status}></span><span class="item-copy">{#if editingNameId === item.id && editingNamePlace === 'list'}<input class="rename-input" data-place="list" bind:value={editingName} onclick={(event) => event.stopPropagation()} onkeydown={(event) => { if (event.key === 'Enter') void commitRename(); if (event.key === 'Escape') editingNameId = ''; }} onblur={() => void commitRename()} />{:else}<strong>{item.source_filename}</strong><small>{duration(item.duration_seconds)}</small>{/if}</span></button>{/if}
 				{/if}
+				{#if node.kind === 'folder'}<button class="tree-delete" aria-label={locale === 'ru' ? 'Удалить папку' : 'Delete folder'} title={locale === 'ru' ? 'Удалить папку, сохранив записи' : 'Delete folder, keep recordings'} onclick={() => { if (window.confirm(locale === 'ru' ? 'Удалить папку? Записи останутся в родительской папке.' : 'Delete folder? Recordings will remain in the parent folder.')) void persistOrganization(deleteFolder(organization, node.id)); }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></svg></button>{/if}
 				</div>
 			{/each}
 			</div>
@@ -756,7 +770,7 @@
 			<section class="transcript">
 				{#if browserMode && browserTracks.length > 1}<label>{locale === 'ru' ? 'Аудиодорожка' : 'Audio track'}<select onchange={(event) => void chooseBrowserTrack(event.currentTarget.value)}><option value="mix">{locale === 'ru' ? 'Все дорожки вместе' : 'All tracks mixed'}</option>{#each [...browserTracks].sort((a,b) => Number(b.track === 'system') - Number(a.track === 'system')) as track}<option value={track.path}>{track.track === 'system' ? (locale === 'ru' ? 'Система' : 'System') : (locale === 'ru' ? 'Микрофон' : 'Microphone')}</option>{/each}</select></label>{/if}
 				{#if browserMode}<button onclick={() => void resumeRemoteUpload(selected.id)}>{locale === 'ru' ? 'Повторить отправку из архива' : 'Resume archive upload'}</button>{/if}
-				{#if browserMode && mixedSrc}<a class="ghost" href={mixedSrc} download={browserDownloadName}>Скачать аудио</a>{/if}
+				{#if browserMode && mixedSrc}<button class="ghost" onclick={() => void downloadCompactAudio()}>Скачать аудио · Opus</button>{/if}
 				{#if browserMode && audioSrc}<div class="browser-player"><button onclick={() => { if (audio?.paused) void audio.play(); else audio?.pause(); }}>{audioPaused ? '▶' : 'Ⅱ'}</button><input aria-label={locale === 'ru' ? 'Позиция воспроизведения' : 'Playback position'} type="range" min="0" max={playbackDuration || selected.duration_seconds || 1} step="0.01" value={playhead} oninput={(event) => { if (audio) audio.currentTime = Number(event.currentTarget.value); }} /><span>{time(playhead)} / {time(playbackDuration || selected.duration_seconds || 0)}</span></div>{/if}
 				{#each segments as segment (segment.id)}
 					<div class="segment" class:playing={playhead >= segment.start_seconds && playhead < segment.end_seconds}><button class="seg-play" title={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} aria-label={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} onclick={() => togglePlay(segment)}>{#if !audioPaused && playhead >= segment.start_seconds && playhead < segment.end_seconds}<span class="pause-bars" aria-hidden="true"><i></i><i></i></span>{:else}<span class="play-triangle" aria-hidden="true">▶</span>{/if}</button><time>{time(segment.start_seconds)}</time><div class="seg-body">{#if segment.source_track !== 'file'}<b>{segment.speaker_id ?? (segment.source_track === 'microphone' ? (locale === 'ru' ? 'Я' : 'Me') : (locale === 'ru' ? 'Система' : 'System'))}</b>{/if}{#if editingId === segment.id}<textarea bind:value={editText} rows={3} onkeydown={(event) => editKeys(event, segment)}></textarea><div class="edit-actions"><button class="primary" onclick={() => void saveEdit(segment)}>{locale === 'ru' ? 'Сохранить' : 'Save'}</button><button class="ghost" onclick={() => editingId = null}>{t.cancel}</button></div>{:else}<button class="seg-text" title={locale === 'ru' ? 'Нажмите, чтобы редактировать' : 'Click to edit'} onclick={() => startEdit(segment)} onkeydown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); startEdit(segment); } }}>{segment.text}</button>{/if}</div></div>
@@ -774,6 +788,7 @@
 </div>
 
 <style>
+	.tree-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}.tree-heading .tree-toolbar{padding:0}.tree-heading .ghost{font-size:12px;padding:5px 9px}.tree-delete{margin-left:auto;flex:none;display:grid;place-items:center;border:0;background:transparent;color:#a14b43;width:28px;height:28px;opacity:0;cursor:pointer}.tree-row:hover .tree-delete,.tree-row:focus-within .tree-delete,.tree-delete:focus-visible{opacity:1}
 	.tree-row{display:flex;align-items:center;min-height:34px;min-width:0}.tree-label{flex:1;text-align:left;background:transparent;border:0;padding:8px 4px;min-width:0;overflow:hidden;text-overflow:ellipsis}.tree-chevron{border:0;background:transparent;width:24px;padding:4px}.tree-recording{flex:1}.tree-toolbar{display:flex;justify-content:flex-end;padding:6px 10px}.tree-label input{width:100%;min-width:0}
 	.web-banner{height:44px;padding:6px 18px;display:flex;gap:16px;align-items:center;font-size:12px;overflow:hidden;border-bottom:1px solid #d8d9d3;background:#eef4ef}
 	.web-banner + .app-shell{height:calc(100dvh - 44px)}
