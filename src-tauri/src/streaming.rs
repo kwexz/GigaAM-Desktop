@@ -98,13 +98,14 @@ struct OpusBlockSource {
     reader: opus_pure::OggOpusReader<std::io::BufReader<std::fs::File>>,
     decoder: opus_pure::OpusDecoder,
     channels: usize,
-    skip: usize,
+    trim: opus_pure::Trim,
 }
 impl OpusBlockSource {
     fn open(path: &Path) -> Result<Self> {
         let reader = opus_pure::OggOpusReader::new(std::io::BufReader::new(std::fs::File::open(path)?))?;
         let head = reader.head().clone();
-        Ok(Self { decoder: head.decoder(48000)?, channels: head.channel_count as usize, skip: head.pre_skip as usize, reader })
+        let channels = head.channel_count as usize;
+        Ok(Self { decoder: head.decoder(48000)?, channels, trim: opus_pure::Trim::new(&head, 48000, channels)?, reader })
     }
 }
 impl AudioBlockSource for OpusBlockSource {
@@ -116,8 +117,8 @@ impl AudioBlockSource for OpusBlockSource {
             let packet = packet?;
             let mut samples = vec![0.0; opus_pure::MAX_PACKET_SAMPLES * self.channels];
             let frames = self.decoder.decode(&packet.data, opus_pure::MAX_PACKET_SAMPLES, &mut samples)?;
-            let skip = self.skip.min(frames); self.skip -= skip;
-            let mono: Vec<f32> = samples[skip * self.channels..frames * self.channels].chunks(self.channels).map(|frame| frame.iter().sum::<f32>() / self.channels as f32).collect();
+            let trimmed = self.trim.keep(&packet, &samples[..frames * self.channels]);
+            let mono: Vec<f32> = trimmed.chunks(self.channels).map(|frame| frame.iter().sum::<f32>() / self.channels as f32).collect();
             if !mono.is_empty() { return Ok(Some(mono)); }
         }
     }
@@ -455,6 +456,16 @@ impl BlockResampler {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn opus_archive_decoder_trims_padding_to_exact_source_length() {
+        let path = std::env::temp_dir().join(format!("gigaam-opus-decode-{}.ogg", std::process::id()));
+        crate::live::encode_mono_48k(&vec![0.1; 48123], &path, crate::live::ArchiveFormat::Ogg).unwrap();
+        let mut source = super::open_audio_blocks(&path).unwrap();
+        let mut total = 0;
+        while let Some(block) = source.next_block().unwrap() { total += block.len(); }
+        assert_eq!(total, 48123);
+        std::fs::remove_file(path).unwrap();
+    }
     use super::*;
     use std::path::PathBuf;
 
