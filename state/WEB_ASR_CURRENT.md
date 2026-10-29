@@ -8,3 +8,17 @@
 - Browser mix currently explicit bounded in-memory decode/render WAV,64MiB input/1h cap. Original per-track archives untouched. Exact offsets and long-archive streaming playback still require follow-up.
 - Native Windows installer from previous build predates153e2b7; rebuild after final acceptance before presenting it as current.
 - Do not expose host8787 publicly; current all-interface bind is development plumbing for Docker host access, not production deployment. Need loopback/host firewall or fully isolated container deployment before real network use.
+
+## Follow-up reported regressions
+
+- Desktop archive selectors excluded .ogg despite defaultOgg; fixed lib.rs filters and added native Ogg decoder in streaming.rs. Compilation check passes; decoder EOF trimming needs dedicated regression.
+- Browser ASR now converts supported capture containers to16k mono PCM WAV before POST. Actual WebM capture conversion browser test passes; full UI→real backend still needs verification.
+- Tree/mix/ASR conversion targeted browser tests3/3 pass; frontend52unit pass. Current Windows build failed because running desktop/server lock release executables. Started separate CARGO_TARGET_DIR=src-tauri/target-delivery with20min timeout, without stopping user application. Do not present old installer as updated.
+
+Follow-up: native Opus decoder now applies RFC trim including EOS padding, exact48123-sample regression passes (c5a0189). Separate delivery build encountered Windows archive sharing violation and was retried using cached build; pending completion. No old installer claimed current. Browser normalization/tree/mix tests3/3 passed, conversion test committed82d2153.
+
+Latest requested work: compact export endpoint + folder heading/hover-trash added09f661d; Linux unified image definition d2c0720. Initial Bookworm image failed linking prebuilt ONNX Runtime requiring newer glibc/libstdc++; changed both stages to Trixie4f23a8a, rebuild running. No Linux inference acceptance or live-ASR claim yet. Folder heading/hover-delete browser regression running. Current running service remains older Windows-host backend until validated container replacement.
+
+Folder toolbar/hover-delete regression passed, commite781ce0. Container Nginx now forwards WebSocket Upgrade headers; this only enables transport and is not inference. Linux image build completion still pending; do not run another concurrent image build against same output until notification.
+
+Linux Trixie image built successfully (image83117fcc...). Container gigaam-linux-asr running localhost8081 with read-only existing models mount; no host inference dependency. Real Linux `/api/v1/transcribe` on besarab-clean.wav returned2 segments and phrase anchor; `/api/v1/compact` returned valid Opus verified ffprobe. Responses/exports in approved Temp/gigaam-asr, not repository. Health still model_enabled:false (legacy indicator bug), not evidence that file endpoint failed. Existing8080 not replaced yet. Cloud Live remains unimplemented; no file-ASR result reclassified as Live.
