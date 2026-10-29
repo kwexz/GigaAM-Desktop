@@ -224,6 +224,16 @@ test('browser file import does not require native model or Desktop dialog', asyn
 	expect(errors).toEqual([]);
 });
 
+test('disabled theme localStorage does not block browser initialization', async ({ page }) => {
+	await page.addInitScript(() => {
+		Storage.prototype.getItem = () => { throw new DOMException('Storage disabled', 'SecurityError'); };
+		Storage.prototype.setItem = () => { throw new DOMException('Storage disabled', 'SecurityError'); };
+	});
+	await page.goto('/');
+	await expect(page.getByTestId('web-mode-banner')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Открыть', exact: true })).toBeEnabled();
+});
+
 // Synthetic device integration through the actual product route, not capture-harness.
 test('main web application records, reloads and exports local audio without Tauri', async ({ page, context }) => {
 	const pageErrors: string[] = [];
