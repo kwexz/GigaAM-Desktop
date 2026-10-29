@@ -18,6 +18,16 @@ export class BrowserCaptureSource implements CaptureSource {
 	private pending = new Set<Promise<void>>();
 	private pendingBytes = 0;
 	private failure?: Error;
+	private meterContext?: AudioContext;
+	private meters = new Map<string, AnalyserNode>();
+	levels(): { microphone: number; system: number } {
+		const level = (track: string) => {
+			const meter = this.meters.get(track); if (!meter) return 0;
+			const values = new Float32Array(meter.fftSize); meter.getFloatTimeDomainData(values);
+			return Math.sqrt(values.reduce((sum, value) => sum + value * value, 0) / values.length);
+		};
+		return { microphone: level('microphone'), system: level('system') };
+	}
 	private readonly errors = new Set<(error: Error) => void>();
 	onError(listener: (error: Error) => void): () => void { this.errors.add(listener); return () => this.errors.delete(listener); }
 	private report(error: Error): void { this.failure = error; for (const listener of this.errors) listener(error); }
@@ -57,6 +67,10 @@ export class BrowserCaptureSource implements CaptureSource {
 	}
 
 	private startTrack(sessionId: string, trackId: AudioBlockEvent['track_id'], stream: MediaStream): void {
+		this.meterContext ??= new AudioContext();
+		void this.meterContext.resume().catch(() => {});
+		const meter = this.meterContext.createAnalyser(); meter.fftSize = 1024;
+		this.meterContext.createMediaStreamSource(stream).connect(meter); this.meters.set(trackId, meter);
 		const requestedMime = browserRecordingMime((candidate) => MediaRecorder.isTypeSupported(candidate));
 		const recorder = new MediaRecorder(stream, { mimeType: requestedMime });
 		const mime = recorder.mimeType || requestedMime;
@@ -117,6 +131,7 @@ export class BrowserCaptureSource implements CaptureSource {
 		this.streams.forEach((stream) => stream.getTracks().forEach((track) => track.stop()));
 		this.recorders.clear();
 		this.streams = [];
+		this.meters.clear(); await this.meterContext?.close(); this.meterContext = undefined;
 		}
 		if (this.failure) throw this.failure;
 	}

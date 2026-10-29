@@ -96,9 +96,9 @@ describe('GigaAM page', () => {
 	it('creates a folder through the desktop organization contract', async () => {
 		render(Page);
 		await screen.findByText('Записи');
-		const prompt = vi.spyOn(window, 'prompt').mockReturnValue('Folder');
 		await fireEvent.click(screen.getByRole('button', { name: '＋ Папка' }));
-		prompt.mockRestore();
+		await fireEvent.input(screen.getByRole('textbox', { name: 'Название папки' }), { target: { value: 'Folder' } });
+		await fireEvent.click(screen.getByRole('button', { name: /^Создать$/ }));
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('save_organization', {
 			nodes: [expect.objectContaining({ kind: 'folder', name: 'Folder', parent_id: null })], previous: []
 		}));
