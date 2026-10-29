@@ -6,6 +6,9 @@ export class LiveAsr {
 	private queue: Array<{ track: string; samples: Float32Array; start: number; rate: number }> = [];
 	private running?: Promise<void>;
 	private stopped = false;
+	private paused = false;
+	pause(): void { this.paused = true; }
+	resume(): void { this.paused = false; }
 	onResult?: (track: string, start: number, segments: Array<{ start_seconds: number; end_seconds: number; text: string }>) => Promise<void>;
 	onError?: (message: string) => void;
 	attach(track: string, stream: MediaStream, offset: number): void {
@@ -16,7 +19,7 @@ export class LiveAsr {
 		const source = this.context.createMediaStreamSource(stream);
 		const processor = this.context.createScriptProcessor(4096, 1, 1);
 		processor.onaudioprocess = (event) => {
-			if (this.stopped) return;
+			if (this.stopped || this.paused) return;
 			const samples = event.inputBuffer.getChannelData(0).slice();
 			state.samples.push(samples); state.count += samples.length;
 			if (state.count >= this.context!.sampleRate * 8) this.flush(track);

@@ -112,8 +112,8 @@ export class WebSession {
 		}
 	}
 
-	async pause(): Promise<void> { await this.capture.pause(); this.state = { ...this.state, recording: 'paused' }; await putSessionState(this.sessionId, this.state); }
-	async resume(): Promise<void> { await this.capture.resume(); this.state = { ...this.state, recording: 'recording' }; await putSessionState(this.sessionId, this.state); }
+	async pause(): Promise<void> { await this.capture.pause(); this.liveAsr?.pause(); this.state = { ...this.state, recording: 'paused' }; await putSessionState(this.sessionId, this.state); }
+	async resume(): Promise<void> { await this.capture.resume(); this.liveAsr?.resume(); this.state = { ...this.state, recording: 'recording' }; await putSessionState(this.sessionId, this.state); }
 	async stop(): Promise<void> {
 		try {
 		this.state = { ...this.state, recording: 'stopping' };

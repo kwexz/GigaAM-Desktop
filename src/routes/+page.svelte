@@ -572,6 +572,8 @@
 					await putBrowserRecording({ id: webSession.sessionId, name: recordingName(), created_ms: liveStarted, duration_seconds: 0 });
 					await webSession.start(liveSource);
 					recording = true;
+					await refreshBrowser();
+					await selectItem(webSession.sessionId);
 					captureHealth = webSession.capture.status.systemAudioUnavailable ? 'Системное аудио недоступно: запись микрофона' : '';
 				}
 				return;
