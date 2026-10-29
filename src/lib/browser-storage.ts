@@ -253,8 +253,15 @@ async function deleteBrowserRecordingUnlocked(sessionId: string): Promise<void> 
 		const tx = db.transaction([META_STORE, SEGMENT_STORE, CHANGE_STORE], 'readwrite');
 		const meta = tx.objectStore(META_STORE);
 		for (const entry of metadata) if (entry.session_id === sessionId || entry.key === `recording:${sessionId}`) meta.delete(String(entry.key));
-		const organization = metadata.find((entry) => entry.key === 'organization:v1');
-		if (organization) meta.put({ ...organization, nodes: (organization.nodes as OrganizationNode[]).filter((node) => node.id !== sessionId) });
+		const organizationRequest = meta.get('organization:v1');
+		organizationRequest.onsuccess = () => {
+			const organization = organizationRequest.result as { nodes: OrganizationNode[]; revision?: number; key: string } | undefined;
+			if (!organization) return;
+			const nodes = organization.nodes.filter((node) => node.id !== sessionId);
+			const revision = Math.max(organization.revision ?? 0, Date.now()) + 1;
+			meta.put({ ...organization, nodes, revision });
+			tx.objectStore(CHANGE_STORE).put({ change_id: crypto.randomUUID(), session_id: 'organization', kind: 'session_update', revision, payload: { version: 1, nodes } });
+		};
 		for (const name of [SEGMENT_STORE, CHANGE_STORE]) {
 			const cursor = tx.objectStore(name).openCursor();
 			cursor.onsuccess = () => { const row = cursor.result; if (!row) return; if (row.value.session_id === sessionId) row.delete(); row.continue(); };
