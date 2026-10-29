@@ -1,0 +1,9 @@
+**/node_modules
+**/target
+**/target-delivery
+.git
+state
+project-input
+*.wav
+*.ogg
+.env*
