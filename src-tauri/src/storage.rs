@@ -60,19 +60,6 @@ impl Store {
         Ok(store)
     }
 
-    fn migrate(&mut self) -> rusqlite::Result<()> {
-        self.connection.execute_batch(
-            "PRAGMA foreign_keys = ON;
-             CREATE TABLE IF NOT EXISTS transcriptions (
-               id TEXT PRIMARY KEY,
-               kind TEXT NOT NULL CHECK(kind IN ('file','live')),
-               source_filename TEXT NOT NULL,
-               source_path TEXT NOT NULL,
-               source_size_bytes INTEGER NOT NULL CHECK(source_size_bytes >= 0),
-               source_modified_ms INTEGER NOT NULL,
-               created_ms INTEGER NOT NULL,
-               started_ms INTEGER,
-               completed_ms INTEGER,
     pub fn list_folders(&self) -> rusqlite::Result<Vec<(String, Option<String>, String, i64)>> {
         let mut statement = self.connection.prepare("SELECT id,parent_id,name,position FROM recording_folders ORDER BY position,id")?;
         statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?.collect()
@@ -154,7 +141,7 @@ impl Store {
     }
 
 
-               status TEXT NOT NULL CHECK(status IN ('queued','preparing','transcribing','completed','cancelled','failed','interrupted')),
+    fn migrate(&mut self) -> rusqlite::Result<()> {
         self.connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS recording_folders (
                 id TEXT PRIMARY KEY,
@@ -181,6 +168,19 @@ impl Store {
              CREATE TABLE IF NOT EXISTS transcript_segments (
                id TEXT PRIMARY KEY,
                transcription_id TEXT NOT NULL REFERENCES transcriptions(id) ON DELETE CASCADE,
+        self.connection.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE IF NOT EXISTS transcriptions (
+               id TEXT PRIMARY KEY,
+               kind TEXT NOT NULL CHECK(kind IN ('file','live')),
+               source_filename TEXT NOT NULL,
+               source_path TEXT NOT NULL,
+               source_size_bytes INTEGER NOT NULL CHECK(source_size_bytes >= 0),
+               source_modified_ms INTEGER NOT NULL,
+               created_ms INTEGER NOT NULL,
+               started_ms INTEGER,
+               completed_ms INTEGER,
+               status TEXT NOT NULL CHECK(status IN ('queued','preparing','transcribing','completed','cancelled','failed','interrupted')),
                segment_index INTEGER NOT NULL CHECK(segment_index >= 0),
                start_seconds REAL NOT NULL CHECK(start_seconds >= 0),
                end_seconds REAL NOT NULL CHECK(end_seconds > start_seconds),
@@ -783,19 +783,6 @@ fn map_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptSegment> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::domain::TranscriptionKind;
-
-    fn transcription(id: &str, status: TranscriptionStatus) -> Transcription {
-        Transcription {
-            id: id.into(),
-            kind: TranscriptionKind::File,
-            source_filename: "recording.wav".into(),
-            source_path: "C:\\missing\\recording.wav".into(),
-            source_size_bytes: 100,
-            source_modified_ms: 1,
-            created_ms: 2,
-            started_ms: None,
     #[test]
     fn organization_stale_writer_cannot_overwrite_new_folder() {
         let mut store = super::Store::memory().unwrap();
@@ -883,6 +870,19 @@ mod tests {
     }
 
     #[test]
+    use super::*;
+    use crate::domain::TranscriptionKind;
+
+    fn transcription(id: &str, status: TranscriptionStatus) -> Transcription {
+        Transcription {
+            id: id.into(),
+            kind: TranscriptionKind::File,
+            source_filename: "recording.wav".into(),
+            source_path: "C:\\missing\\recording.wav".into(),
+            source_size_bytes: 100,
+            source_modified_ms: 1,
+            created_ms: 2,
+            started_ms: None,
     fn persists_segments_and_searches_without_source_file() {
         let mut store = Store::memory().unwrap();
         store
