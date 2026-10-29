@@ -96,8 +96,9 @@ describe('GigaAM page', () => {
 	it('creates a folder through the desktop organization contract', async () => {
 		render(Page);
 		await screen.findByText('Записи');
-		await fireEvent.input(screen.getByRole('textbox', { name: 'Название папки' }), { target: { value: 'Folder' } });
-		await fireEvent.click(screen.getByRole('button', { name: 'Создать папку' }));
+		const prompt = vi.spyOn(window, 'prompt').mockReturnValue('Folder');
+		await fireEvent.click(screen.getByRole('button', { name: '＋ Папка' }));
+		prompt.mockRestore();
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('save_organization', {
 			nodes: [expect.objectContaining({ kind: 'folder', name: 'Folder', parent_id: null })], previous: []
 		}));
@@ -125,11 +126,11 @@ describe('GigaAM page', () => {
 		expect(invoke).toHaveBeenCalledWith('get_segments', { id: 'tx-1' });
 	});
 
-	it('offers an accessible recording rename action independent of double click', async () => {
+	it('renames a recording by double click in the tree', async () => {
 		mockBackend({ items: [historyItem] });
 		render(Page);
 		await screen.findByText('meeting.wav');
-		await fireEvent.click(screen.getByRole('button', { name: 'Переименовать запись' }));
+		await fireEvent.dblClick(screen.getByTestId('recording-item'));
 		await waitFor(() => expect(document.querySelector('input[data-place="list"]')).not.toBeNull());
 	});
 

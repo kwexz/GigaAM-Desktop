@@ -9,6 +9,8 @@
 	import { listBrowserMetadata, putBrowserRecording, readOpfsArchive, loadBrowserOrganization, updateBrowserOrganization, browserSegments, appendOpfsChunk, putArchiveMeta } from '#lib/browser-storage.ts';
 	import { moveNode, deleteFolder, compareNodes, type OrganizationNode } from '#lib/organization.ts';
 	import { organizationLabels } from '#lib/organization.ts';
+	import { visibleTree } from '#lib/organization-tree.ts';
+	import { mixBrowserAudio } from '#lib/browser-mix.ts';
 	import { savedRecordingFormat, saveRecordingFormat, DEFAULT_RECORDING_FORMAT } from '#lib/recording-format.ts';
 	import { mergeBrowserOrganization } from '#lib/browser-storage.ts';
 	import { renameBrowserRecording, editBrowserSegment } from '#lib/browser-storage.ts';
@@ -58,6 +60,16 @@
 		playbackDuration = Number.isFinite(audio?.duration) ? audio!.duration : selected?.duration_seconds ?? 0;
 	}
 	async function chooseBrowserTrack(path: string) {
+		if (path === 'mix') {
+			try {
+				mixing = true;
+				const blob = await mixBrowserAudio(await Promise.all(browserTracks.map((track) => readOpfsArchive(track.path))));
+				if (browserAudioUrl) URL.revokeObjectURL(browserAudioUrl);
+				browserAudioUrl = URL.createObjectURL(blob); mixedSrc = browserAudioUrl; browserDownloadName = 'recording-mixed.wav';
+			} catch { error = locale === 'ru' ? 'Не удалось смешать дорожки. Отдельные дорожки сохранены.' : 'Could not mix tracks. Separate archives are preserved.'; }
+			finally { mixing = false; }
+			return;
+		}
 		const track = browserTracks.find((entry) => entry.path === path);
 		if (!track) return;
 		const file = await readOpfsArchive(path);
@@ -89,6 +101,14 @@
 		} catch { error = locale === 'ru' ? 'Отправка не завершена. Локальный звук сохранён; повторите позже.' : 'Upload incomplete. Local audio is preserved; retry later.'; }
 	}
 	let organization = $state<OrganizationNode[]>([]);
+	let collapsedFolders = $state(new Set<string>());
+	let treeRows = $derived(visibleTree(organization, collapsedFolders));
+	let editingFolder = $state('');
+	let editingFolderName = $state('');
+	async function finishFolderRename() {
+		const id = editingFolder; const name = editingFolderName.trim(); editingFolder = '';
+		if (id && name) await persistOrganization(organization.map((node) => node.id === id ? { ...node, name } : node));
+	}
 	let currentFolder = $state<string | null>(null);
 	let folderName = $state('');
 	let organizationBusy = false;
@@ -234,6 +254,7 @@
 			}
 			const next = await browserSegments(id);
 			if (selectedId === id) segments = next.map((segment, index) => ({ id: segment.segment_id, index, start_seconds: segment.start_seconds, end_seconds: segment.end_seconds, text: segment.text, source_track: segment.track_id }));
+			if (browserTracks.length > 1 && selectedId === id) await chooseBrowserTrack('mix');
 			return;
 		}
 		void syncLiveAudio(id);
@@ -285,7 +306,21 @@
 		try {
 			error = '';
 			if (browserMode) {
-				if (command !== 'delete_history') throw new Error(locale === 'ru' ? 'Распознавание этой записи ещё не подключено.' : 'Recognition is not connected for this recording yet.');
+				if (command === 'start_transcription' || command === 'retry_transcription') {
+					busy = true;
+					const metadata = await listBrowserMetadata();
+					const archives = metadata.filter((entry) => entry.session_id === id && String(entry.key).startsWith('archive:'));
+					if (!archives.length) throw new Error('Audio archive is missing');
+					for (const archive of archives) {
+						const file = await readOpfsArchive(String(archive.path));
+						const response = await fetch('/api/v1/transcribe', { method: 'POST', body: file });
+						if (!response.ok) throw new Error(`ASR server: ${response.status}`);
+						const recognized = await response.json() as Segment[];
+						for (const [index, segment] of recognized.entries()) await putSegment({ version: 1, session_id: id, segment_id: `${archive.track_id}:${index}`, track_id: archive.track_id as 'microphone' | 'system' | 'file', seq: index, start_seconds: segment.start_seconds, end_seconds: segment.end_seconds, text: segment.text, final: true, revision: Date.now(), idempotency_key: crypto.randomUUID() });
+					}
+					await refresh(); busy = false; return;
+				}
+				if (command !== 'delete_history') throw new Error('Unsupported browser operation');
 				if (recording && webSession?.sessionId === id) throw new Error('Cannot delete active recording');
 				await deleteBrowserRecording(id);
 				selectedId = ''; segments = []; mixedSrc = '';
@@ -300,6 +335,7 @@
 			await refresh();
 		} catch {
 			error = locale === 'ru' ? 'Не удалось выполнить действие.' : 'Could not perform the action.';
+			busy = false;
 		}
 	}
 	function beginRename(item: Item, place: 'list' | 'header') {
@@ -681,34 +717,21 @@
 	<aside>
 		{#if sidebarMode === 'files'}
 			<div class="section-title">{t.timeline}</div>
-			<div class="sidebar-actions">
-				<input aria-label={locale === 'ru' ? 'Название папки' : 'Folder name'} bind:value={folderName} placeholder={locale === 'ru' ? 'Новая папка' : 'New folder'} />
-				<button onclick={() => void createFolder()}>{locale === 'ru' ? 'Создать папку' : 'Create folder'}</button>
-			</div>
-			<button ondragover={(event) => event.preventDefault()} ondrop={(event) => dropOrganization(event, currentFolder === null ? null : organization.find((node) => node.id === currentFolder)?.parent_id ?? null)} onclick={() => currentFolder = organization.find((node) => node.id === currentFolder)?.parent_id ?? null}>{currentFolder ? '← ' + (organization.find((node) => node.id === currentFolder)?.name ?? '') : (locale === 'ru' ? 'Все записи' : 'All recordings')}</button>
-			{#each visibleFolders as folder (folder.id)}
-				<div class="sidebar-actions">
-					<button draggable="true" ondragstart={(event) => event.dataTransfer?.setData('application/x-gigaam-item', folder.id)} ondragover={(event) => event.preventDefault()} ondrop={(event) => dropOrganization(event, folder.id)} onclick={() => currentFolder = folder.id}>📁 {folder.name}</button>
-					<button aria-label={organizationLabels[locale].rename} onclick={() => { const name = window.prompt(locale === 'ru' ? 'Название папки' : 'Folder name', folder.name); if (name?.trim()) void persistOrganization(organization.map((node) => node.id === folder.id ? { ...node, name: name.trim() } : node)); }}>✎</button>
-					<button aria-label={organizationLabels[locale].delete} onclick={() => { if (window.confirm(locale === 'ru' ? 'Удалить папку? Записи будут сохранены.' : 'Delete folder? Recordings will be kept.')) void persistOrganization(deleteFolder(organization, folder.id)); }}>×</button>
-					<button aria-label={organizationLabels[locale].folderUp} onclick={() => void moveOrganization(folder.id, currentFolder, Math.max(0, folder.position - 1))}>↑</button>
-					<select aria-label={organizationLabels[locale].folderMove} value={folder.parent_id ?? ''} onchange={(event) => void moveOrganization(folder.id, event.currentTarget.value || null)}><option value="">/</option>{#each organization.filter((node) => node.kind === 'folder' && node.id !== folder.id) as parent}<option value={parent.id}>{parent.name}</option>{/each}</select>
+
+			<div class="tree-toolbar"><button onclick={() => { const name = window.prompt(locale === 'ru' ? 'Название папки' : 'Folder name'); if (name?.trim()) { folderName = name; void createFolder(); } }}>＋ {locale === 'ru' ? 'Папка' : 'Folder'}</button></div>
+			<label class="search"><span>⌕</span><input bind:value={query} oninput={() => void refresh()} placeholder={t.search} /></label>
+			<div class="list" tabindex="0" role="tree" aria-label={locale === 'ru' ? 'Записи и папки' : 'Recordings and folders'} ondragover={(event) => event.preventDefault()} ondrop={(event) => dropOrganization(event, null)}>
+			{#each treeRows.filter((node) => !query.trim() || node.kind === 'folder' || items.some((item) => item.id === node.id)) as node (node.id)}
+				<div tabindex="-1" role="treeitem" aria-selected={node.kind === 'folder' ? currentFolder === node.id : selectedId === node.id} aria-expanded={node.kind === 'folder' ? !collapsedFolders.has(node.id) : undefined} aria-level={node.depth + 1} class="tree-row" style:padding-left={(node.depth * 18 + 6) + "px"} draggable="true" ondragstart={(event) => event.dataTransfer?.setData('application/x-gigaam-item', node.id)} ondragover={(event) => event.preventDefault()} ondrop={(event) => { event.preventDefault(); event.stopPropagation(); const id = event.dataTransfer?.getData('application/x-gigaam-item'); if (id) void moveOrganization(id, node.kind === 'folder' ? node.id : node.parent_id, node.kind === 'folder' ? organization.length : node.position); }}>
+				{#if node.kind === 'folder'}
+					<button class="tree-chevron" aria-label={collapsedFolders.has(node.id) ? 'Expand folder' : 'Collapse folder'} onclick={() => { const next = new Set(collapsedFolders); if (next.has(node.id)) next.delete(node.id); else next.add(node.id); collapsedFolders = next; }}>{collapsedFolders.has(node.id) ? '▸' : '▾'}</button>
+					<button class="tree-label" onclick={() => currentFolder = node.id} ondblclick={() => { editingFolder = node.id; editingFolderName = node.name; }}>{#if editingFolder === node.id}<input aria-label="Folder name" bind:value={editingFolderName} onclick={(event) => event.stopPropagation()} onkeydown={(event) => { if (event.key === 'Enter') void finishFolderRename(); if (event.key === 'Escape') editingFolder = ''; }} onblur={() => void finishFolderRename()} />{:else}📁 {node.name}{/if}</button>
+				{:else}
+					{@const item = items.find((entry) => entry.id === node.id)}
+					{#if item}<button data-testid="recording-item" class="item tree-recording" class:selected={selectedId === item.id} onclick={() => void selectItem(item.id)} ondblclick={() => beginRename(item, 'list')}><span class="status" data-status={item.status}></span><span class="item-copy">{#if editingNameId === item.id && editingNamePlace === 'list'}<input class="rename-input" data-place="list" bind:value={editingName} onclick={(event) => event.stopPropagation()} onkeydown={(event) => { if (event.key === 'Enter') void commitRename(); if (event.key === 'Escape') editingNameId = ''; }} onblur={() => void commitRename()} />{:else}<strong>{item.source_filename}</strong><small>{duration(item.duration_seconds)}</small>{/if}</span></button>{/if}
+				{/if}
 				</div>
 			{/each}
-			<label class="search"><span>⌕</span><input bind:value={query} oninput={() => void refresh()} placeholder={t.search} /></label>
-			<div class="list">
-				{#each visibleItems as item (item.id)}
-					<button draggable="true" ondragstart={(event) => event.dataTransfer?.setData('application/x-gigaam-item', item.id)} ondragover={(event) => event.preventDefault()} ondrop={(event) => { event.preventDefault(); const id = event.dataTransfer?.getData('application/x-gigaam-item'); if (id) void moveOrganization(id, currentFolder, organization.find((node) => node.id === item.id)?.position ?? 0); }} data-testid="recording-item" class="item" class:selected={selectedId === item.id} onclick={() => void selectItem(item.id)} ondblclick={(event) => { event.stopPropagation(); beginRename(item, 'list'); }}>
-						<span class="status" data-status={item.status}></span><span class="item-copy">{#if editingNameId === item.id && editingNamePlace === 'list'}<input class="rename-input" data-place="list" bind:value={editingName} onclick={(event) => event.stopPropagation()} onkeydown={(event) => { if (event.key === 'Enter') void commitRename(); if (event.key === 'Escape') { editingNameId = ''; editingNamePlace = ''; } }} onblur={() => void commitRename()} />{:else}<strong>{item.source_filename}</strong>{/if}<small>{item.duration_seconds != null ? `${duration(item.duration_seconds)} · ` : ''}{new Date(item.created_ms).toLocaleString(locale)}</small></span><em>{statuses[locale][item.status]}</em>
-					</button>
-					<div class="sidebar-actions">
-						<button aria-label={locale === 'ru' ? 'Переименовать запись' : 'Rename recording'} onclick={() => beginRename(item, 'list')}>✎</button>
-						<button aria-label={organizationLabels[locale].recordingUp} onclick={() => void moveOrganization(item.id, currentFolder, Math.max(0, (organization.find((node) => node.id === item.id)?.position ?? 0) - 1))}>↑</button>
-						<button aria-label={organizationLabels[locale].recordingDown} onclick={() => void moveOrganization(item.id, currentFolder, (organization.find((node) => node.id === item.id)?.position ?? 0) + 1)}>↓</button>
-						<select aria-label={organizationLabels[locale].recordingMove} value={organization.find((node) => node.id === item.id)?.parent_id ?? ''} onchange={(event) => void moveOrganization(item.id, event.currentTarget.value || null)}><option value="">/</option>{#each organization.filter((node) => node.kind === 'folder') as parent}<option value={parent.id}>{parent.name}</option>{/each}</select>
-					</div>
-				{/each}
-				{#if !items.length}<div class="empty-list">{t.empty}</div>{/if}
 			</div>
 			<div class="sidebar-actions"><button class="add" disabled={!model.installed && !browserMode} onclick={pickFiles}>Открыть</button><button class="record-toggle" onclick={openRecordPanel}>Записать</button></div>
 		{:else}
@@ -727,7 +750,7 @@
 		{#if selected}
 			<div class="document-head"><div class="document-title">{#if editingNameId === selected.id && editingNamePlace === 'header'}<input class="title-rename rename-input" data-place="header" bind:value={editingName} onkeydown={(event) => { if (event.key === 'Enter') void commitRename(); if (event.key === 'Escape') { editingNameId = ''; editingNamePlace = ''; } }} onblur={() => void commitRename()} />{:else}<h1><button class="title-button" onclick={() => beginRename(selected, 'header')} title={locale === 'ru' ? 'Переименовать' : 'Rename'}>{selected.source_filename}</button></h1>{/if}</div><div class="tools">{#if ['queued', 'failed', 'cancelled', 'interrupted', 'completed'].includes(selected.status)}<button class="primary" onclick={() => void action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', selected.id)}>{t.start}</button>{/if}{#if ['preparing', 'transcribing'].includes(selected.status)}<button class="primary" onclick={() => void action('cancel_transcription', selected.id)}>{locale === 'ru' ? 'Остановить' : 'Stop'}</button>{/if}</div><div class="document-meta"><p><span>{selected.status === 'completed' ? duration(selected.duration_seconds) : `${statuses[locale][selected.status]}${selected.total_chunks ? ` · ${selected.completed_chunks} / ${selected.total_chunks}` : ''}`}{friendlyError(selected) ? ` · ${friendlyError(selected)}` : ''}</span>{#if selectedPath}<button class="path-link" title={locale === 'ru' ? 'Показать файл' : 'Show file'} onclick={() => void reveal(selectedPath)}>{selectedPath}</button>{/if}</p></div>{#if selected.status !== 'completed' && selected.total_chunks}<progress class="transcribe-progress" max={selected.total_chunks} value={selected.completed_chunks}></progress>{:else if audioSrc}<div class="player-row">{#key audioSrc}<audio bind:this={audio} src={browserMode ? audioSrc : convertFileSrc(audioSrc)} ontimeupdate={() => playhead = audio?.currentTime ?? 0} onloadedmetadata={updatePlaybackDuration} ondurationchange={updatePlaybackDuration} onplay={() => audioPaused = false} onpause={() => audioPaused = true} onerror={audioFailed} controls></audio>{/key}{#if mixing}<span class="mix-hint">{locale === 'ru' ? 'Готовим общий звук…' : 'Preparing mixed audio…'}</span>{/if}</div>{/if}</div>
 			<section class="transcript">
-				{#if browserMode && browserTracks.length > 1}<label>{locale === 'ru' ? 'Аудиодорожка' : 'Audio track'}<select onchange={(event) => void chooseBrowserTrack(event.currentTarget.value)}>{#each [...browserTracks].sort((a,b) => Number(b.track === 'system') - Number(a.track === 'system')) as track}<option value={track.path}>{track.track === 'system' ? (locale === 'ru' ? 'Система' : 'System') : (locale === 'ru' ? 'Микрофон' : 'Microphone')}</option>{/each}</select></label>{/if}
+				{#if browserMode && browserTracks.length > 1}<label>{locale === 'ru' ? 'Аудиодорожка' : 'Audio track'}<select onchange={(event) => void chooseBrowserTrack(event.currentTarget.value)}><option value="mix">{locale === 'ru' ? 'Все дорожки вместе' : 'All tracks mixed'}</option>{#each [...browserTracks].sort((a,b) => Number(b.track === 'system') - Number(a.track === 'system')) as track}<option value={track.path}>{track.track === 'system' ? (locale === 'ru' ? 'Система' : 'System') : (locale === 'ru' ? 'Микрофон' : 'Microphone')}</option>{/each}</select></label>{/if}
 				{#if browserMode}<button onclick={() => void resumeRemoteUpload(selected.id)}>{locale === 'ru' ? 'Повторить отправку из архива' : 'Resume archive upload'}</button>{/if}
 				{#if browserMode && mixedSrc}<a class="ghost" href={mixedSrc} download={browserDownloadName}>Скачать аудио</a>{/if}
 				{#if browserMode && audioSrc}<div class="browser-player"><button onclick={() => { if (audio?.paused) void audio.play(); else audio?.pause(); }}>{audioPaused ? '▶' : 'Ⅱ'}</button><input aria-label={locale === 'ru' ? 'Позиция воспроизведения' : 'Playback position'} type="range" min="0" max={playbackDuration || selected.duration_seconds || 1} step="0.01" value={playhead} oninput={(event) => { if (audio) audio.currentTime = Number(event.currentTarget.value); }} /><span>{time(playhead)} / {time(playbackDuration || selected.duration_seconds || 0)}</span></div>{/if}
@@ -747,6 +770,7 @@
 </div>
 
 <style>
+	.tree-row{display:flex;align-items:center;min-height:34px;min-width:0}.tree-label{flex:1;text-align:left;background:transparent;border:0;padding:8px 4px;min-width:0;overflow:hidden;text-overflow:ellipsis}.tree-chevron{border:0;background:transparent;width:24px;padding:4px}.tree-recording{flex:1}.tree-toolbar{display:flex;justify-content:flex-end;padding:6px 10px}.tree-label input{width:100%;min-width:0}
 	.web-banner{height:44px;padding:6px 18px;display:flex;gap:16px;align-items:center;font-size:12px;overflow:hidden;border-bottom:1px solid #d8d9d3;background:#eef4ef}
 	.web-banner + .app-shell{height:calc(100dvh - 44px)}
 	.browser-player{display:flex;align-items:center;gap:12px;margin-bottom:20px}.browser-player input{flex:1;min-width:0}.browser-player span{font-variant-numeric:tabular-nums;white-space:nowrap}

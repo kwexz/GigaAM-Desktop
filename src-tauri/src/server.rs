@@ -85,6 +85,7 @@ pub fn router(config: ServerConfig) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/v1/model", get(model_status))
+        .route("/v1/transcribe", post(transcribe_audio))
         .route("/v1/sessions/{session_id}/live", get(live_socket))
         .route("/v1/sessions", get(list_sessions))
         .route("/v1/sessions/{session_id}", get(session_status))
@@ -98,6 +99,49 @@ pub fn router(config: ServerConfig) -> Router {
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), auth))
         .with_state(state)
+}
+
+async fn transcribe_audio(State(state): State<ServerState>, body: Body) -> Response {
+    let permit = match state.jobs.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return StatusCode::TOO_MANY_REQUESTS.into_response(),
+    };
+    let models = match std::env::var_os("GIGAAM_SERVER_MODELS") {
+        Some(path) => PathBuf::from(path),
+        None => return (StatusCode::SERVICE_UNAVAILABLE, "ASR models are not configured").into_response(),
+    };
+    let bytes = match axum::body::to_bytes(body, state.config.max_upload_bytes.min(64 * 1024 * 1024) as usize).await {
+        Ok(bytes) => bytes,
+        Err(_) => return too_large(),
+    };
+    let directory = state.config.data_dir.join("inference");
+    if let Err(error) = fs::create_dir_all(&directory).await { return internal(error); }
+    let path = directory.join(format!("{}.audio", crate::new_id()));
+    if let Err(error) = fs::write(&path, bytes).await { return internal(error); }
+    let result = tokio::task::spawn_blocking(move || -> Result<Vec<crate::domain::TranscriptSegment>, String> {
+        use crate::queue::FileProcessor;
+        let _permit = permit;
+        let run = (|| {
+            let mut processor = crate::pipeline::NativeFileProcessor::load(&models).map_err(|e| e.to_string())?;
+            let job = crate::domain::Transcription {
+                id: "remote".into(), kind: crate::domain::TranscriptionKind::File,
+                source_filename: "audio".into(), source_path: path.to_string_lossy().into(),
+                source_size_bytes: 0, source_modified_ms: 0, created_ms: 0,
+                started_ms: None, completed_ms: None, status: crate::domain::TranscriptionStatus::Transcribing,
+                duration_seconds: None, model_version: "v3".into(), error: None,
+                audio_path: None, completed_chunks: 0, total_chunks: None, queue_visible: false,
+            };
+            let mut segments = Vec::new();
+            processor.process(&job, &mut |_| Ok(()), &mut |segment| { segments.push(segment); Ok(()) }, &|| Ok(false))?;
+            Ok(segments)
+        })();
+        let _ = std::fs::remove_file(path);
+        run
+    }).await;
+    match result {
+        Ok(Ok(segments)) => axum::Json(segments).into_response(),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, "Audio recognition failed").into_response(),
+    }
 }
 
 async fn auth(State(state): State<ServerState>, request: Request<Body>, next: Next) -> Response {
