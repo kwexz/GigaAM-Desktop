@@ -128,7 +128,7 @@ export async function loadBrowserOrganization(): Promise<OrganizationNode[]> {
 export async function saveBrowserOrganization(nodes: OrganizationNode[]): Promise<void> {
 	validateOrganization(nodes);
 	const snapshot = JSON.parse(JSON.stringify(nodes)) as OrganizationNode[];
-	await transaction(META_STORE, 'readwrite', (store) => store.put({ key: 'organization:v1', nodes: snapshot }));
+	await updateBrowserOrganization(() => snapshot);
 }
 
 export async function mergeBrowserOrganization(previous: OrganizationNode[], proposed: OrganizationNode[]): Promise<OrganizationNode[]> {
