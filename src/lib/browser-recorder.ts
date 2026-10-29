@@ -24,8 +24,13 @@ export class BrowserCaptureSource implements CaptureSource {
 	status: BrowserCaptureStatus = { microphone: false, system: false, systemAudioUnavailable: false };
 
 	async start(sessionId: string, source: 'microphone' | 'system' | 'system_and_microphone' = 'system_and_microphone'): Promise<void> {
-		await requestPersistentStorage();
 		this.origin = performance.now();
+		// Invoke display capture before any awaited permission/storage request:
+		// browsers require transient user activation for the chooser.
+		const displayRequest = source !== 'microphone'
+			? navigator.mediaDevices.getDisplayMedia({ video: true, audio: true, systemAudio: 'include' } as DisplayMediaStreamOptions).then((stream) => ({ stream }), () => ({ stream: undefined }))
+			: undefined;
+		void requestPersistentStorage().catch(() => false);
 		if (source !== 'system') {
 			const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
 			this.streams.push(mic);
@@ -34,7 +39,8 @@ export class BrowserCaptureSource implements CaptureSource {
 		}
 		if (source === 'microphone') return;
 		try {
-			const display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+			const display = (await displayRequest)?.stream;
+			if (!display) throw new Error('Display capture was not granted');
 			this.streams.push(display);
 			const audio = display.getAudioTracks()[0];
 			if (audio) {
