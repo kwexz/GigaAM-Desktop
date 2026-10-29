@@ -1,4 +1,4 @@
-FROM rust:1.90-bookworm AS backend
+FROM rust:1.90-trixie AS backend
 RUN apt-get update && apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev pkg-config && rm -rf /var/lib/apt/lists/*
 WORKDIR /source
 COPY src-tauri ./src-tauri
@@ -6,7 +6,7 @@ COPY vendor ./vendor
 COPY build ./build
 RUN cargo build --release --locked --manifest-path src-tauri/Cargo.toml --bin gigaam-server
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends nginx libwebkit2gtk-4.1-0 libayatana-appindicator3-1 libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=backend /source/src-tauri/target/release/gigaam-server /usr/local/bin/gigaam-server
 COPY build /usr/share/nginx/html
