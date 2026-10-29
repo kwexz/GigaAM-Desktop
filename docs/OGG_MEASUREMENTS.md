@@ -57,4 +57,6 @@ Release production acknowledgement seam `acknowledgement_does_not_wait_for_slow_
 
 Включены загрузка/resampling fixtures и test harness; это не isolated encoder allocation. Evidence: state/runs/codec-resources-{wav,flac,mp3,ogg}/{resources.json,stdout.txt,stderr.txt}. GUI Stop latency всё ещё не измерена и не выводится из этих чисел.
 
+Дополнительная компонентная проверка Stop: при намеренно незавершённом mock native acknowledgement переключение RU→EN работает. Это доказывает отзывчивость Svelte-компонента в этом сценарии, а не измеряет реальную задержку Tauri IPC/физического захвата. Тест `keeps the UI responsive while stop acknowledgement is pending` проходит в suite51/51. Реальный GUI gate не закрыт.
+
 Ogg доступен как явно выбираемый lossy формат; FLAC default пока сохранён. Для выбора compact default требуется завершить сопоставление качества, release CPU/RSS и Stop latency, а также принять измеренную noisy-разницу. Нельзя объявлять этот документ доказательством выполнения задачи 5.4 целиком.

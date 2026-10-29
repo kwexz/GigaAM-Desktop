@@ -91,17 +91,15 @@ describe('GigaAM page', () => {
 		expect(screen.getByPlaceholderText('Search')).toBeInTheDocument();
 	});
 
-	it('renders history and loads a selected transcript', async () => {
-		mockBackend({ items: [historyItem] });
 	it('creates a folder through the desktop organization contract', async () => {
 		render(Page);
-		await screen.findByText('╨Ч╨░╨┐╨╕╤Б╨╕');
-		await fireEvent.input(screen.getByRole('textbox', { name: '╨Э╨░╨╖╨▓╨░╨╜╨╕╨╡ ╨┐╨░╨┐╨║╨╕' }), { target: { value: 'Folder' } });
-		await fireEvent.click(screen.getByRole('button', { name: '╨б╨╛╨╖╨┤╨░╤В╤М ╨┐╨░╨┐╨║╤Г' }));
+		await screen.findByText('Записи');
+		await fireEvent.input(screen.getByRole('textbox', { name: 'Название папки' }), { target: { value: 'Folder' } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Создать папку' }));
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('save_organization', {
 			nodes: [expect.objectContaining({ kind: 'folder', name: 'Folder', parent_id: null })], previous: []
 		}));
-		expect(await screen.findByRole('button', { name: 'ЁЯУБ Folder' })).toBeInTheDocument();
+		expect(await screen.findByRole('button', { name: '📁 Folder' })).toBeInTheDocument();
 	});
 
 	it('browser shell loads history without invoking Desktop IPC', async () => {
@@ -118,18 +116,18 @@ describe('GigaAM page', () => {
 
 		render(Page);
 
+	it('renders history and loads a selected transcript', async () => {
+		mockBackend({ items: [historyItem] });
 		await fireEvent.click(await screen.findByText('meeting.wav'));
 		expect(await screen.findByText('Проверочный текст')).toBeInTheDocument();
 		expect(invoke).toHaveBeenCalledWith('get_segments', { id: 'tx-1' });
 	});
 
-	it('exports the selected transcript using the extension chosen in the save dialog', async () => {
-		mockBackend({ items: [historyItem] });
 	it('offers an accessible recording rename action independent of double click', async () => {
 		mockBackend({ items: [historyItem] });
 		render(Page);
 		await screen.findByText('meeting.wav');
-		await fireEvent.click(screen.getByRole('button', { name: '╨Я╨╡╤А╨╡╨╕╨╝╨╡╨╜╨╛╨▓╨░╤В╤М ╨╖╨░╨┐╨╕╤Б╤М' }));
+		await fireEvent.click(screen.getByRole('button', { name: 'Переименовать запись' }));
 		await waitFor(() => expect(document.querySelector('input[data-place="list"]')).not.toBeNull());
 	});
 
@@ -137,14 +135,26 @@ describe('GigaAM page', () => {
 		mockBackend({ installed: true });
 		render(Page);
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('model_status'));
-		await fireEvent.click(await screen.findByRole('button', { name: '╨Ч╨░╨┐╨╕╤Б╨░╤В╤М', exact: true }));
-		await fireEvent.change(screen.getByRole('combobox', { name: '╨д╨╛╤А╨╝╨░╤В ╨╖╨░╨┐╨╕╤Б╨╕' }), { target: { value: 'ogg' } });
-		await fireEvent.click(screen.getByRole('button', { name: /тЧП\s*╨Ч╨░╨┐╨╕╤Б╤М/ }));
+		await fireEvent.click(await screen.findByRole('button', { name: /^Записать$/ }));
+		await fireEvent.change(screen.getByRole('combobox', { name: 'Формат записи' }), { target: { value: 'ogg' } });
+		await fireEvent.click(screen.getByRole('button', { name: /●\s*Запись/ }));
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('start_live', expect.objectContaining({ archiveFormat: 'ogg' })));
 	});
 
 		save.mockResolvedValue('C:\\exports\\meeting.srt');
 		render(Page);
+	it('keeps a saved lossless preference instead of replacing it with compact default', async () => {
+		localStorage.setItem('gigaam.archive-format', 'flac');
+		mockBackend({ installed: true });
+		try {
+			render(Page);
+			await fireEvent.click(await screen.findByRole('button', { name: /^Записать$/ }));
+			expect((screen.getByRole('combobox', { name: 'Формат записи' }) as HTMLSelectElement).value).toBe('flac');
+		} finally { localStorage.removeItem('gigaam.archive-format'); }
+	});
+
+	it('exports the selected transcript using the extension chosen in the save dialog', async () => {
+		mockBackend({ items: [historyItem] });
 
 		await fireEvent.click(await screen.findByText('meeting.wav'));
 		await screen.findByText('Проверочный текст');
@@ -177,7 +187,7 @@ describe('GigaAM page', () => {
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('start_live', expect.objectContaining({
 			source: 'system_and_microphone',
 			microphone: 'Test microphone',
-			archiveFormat: 'flac',
+			archiveFormat: 'ogg',
 			micGain: 3
 		})));
 	});
@@ -204,4 +214,7 @@ describe('GigaAM page', () => {
 		expect(stop).toBeDisabled();
 		resolveStop();
 	});
+		// A pending native acknowledgement must not freeze unrelated UI controls.
+		await fireEvent.click(screen.getByRole('button', { name: /^RU$/ }));
+		expect(screen.getByRole('button', { name: 'EN' })).toBeInTheDocument();
 });
