@@ -27,10 +27,10 @@ export class BrowserCaptureSource implements CaptureSource {
 		await requestPersistentStorage();
 		this.origin = performance.now();
 		if (source !== 'system') {
-		const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
-		this.streams.push(mic);
-		this.startTrack(sessionId, 'microphone', mic);
-		this.status.microphone = true;
+			const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+			this.streams.push(mic);
+			this.startTrack(sessionId, 'microphone', mic);
+			this.status.microphone = true;
 		}
 		if (source === 'microphone') return;
 		try {
@@ -100,15 +100,18 @@ export class BrowserCaptureSource implements CaptureSource {
 	async pause(): Promise<void> { for (const recorder of this.recorders.values()) recorder.pause(); }
 	async resume(): Promise<void> { for (const recorder of this.recorders.values()) recorder.resume(); }
 	async stop(): Promise<void> {
+		try {
 		await Promise.all([...this.recorders.values()].map((recorder) => new Promise<void>((resolve) => {
 			if (recorder.state === 'inactive') { resolve(); return; }
 			recorder.addEventListener('stop', () => resolve(), { once: true });
 			recorder.stop();
 		})));
 		await Promise.all([...this.pending]);
+		} finally {
 		this.streams.forEach((stream) => stream.getTracks().forEach((track) => track.stop()));
 		this.recorders.clear();
 		this.streams = [];
+		}
 		if (this.failure) throw this.failure;
 	}
 	onBlock(listener: (event: AudioBlockEvent) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
@@ -155,10 +158,10 @@ export class OpfsArchiveWriter implements ArchiveWriter {
 			if (file.size > 16 * 1024 * 1024) continue;
 			const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
 			const content_hash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-			await putArchiveMeta({ session_id: sessionId, track_id: archive.track_id as AudioBlockEvent['track_id'], path: String(archive.path), mime_type: String(archive.mime_type), bytes: file.size, block_count: Number(archive.block_count), created_ms: Number(archive.created_ms), content_hash });
+			await putArchiveMeta({ session_id: sessionId, track_id: archive.track_id as AudioBlockEvent['track_id'], path: String(archive.path), mime_type: String(archive.mime_type), bytes: file.size, block_count: Number(archive.block_count), created_ms: Number(archive.created_ms), content_hash, duration_samples: Number(archive.duration_samples ?? 0) });
 			hashes.push(content_hash);
 		}
-		return { content_hash: hashes.length === 1 ? hashes[0] : '', duration_samples: 0 };
+		return { content_hash: hashes.length === 1 ? hashes[0] : '', duration_samples: Math.max(0, ...archives.map((archive) => Number(archive.duration_samples ?? 0))) };
 	}
 	async abort(_sessionId: string): Promise<void> {}
 }
