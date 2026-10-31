@@ -61,6 +61,10 @@ pub fn start_worker(root: std::path::PathBuf) {
     });
 }
 
+pub fn resume(root:&std::path::Path)->Result<(),String>{
+    Outbox::open(&root.join("drive-outbox.sqlite")).and_then(|queue|queue.resume_after_auth()).map_err(|_|"Could not resume Drive queue".into())
+}
+
 pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,source:&std::path::Path)->Result<(),String>{
     use sha2::{Digest,Sha256};
     let identity=format!("{:x}",Sha256::digest(key.as_bytes()));
@@ -73,7 +77,7 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
         std::fs::rename(staged,&path).map_err(|_|"Could not publish backup payload")?;
     }
     let payload=UploadPayload{folder:folder.into(),key:key.into(),name:name.into(),path};
-    Outbox::open(&root.join("drive-outbox.sqlite")).and_then(|queue|queue.enqueue(key,&serde_json::to_string(&payload).unwrap())).map_err(|_|"Could not persist upload queue")
+    Outbox::open(&root.join("drive-outbox.sqlite")).and_then(|queue|queue.enqueue(key,&serde_json::to_string(&payload).unwrap())).map_err(|_|"Could not persist upload queue".into())
 }
 
 #[cfg(test)]mod tests{
@@ -86,5 +90,15 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
     #[test]fn revoked_access_pauses_until_reconnect(){
         let path=std::env::temp_dir().join(format!("gigaam-outbox-{}.sqlite",crate::new_id()));
         let mut queue=super::Outbox::open(&path).unwrap();queue.enqueue("a","{}").unwrap();queue.run_one(0,|_|Err(true)).unwrap();assert!(!queue.run_one(99999,|_|panic!()).unwrap());queue.resume_after_auth().unwrap();assert!(queue.run_one(99999,|_|Ok(())).unwrap());drop(queue);let _=std::fs::remove_file(path);
+    }
+    #[test]fn immutable_payload_survives_source_changes(){
+        let root=std::env::temp_dir().join(format!("gigaam-payload-{}",crate::new_id()));std::fs::create_dir_all(&root).unwrap();
+        let source=root.join("source");std::fs::write(&source,b"original").unwrap();
+        super::enqueue_immutable(&root,"folder","snapshot:1","audio.ogg",&source).unwrap();
+        std::fs::write(&source,b"changed").unwrap();
+        super::enqueue_immutable(&root,"folder","snapshot:1","audio.ogg",&source).unwrap();
+        let mut queue=super::Outbox::open(&root.join("drive-outbox.sqlite")).unwrap();
+        queue.run_one(0,|job|{let payload:super::UploadPayload=serde_json::from_str(&job.payload).unwrap();assert_eq!(std::fs::read(payload.path).unwrap(),b"original");Ok(())}).unwrap();
+        drop(queue);std::fs::remove_dir_all(root).unwrap();
     }
 }

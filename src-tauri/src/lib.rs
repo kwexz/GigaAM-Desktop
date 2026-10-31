@@ -40,10 +40,11 @@ static ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[tauri::command]
 async fn google_drive_connect(app: tauri::AppHandle) -> Result<(),String> {
-    tauri::async_runtime::spawn_blocking(move || google_drive::connect(|url| {
+    let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;
+    tauri::async_runtime::spawn_blocking(move || { google_drive::connect(|url| {
         use tauri_plugin_opener::OpenerExt;
         app.opener().open_url(url, None::<String>).map_err(|_| "Could not open system browser".into())
-    })).await.map_err(|_| "Google connection task failed")?
+    })?; drive_outbox::resume(&root) }).await.map_err(|_| "Google connection task failed")?
 }
 #[tauri::command]
 async fn google_drive_disconnect() -> Result<(),String> {
