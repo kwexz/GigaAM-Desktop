@@ -60,6 +60,7 @@
 		try {
 			await invoke(googleConnected ? 'google_drive_disconnect' : 'google_drive_connect');
 			googleConnected = await invoke<boolean>('google_drive_connected');
+			if (googleConnected) await invoke('google_drive_prepare_folder');
 			notify(googleConnected ? (locale === 'ru' ? 'Google Drive: доступ сохранён. Синхронизация ещё не подключена.' : 'Google Drive credentials saved. Sync is not connected yet.') : (locale === 'ru' ? 'Google Drive отключён' : 'Google Drive disconnected'));
 		} catch (cause) { error = String(cause); }
 		finally { googleBusy = false; }

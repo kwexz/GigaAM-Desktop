@@ -12,6 +12,34 @@ fn credential() -> Result<keyring::Entry,String> { keyring::Entry::new("GigaAM D
 
 pub fn connected() -> bool { credential().and_then(|entry| entry.get_password().map_err(|_| "No credential".into())).is_ok() }
 
+fn access_token(client: &reqwest::blocking::Client) -> Result<String,String> {
+    let refresh = credential()?.get_password().map_err(|_| "Connect Google Drive first")?;
+    let response = client.post("https://oauth2.googleapis.com/token").form(&[("client_id",CLIENT_ID),("grant_type","refresh_token"),("refresh_token",refresh.as_str())]).send().map_err(|_| "Google token refresh unavailable")?;
+    if !response.status().is_success() { return Err("Google access expired or was revoked. Reconnect Drive.".into()); }
+    #[derive(Deserialize)] struct Access { access_token: String }
+    let access: Access = serde_json::from_str(&response.text().map_err(|_| "Token response unavailable")?).map_err(|_| "Invalid token response")?;
+    Ok(access.access_token)
+}
+
+/// Creates only an application-owned folder; never requests broad Drive access.
+pub fn ensure_folder() -> Result<String,String> {
+    let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(30)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "HTTP setup failed")?;
+    let token = access_token(&client)?;
+    let mut endpoint = url::Url::parse("https://www.googleapis.com/drive/v3/files").unwrap();
+    endpoint.query_pairs_mut().extend_pairs([("q","trashed = false and mimeType = 'application/vnd.google-apps.folder' and appProperties has { key='gigaam' and value='root-v1' }"),("fields","files(id)"),("pageSize","1")]);
+    let response = client.get(endpoint)
+        .bearer_auth(&token)
+        .send().map_err(|_| "Google Drive unavailable")?;
+    if !response.status().is_success() { return Err("Could not discover application folder".into()); }
+    let result: serde_json::Value = serde_json::from_str(&response.text().map_err(|_| "Drive response unavailable")?).map_err(|_| "Invalid Drive response")?;
+    if let Some(id) = result["files"][0]["id"].as_str() { return Ok(id.to_owned()); }
+    let body = serde_json::json!({"name":"GigaAM Desktop","mimeType":"application/vnd.google-apps.folder","appProperties":{"gigaam":"root-v1"}});
+    let response = client.post("https://www.googleapis.com/drive/v3/files").bearer_auth(&token).header("Content-Type","application/json").body(body.to_string()).send().map_err(|_| "Could not create Drive folder")?;
+    if !response.status().is_success() { return Err("Google rejected application folder creation".into()); }
+    let result: serde_json::Value = serde_json::from_str(&response.text().map_err(|_| "Drive response unavailable")?).map_err(|_| "Invalid Drive response")?;
+    result["id"].as_str().map(str::to_owned).ok_or("Drive folder ID missing".into())
+}
+
 pub fn connect(open: impl FnOnce(String) -> Result<(),String>) -> Result<(),String> {
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|_| "Could not open local callback")?;
     listener.set_nonblocking(true).map_err(|_| "Callback setup failed")?;

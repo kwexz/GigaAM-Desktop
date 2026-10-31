@@ -51,6 +51,11 @@ async fn google_drive_disconnect() -> Result<(),String> {
 #[tauri::command]
 fn google_drive_connected() -> bool { google_drive::connected() }
 
+#[tauri::command]
+async fn google_drive_prepare_folder() -> Result<String,String> {
+    tauri::async_runtime::spawn_blocking(google_drive::ensure_folder).await.map_err(|_| "Google folder task failed")?
+}
+
 struct WorkerHandle(Sender<()>);
 
 struct LiveState {
@@ -1338,6 +1343,7 @@ pub fn run() {
             google_drive_connect,
             google_drive_disconnect,
             google_drive_connected,
+            google_drive_prepare_folder,
             load_organization,
             save_organization,
             enqueue_files,
