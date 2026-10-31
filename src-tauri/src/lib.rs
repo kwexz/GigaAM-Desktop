@@ -95,6 +95,7 @@ async fn google_drive_restore(file_id:String, app:tauri::AppHandle, state:tauri:
     let store=state.inner().clone();
     let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;
     tauri::async_runtime::spawn_blocking(move || -> Result<String,String> {
+        if let Some(id)=store.lock().map_err(|_|"Store unavailable")?.restored_snapshot(&file_id).map_err(|_|"Restore lookup failed")? {return Ok(id);}
         // Always restore as a separate stable local copy; never overwrite edits.
         let id=new_id(); let directory=root.join("live").join(&id);
         std::fs::create_dir_all(&directory).map_err(|_|"Restore directory unavailable")?;
@@ -125,9 +126,8 @@ async fn google_drive_restore(file_id:String, app:tauri::AppHandle, state:tauri:
         recording.source_path=paths[0].to_string_lossy().into();recording.audio_path=Some(recording.source_path.clone());
         recording.status=TranscriptionStatus::Completed;recording.queue_visible=false;
         let mut store=store.lock().map_err(|_|"Store unavailable")?;
-        store.enqueue(&recording).map_err(|_|"Could not restore recording metadata")?;
-        for (index,mut segment) in segments.into_iter().enumerate(){segment.transcription_id=id.clone();segment.id=format!("{id}:{index}");store.append_segment(&segment).map_err(|_|"Could not restore transcript")?;}
-        Ok(id)
+        let segments:Vec<_>=segments.into_iter().enumerate().map(|(index,mut segment)|{segment.transcription_id=id.clone();segment.id=format!("{id}:{index}");segment.index=index;segment}).collect();
+        store.restore_snapshot(&file_id,&recording,&segments).map_err(|_|"Could not atomically restore recording".into())
     }).await.map_err(|_|"Drive restore worker failed")?
 }
 

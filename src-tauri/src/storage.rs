@@ -11,6 +11,22 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn restored_snapshot(&self, remote_id:&str)->rusqlite::Result<Option<String>> {
+        self.connection.execute_batch("CREATE TABLE IF NOT EXISTS drive_restores(remote_id TEXT PRIMARY KEY,local_id TEXT NOT NULL REFERENCES transcriptions(id) ON DELETE CASCADE)")?;
+        self.connection.query_row("SELECT local_id FROM drive_restores WHERE remote_id=?1",[remote_id],|row|row.get(0)).optional()
+    }
+    pub fn restore_snapshot(&mut self,remote_id:&str,record:&Transcription,segments:&[TranscriptSegment])->rusqlite::Result<String>{
+        if let Some(id)=self.restored_snapshot(remote_id)?{return Ok(id);}
+        let tx=self.connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some(id)=tx.query_row("SELECT local_id FROM drive_restores WHERE remote_id=?1",[remote_id],|row|row.get::<_,String>(0)).optional()?{return Ok(id);}
+        insert_transcription(&tx,record)?;
+        for segment in segments {
+            if segment.transcription_id!=record.id || !segment.start_seconds.is_finite() || !segment.end_seconds.is_finite() || segment.start_seconds<0.0 || segment.end_seconds<segment.start_seconds{return Err(rusqlite::Error::InvalidQuery);}
+            tx.execute("INSERT INTO transcript_segments(id,transcription_id,segment_index,start_seconds,end_seconds,text,source_track,speaker_id,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![segment.id,segment.transcription_id,segment.index,segment.start_seconds,segment.end_seconds,segment.text,source_track_value(segment.source_track),segment.speaker_id,segment_state_value(segment.state)])?;
+        }
+        tx.execute("INSERT INTO drive_restores(remote_id,local_id) VALUES(?1,?2)",params![remote_id,record.id])?;
+        tx.commit()?;Ok(record.id.clone())
+    }
     pub fn clear_transcript(&mut self, id: &str) -> rusqlite::Result<()> {
         self.connection.execute("DELETE FROM transcript_segments WHERE transcription_id=?1", [id])?;
         Ok(())
@@ -796,6 +812,15 @@ fn map_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptSegment> {
 
 #[cfg(test)]
 mod tests {
+    #[test]fn drive_restore_is_atomic_and_idempotent(){
+        let mut store=super::Store::memory().unwrap();let record=transcription("restored",TranscriptionStatus::Completed);
+        let segment=TranscriptSegment::new("restored",0,0.0,1.0,"text".into(),SourceTrack::File,SegmentState::Final).unwrap();
+        let mut invalid=segment.clone();invalid.transcription_id="wrong".into();
+        assert!(store.restore_snapshot("remote",&record,&[invalid]).is_err());assert!(store.get("restored").unwrap().is_none());
+        assert_eq!(store.restore_snapshot("remote",&record,&[segment.clone()]).unwrap(),"restored");
+        let another=transcription("duplicate",TranscriptionStatus::Completed);
+        assert_eq!(store.restore_snapshot("remote",&another,&[]).unwrap(),"restored");assert!(store.get("duplicate").unwrap().is_none());assert_eq!(store.segments("restored").unwrap(),vec![segment]);
+    }
     #[test]
     fn clearing_transcript_keeps_recording_and_audio() {
         let mut store = super::Store::memory().unwrap();
