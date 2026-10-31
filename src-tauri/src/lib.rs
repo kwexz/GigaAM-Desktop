@@ -56,6 +56,45 @@ async fn google_drive_prepare_folder() -> Result<String,String> {
     tauri::async_runtime::spawn_blocking(google_drive::ensure_folder).await.map_err(|_| "Google folder task failed")?
 }
 
+#[tauri::command]
+async fn google_drive_upload(id: String, app: tauri::AppHandle, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(),String> {
+    if id.is_empty() || id.contains(['/', '\\']) || id.contains("..") { return Err("Invalid recording ID".into()); }
+    let (record, segments) = {
+        let store = lock_store(&state)?;
+        (store.get(&id).map_err(|e|e.to_string())?.ok_or("Recording not found")?, store.segments(&id).map_err(|e|e.to_string())?)
+    };
+    if matches!(record.status, TranscriptionStatus::Transcribing | TranscriptionStatus::Preparing) { return Err("Wait until recording/recognition completes".into()); }
+    let root = app.path().app_data_dir().map_err(|_|"App data unavailable")?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<(),String> {
+        let directory = root.join("drive-outbox").join(&id);
+        std::fs::create_dir_all(&directory).map_err(|_|"Could not create backup job")?;
+        let job = directory.join("job.json");
+        std::fs::write(&job, serde_json::json!({"recording_id":id,"state":"pending"}).to_string()).map_err(|_|"Could not persist backup job")?;
+        let result = (|| {
+            let folder = google_drive::ensure_folder()?;
+            let mut paths = Vec::new();
+            let live = root.join("live").join(&id);
+            if let Ok(entries) = std::fs::read_dir(live) { for entry in entries.flatten() { let path=entry.path(); if matches!(path.extension().and_then(|x|x.to_str()),Some("ogg"|"flac"|"wav"|"mp3")) && !path.file_stem().is_some_and(|s|s=="mixed") { paths.push(path); } } }
+            if paths.is_empty() { let path=record.audio_path.as_ref().unwrap_or(&record.source_path); if std::path::Path::new(path).is_file() {paths.push(PathBuf::from(path));} }
+            if paths.is_empty() { return Err("Original audio missing; backup not published".into()); }
+            let revision = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_millis();
+            let mut audio = Vec::new();
+            for (index,path) in paths.iter().enumerate() {
+                let name=format!("{id}-{revision}-{index}.{}",path.extension().and_then(|e|e.to_str()).unwrap_or("audio"));
+                let remote_id=google_drive::upload_snapshot(&folder,&format!("{id}:{revision}:{index}"),&name,path)?;
+                audio.push(serde_json::json!({"file_id":remote_id,"original_filename":path.file_name().and_then(|s|s.to_str())}));
+            }
+            let manifest = directory.join("manifest.json");
+            std::fs::write(&manifest,serde_json::json!({"version":1,"recording":record,"segments":segments,"audio":audio}).to_string()).map_err(|_|"Could not persist manifest")?;
+            google_drive::upload_snapshot(&folder,&format!("{id}:{revision}:manifest"),&format!("{id}-{revision}.json"),&manifest)?;
+            Ok(())
+        })();
+        let status=if result.is_ok(){"synced"}else{"failed"};
+        std::fs::write(&job,serde_json::json!({"recording_id":id,"state":status}).to_string()).map_err(|_|"Could not persist sync status")?;
+        result
+    }).await.map_err(|_|"Drive backup worker failed")?
+}
+
 struct WorkerHandle(Sender<()>);
 
 struct LiveState {
@@ -1344,6 +1383,7 @@ pub fn run() {
             google_drive_disconnect,
             google_drive_connected,
             google_drive_prepare_folder,
+            google_drive_upload,
             load_organization,
             save_organization,
             enqueue_files,

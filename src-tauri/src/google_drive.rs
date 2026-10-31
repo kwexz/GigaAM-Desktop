@@ -62,6 +62,36 @@ pub fn ensure_folder() -> Result<String,String> {
     result["id"].as_str().map(str::to_owned).ok_or("Drive folder ID missing".into())
 }
 
+/// Resumable streaming upload with content verification. Existing snapshots are
+/// immutable: a failed attempt cannot overwrite a previously valid backup.
+pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Path) -> Result<String,String> {
+    let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(600)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "HTTP setup failed")?;
+    let token = access_token(&client)?;
+    let size = std::fs::metadata(path).map_err(|_| "Backup source unavailable")?.len();
+    let metadata = serde_json::json!({"name":name,"parents":[folder],"appProperties":{"gigaamSnapshot":key}});
+    let response = client.post("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,size")
+        .bearer_auth(&token).header("Content-Type","application/json").header("X-Upload-Content-Length",size).body(metadata.to_string()).send().map_err(|_| "Drive upload initialization failed")?;
+    if !response.status().is_success() { return Err("Drive rejected upload initialization".into()); }
+    let location = response.headers().get(reqwest::header::LOCATION).and_then(|value| value.to_str().ok()).ok_or("Drive upload URL missing")?;
+    let location = url::Url::parse(location).map_err(|_| "Invalid upload URL")?;
+    if location.scheme() != "https" || location.host_str() != Some("www.googleapis.com") { return Err("Untrusted Drive upload URL".into()); }
+    let file = std::fs::File::open(path).map_err(|_| "Backup source unavailable")?;
+    let response = client.put(location).bearer_auth(&token).header(reqwest::header::CONTENT_LENGTH,size).body(file).send().map_err(|_| "Drive upload interrupted; local backup retained")?;
+    if !response.status().is_success() { return Err("Drive upload failed; local backup retained".into()); }
+    let result: serde_json::Value = serde_json::from_str(&response.text().map_err(|_| "Upload response unavailable")?).map_err(|_| "Invalid upload response")?;
+    let id = result["id"].as_str().ok_or("Uploaded file ID missing")?.to_owned();
+    // Independent remote readback: count and SHA256 compare without holding audio in RAM.
+    let mut local = std::fs::File::open(path).map_err(|_| "Backup source unavailable")?;
+    let mut expected = Sha256::new(); let mut buffer = [0u8;65536];
+    loop { let n=local.read(&mut buffer).map_err(|_| "Local verification failed")?; if n==0 {break;} expected.update(&buffer[..n]); }
+    let mut response = client.get(format!("https://www.googleapis.com/drive/v3/files/{id}?alt=media")).bearer_auth(&token).send().map_err(|_| "Remote verification unavailable")?;
+    if !response.status().is_success() { return Err("Remote verification failed".into()); }
+    let mut actual=Sha256::new(); let mut received=0u64;
+    loop { let n=response.read(&mut buffer).map_err(|_| "Remote verification interrupted")?; if n==0 {break;} received+=n as u64; if received>size{return Err("Remote file size mismatch".into());} actual.update(&buffer[..n]); }
+    if received!=size || actual.finalize()!=expected.finalize() { return Err("Remote integrity mismatch; local data retained".into()); }
+    Ok(id)
+}
+
 pub fn connect(open: impl FnOnce(String) -> Result<(),String>) -> Result<(),String> {
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|_| "Could not open local callback")?;
     listener.set_nonblocking(true).map_err(|_| "Callback setup failed")?;

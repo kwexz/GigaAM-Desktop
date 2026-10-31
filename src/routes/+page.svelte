@@ -55,6 +55,14 @@
 	let browserMode = $state(false);
 	let googleConnected = $state(false);
 	let googleBusy = $state(false);
+	let googleUploading = $state(false);
+	async function uploadSelectedToDrive() {
+		if (!selected || googleUploading) return;
+		googleUploading = true;
+		try { await invoke('google_drive_upload', { id: selected.id }); notify(locale === 'ru' ? 'Резервная копия сохранена и проверена в Google Drive' : 'Backup uploaded and verified in Google Drive'); }
+		catch (cause) { error = String(cause); }
+		finally { googleUploading = false; }
+	}
 	async function toggleGoogleDrive() {
 		googleBusy = true;
 		try {
@@ -829,7 +837,7 @@
 				{/each}
 				{#if !segments.length}{#if selected.status === 'completed'}<div class="empty-transcript"><p>{locale === 'ru' ? 'В записи не найдена речь: сегментов нет. Если аудио не пустое, нажмите «Повторить» для перезапуска распознавания.' : 'No speech found in this recording. If the audio is not empty, press Retry to re-run recognition.'}</p></div>{:else}<div class="processing"><span></span><p>{statuses[locale][selected.status]}</p></div>{/if}{/if}
 			</section>
-			<footer><div class="export"><div class="tools">{#if ['queued', 'failed', 'cancelled', 'interrupted', 'completed'].includes(selected.status)}<button class="primary" onclick={() => void action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', selected.id)}>{t.start}</button>{/if}{#if ['preparing', 'transcribing'].includes(selected.status)}<button class="primary" onclick={() => void action('cancel_transcription', selected.id)}>{locale === 'ru' ? 'Остановить' : 'Stop'}</button>{/if}</div><button onclick={() => void exportResult()}>{t.export}</button><button onclick={() => void copyTranscript()}>{t.copy}</button></div><div class="danger">{#if !['queued', 'preparing', 'transcribing'].includes(selected.status)}<button disabled={recording || busy || !segments.length} onclick={() => confirmClear = true}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button>{/if}</div></footer>
+			<footer><div class="export">{#if !browserMode && googleConnected}<button disabled={googleUploading || recording || busy} onclick={() => void uploadSelectedToDrive()}>{googleUploading ? (locale === 'ru' ? 'Отправка и проверка…' : 'Uploading and verifying…') : (locale === 'ru' ? 'На Google Drive' : 'Back up to Google Drive')}</button>{/if}<div class="tools">{#if ['queued', 'failed', 'cancelled', 'interrupted', 'completed'].includes(selected.status)}<button class="primary" onclick={() => void action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', selected.id)}>{t.start}</button>{/if}{#if ['preparing', 'transcribing'].includes(selected.status)}<button class="primary" onclick={() => void action('cancel_transcription', selected.id)}>{locale === 'ru' ? 'Остановить' : 'Stop'}</button>{/if}</div><button onclick={() => void exportResult()}>{t.export}</button><button onclick={() => void copyTranscript()}>{t.copy}</button></div><div class="danger">{#if !['queued', 'preparing', 'transcribing'].includes(selected.status)}<button disabled={recording || busy || !segments.length} onclick={() => confirmClear = true}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button>{/if}</div></footer>
 		{:else}
 			<div class="welcome"><div class="wave">∿</div><h1>{t.waiting}</h1><p>{t.empty}</p><button class="add-large" disabled={!model.installed && !browserMode} onclick={pickFiles}>＋ {t.add}</button></div>
 		{/if}
