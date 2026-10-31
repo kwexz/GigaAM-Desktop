@@ -36,6 +36,7 @@ impl Outbox {
         Ok(true)
     }
     pub fn resume_after_auth(&self)->rusqlite::Result<()> {self.db.execute("UPDATE drive_jobs SET state='pending',next_ms=0 WHERE state='auth_required'",[])?;Ok(())}
+    pub fn recover_interrupted(&self)->rusqlite::Result<()> {self.db.execute("UPDATE drive_jobs SET state='pending',next_ms=0 WHERE state='uploading'",[])?;Ok(())}
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -47,8 +48,11 @@ pub struct UploadPayload {
 }
 
 pub fn start_worker(root: std::path::PathBuf) {
+    static STARTED:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+    if STARTED.swap(true,std::sync::atomic::Ordering::AcqRel){return;}
     std::thread::spawn(move || {
         let path=root.join("drive-outbox.sqlite");
+        if let Ok(queue)=Outbox::open(&path){let _=queue.recover_interrupted();}
         loop {
             if crate::google_drive::connected() {
                 if let Ok(mut queue)=Outbox::open(&path) {
@@ -147,6 +151,11 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
         let mut queue=super::Outbox::open(&path).unwrap();queue.enqueue("a","{}").unwrap();
         queue.run_one(0,|_|{let other=super::Outbox::open(&path).unwrap();other.enqueue("b","{}").unwrap();Ok(())}).unwrap();
         assert!(queue.run_one(0,|job|{assert_eq!(job.id,"b");Ok(())}).unwrap());drop(queue);let _=std::fs::remove_file(path);
+    }
+    #[test]fn crashed_upload_claim_is_retried_only_after_expiry(){
+        let path=std::env::temp_dir().join(format!("gigaam-lease-{}.sqlite",crate::new_id()));
+        {let mut queue=super::Outbox::open(&path).unwrap();queue.enqueue("a","original").unwrap();let _=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||queue.run_one(100,|_|panic!("simulated worker crash"))));}
+        let mut queue=super::Outbox::open(&path).unwrap();assert!(!queue.run_one(3599999,|_|panic!("lease not expired")).unwrap());queue.recover_interrupted().unwrap();assert!(queue.run_one(100,|job|{assert_eq!(job.payload,"original");Ok(())}).unwrap());drop(queue);let _=std::fs::remove_file(path);
     }
     #[test]fn immutable_payload_survives_source_changes(){
         let root=std::env::temp_dir().join(format!("gigaam-payload-{}",crate::new_id()));std::fs::create_dir_all(&root).unwrap();
