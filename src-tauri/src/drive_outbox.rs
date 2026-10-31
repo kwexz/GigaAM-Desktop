@@ -6,6 +6,9 @@ pub struct Outbox { db: Connection }
 pub struct Job { pub id: String, pub payload: String, pub attempts: u32 }
 #[derive(serde::Serialize)]
 pub struct QueueStatus { pub pending:u64,pub uploading:u64,pub synced:u64,pub auth_required:u64 }
+fn requires_auth(error:&str)->bool {
+    error.contains("revoked") || error.contains("expired") || error.contains("Connect Google") || error.contains("invalid_client") || error.contains("invalid_grant")
+}
 #[derive(serde::Serialize,serde::Deserialize)]
 pub struct SnapshotPayload { pub revision:String, pub recording_id:String, pub manifest:serde_json::Value, pub audio:Vec<std::path::PathBuf> }
 impl Outbox {
@@ -70,7 +73,7 @@ pub fn start_worker(root: std::path::PathBuf) {
                             let payload:UploadPayload=serde_json::from_str(&job.payload).map_err(|_|true)?;
                             crate::google_drive::upload_snapshot(&payload.folder,&payload.key,&payload.name,&payload.path).map(|_|())
                         };
-                        result.map_err(|error|error.contains("revoked")||error.contains("expired")||error.contains("Connect Google"))
+                        result.map_err(|error|requires_auth(&error))
                     });
                 }
             }
@@ -137,6 +140,10 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
 }
 
 #[cfg(test)]mod tests{
+    #[test]fn distinguishes_auth_failures_from_transient_transport(){
+        for error in ["Google access expired or was revoked. Reconnect Drive.","Connect Google Drive first","invalid_client","invalid_grant"]{assert!(super::requires_auth(error));}
+        for error in ["Drive upload interrupted","Remote verification unavailable","HTTP 429","HTTP 503"]{assert!(!super::requires_auth(error));}
+    }
     #[test]fn recording_job_contains_immutable_audio_and_manifest(){
         let root=std::env::temp_dir().join(format!("gigaam-record-job-{}",crate::new_id()));std::fs::create_dir_all(&root).unwrap();let path=root.join("mic.ogg");std::fs::write(&path,b"audio").unwrap();
         super::enqueue_recording(&root,"session",serde_json::json!({"version":1,"segments":[],"tracks":[{"offset_seconds":0.5}]}),&[path.clone()]).unwrap();std::fs::write(path,b"edited").unwrap();

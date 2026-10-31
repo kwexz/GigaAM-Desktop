@@ -27,6 +27,11 @@ fn token_error(status: reqwest::StatusCode, body: &str) -> String {
         _ => format!("Google token exchange failed (HTTP {}). No authorization code or tokens were logged.", status.as_u16()),
     }
 }
+
+fn drive_error(status:reqwest::StatusCode,operation:&str)->String {
+    if status==reqwest::StatusCode::UNAUTHORIZED {"Google access expired or was revoked. Reconnect Drive.".into()}
+    else {format!("{operation} (HTTP {})",status.as_u16())}
+}
 fn random_secret() -> String { let mut bytes = [0u8;32]; rand::rng().fill_bytes(&mut bytes); URL_SAFE_NO_PAD.encode(bytes) }
 fn credential() -> Result<keyring::Entry,String> { keyring::Entry::new("GigaAM Desktop", "google-drive-refresh-token").map_err(|_| "Credential store unavailable".into()) }
 
@@ -37,7 +42,7 @@ fn access_token(client: &reqwest::blocking::Client) -> Result<String,String> {
     let mut form = vec![("client_id",CLIENT_ID.to_owned()),("grant_type","refresh_token".into()),("refresh_token",refresh)];
     if let Some(secret) = client_secret() { form.push(("client_secret",secret)); }
     let response = client.post("https://oauth2.googleapis.com/token").form(&form).send().map_err(|_| "Google token refresh unavailable")?;
-    if !response.status().is_success() { return Err("Google access expired or was revoked. Reconnect Drive.".into()); }
+    if !response.status().is_success() { let status=response.status();let body=response.text().unwrap_or_default();return Err(token_error(status,&body)); }
     #[derive(Deserialize)] struct Access { access_token: String }
     let access: Access = serde_json::from_str(&response.text().map_err(|_| "Token response unavailable")?).map_err(|_| "Invalid token response")?;
     Ok(access.access_token)
@@ -52,12 +57,12 @@ pub fn ensure_folder() -> Result<String,String> {
     let response = client.get(endpoint)
         .bearer_auth(&token)
         .send().map_err(|_| "Google Drive unavailable")?;
-    if !response.status().is_success() { return Err("Could not discover application folder".into()); }
+    if !response.status().is_success() { return Err(drive_error(response.status(),"Could not discover application folder")); }
     let result: serde_json::Value = serde_json::from_str(&response.text().map_err(|_| "Drive response unavailable")?).map_err(|_| "Invalid Drive response")?;
     if let Some(id) = result["files"][0]["id"].as_str() { return Ok(id.to_owned()); }
     let body = serde_json::json!({"name":"GigaAM Desktop","mimeType":"application/vnd.google-apps.folder","appProperties":{"gigaam":"root-v1"}});
     let response = client.post("https://www.googleapis.com/drive/v3/files").bearer_auth(&token).header("Content-Type","application/json").body(body.to_string()).send().map_err(|_| "Could not create Drive folder")?;
-    if !response.status().is_success() { return Err("Google rejected application folder creation".into()); }
+    if !response.status().is_success() { return Err(drive_error(response.status(),"Google rejected application folder creation")); }
     let result: serde_json::Value = serde_json::from_str(&response.text().map_err(|_| "Drive response unavailable")?).map_err(|_| "Invalid Drive response")?;
     result["id"].as_str().map(str::to_owned).ok_or("Drive folder ID missing".into())
 }
@@ -91,13 +96,13 @@ pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Pa
     let metadata = serde_json::json!({"name":name,"parents":[folder],"appProperties":{"gigaamSnapshot":key}});
     let response = client.post("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,size")
         .bearer_auth(&token).header("Content-Type","application/json").header("X-Upload-Content-Length",size).body(metadata.to_string()).send().map_err(|_| "Drive upload initialization failed")?;
-    if !response.status().is_success() { return Err("Drive rejected upload initialization".into()); }
+    if !response.status().is_success() { return Err(drive_error(response.status(),"Drive rejected upload initialization")); }
     let location = response.headers().get(reqwest::header::LOCATION).and_then(|value| value.to_str().ok()).ok_or("Drive upload URL missing")?;
     let location = url::Url::parse(location).map_err(|_| "Invalid upload URL")?;
     if location.scheme() != "https" || location.host_str() != Some("www.googleapis.com") { return Err("Untrusted Drive upload URL".into()); }
     let file = std::fs::File::open(path).map_err(|_| "Backup source unavailable")?;
     let response = client.put(location).bearer_auth(&token).header(reqwest::header::CONTENT_LENGTH,size).body(file).send().map_err(|_| "Drive upload interrupted; local backup retained")?;
-    if !response.status().is_success() { return Err("Drive upload failed; local backup retained".into()); }
+    if !response.status().is_success() { return Err(drive_error(response.status(),"Drive upload failed; local backup retained")); }
     let result: serde_json::Value = serde_json::from_str(&response.text().map_err(|_| "Upload response unavailable")?).map_err(|_| "Invalid upload response")?;
     let id = result["id"].as_str().ok_or("Uploaded file ID missing")?.to_owned();
     // Independent remote readback: count and SHA256 compare without holding audio in RAM.
