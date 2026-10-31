@@ -7,6 +7,17 @@ use serde::Deserialize;
 
 pub const CLIENT_ID: &str = "591054714419-laosoks26n377qioh8pfr0dirhamocsq.apps.googleusercontent.com";
 const SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
+fn client_secret() -> Option<String> {
+    std::env::var("GIGAAM_GOOGLE_DESKTOP_CLIENT_SECRET").ok().filter(|value| !value.trim().is_empty())
+}
+fn token_error(status: reqwest::StatusCode, body: &str) -> String {
+    let code = serde_json::from_str::<serde_json::Value>(body).ok().and_then(|value| value["error"].as_str().map(str::to_owned));
+    match code.as_deref() {
+        Some("invalid_client") => "Google token exchange: invalid_client. Configure the Desktop OAuth client's client_secret locally; do not use Web client credentials.".into(),
+        Some("invalid_grant") => "Google token exchange: invalid_grant. Start a new sign-in; the code may have expired or PKCE/redirect did not match.".into(),
+        _ => format!("Google token exchange failed (HTTP {}). No authorization code or tokens were logged.", status.as_u16()),
+    }
+}
 fn random_secret() -> String { let mut bytes = [0u8;32]; rand::rng().fill_bytes(&mut bytes); URL_SAFE_NO_PAD.encode(bytes) }
 fn credential() -> Result<keyring::Entry,String> { keyring::Entry::new("GigaAM Desktop", "google-drive-refresh-token").map_err(|_| "Credential store unavailable".into()) }
 
@@ -14,7 +25,9 @@ pub fn connected() -> bool { credential().and_then(|entry| entry.get_password().
 
 fn access_token(client: &reqwest::blocking::Client) -> Result<String,String> {
     let refresh = credential()?.get_password().map_err(|_| "Connect Google Drive first")?;
-    let response = client.post("https://oauth2.googleapis.com/token").form(&[("client_id",CLIENT_ID),("grant_type","refresh_token"),("refresh_token",refresh.as_str())]).send().map_err(|_| "Google token refresh unavailable")?;
+    let mut form = vec![("client_id",CLIENT_ID.to_owned()),("grant_type","refresh_token".into()),("refresh_token",refresh)];
+    if let Some(secret) = client_secret() { form.push(("client_secret",secret)); }
+    let response = client.post("https://oauth2.googleapis.com/token").form(&form).send().map_err(|_| "Google token refresh unavailable")?;
     if !response.status().is_success() { return Err("Google access expired or was revoked. Reconnect Drive.".into()); }
     #[derive(Deserialize)] struct Access { access_token: String }
     let access: Access = serde_json::from_str(&response.text().map_err(|_| "Token response unavailable")?).map_err(|_| "Invalid token response")?;
@@ -65,8 +78,16 @@ pub fn connect(open: impl FnOnce(String) -> Result<(),String>) -> Result<(),Stri
                 let code = params.get("code").ok_or("Google authorization declined")?;
                 #[derive(Deserialize)] struct Tokens { refresh_token: Option<String> }
                 let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(30)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "HTTP setup failed")?;
-                let response = client.post("https://oauth2.googleapis.com/token").form(&[("client_id",CLIENT_ID),("redirect_uri",redirect.as_str()),("grant_type","authorization_code"),("code",code.as_str()),("code_verifier",verifier.as_str())]).send().map_err(|_| "Google token exchange unavailable")?;
-                if !response.status().is_success() { return Err("Google rejected token exchange; review Desktop OAuth client configuration".into()); }
+                let mut form = vec![("client_id",CLIENT_ID.to_owned()),("redirect_uri",redirect.clone()),("grant_type","authorization_code".into()),("code",code.clone()),("code_verifier",verifier.clone())];
+                if let Some(secret) = client_secret() { form.push(("client_secret",secret)); }
+                let response = client.post("https://oauth2.googleapis.com/token").form(&form).send().map_err(|_| "Google token exchange unavailable")?;
+                if !response.status().is_success() {
+                    let status = response.status(); let body = response.text().unwrap_or_default();
+                    let message = token_error(status, &body);
+                    let page = "Sign-in did not complete. Return to GigaAM Desktop for the error details.";
+                    let _ = write!(socket,"HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",page.len(),page);
+                    return Err(message);
+                }
                 let tokens: Tokens = serde_json::from_str(&response.text().map_err(|_| "Token response unavailable")?).map_err(|_| "Invalid token response")?;
                 credential()?.set_password(&tokens.refresh_token.ok_or("Google did not grant offline access")?).map_err(|_| "Could not save credential securely")?;
                 let body = "Connected. You may close this tab and return to GigaAM Desktop.";
@@ -92,5 +113,9 @@ pub fn disconnect() -> Result<(),String> {
 }
 
 #[cfg(test)] mod tests {
+    #[test] fn token_error_does_not_expose_response_secrets() {
+        let text = super::token_error(reqwest::StatusCode::UNAUTHORIZED, r#"{"error":"invalid_client","error_description":"secret-value","access_token":"private-token"}"#);
+        assert!(text.contains("invalid_client")); assert!(!text.contains("secret-value")); assert!(!text.contains("private-token"));
+    }
     #[test] fn pkce_secrets_are_unique_and_valid() { let a=super::random_secret();let b=super::random_secret();assert_ne!(a,b);assert_eq!(a.len(),43);assert!(a.bytes().all(|c| c.is_ascii_alphanumeric() || c==b'-' || c==b'_')); }
 }
