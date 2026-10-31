@@ -68,6 +68,26 @@ pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Pa
     let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(600)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "HTTP setup failed")?;
     let token = access_token(&client)?;
     let size = std::fs::metadata(path).map_err(|_| "Backup source unavailable")?.len();
+    // Reconcile a previous successful PUT whose response was lost before the
+    // durable local acknowledgement. Never invent a new snapshot identity.
+    if !key.bytes().all(|c|c.is_ascii_alphanumeric()||b":-_".contains(&c)) {return Err("Invalid snapshot identity".into());}
+    let mut lookup=url::Url::parse("https://www.googleapis.com/drive/v3/files").unwrap();
+    lookup.query_pairs_mut().append_pair("q",&format!("'{folder}' in parents and trashed = false and appProperties has {{ key='gigaamSnapshot' and value='{key}' }}")).append_pair("fields","files(id,size)").append_pair("pageSize","2");
+    let previous=client.get(lookup).bearer_auth(&token).send().map_err(|_|"Could not reconcile snapshot retry")?;
+    if !previous.status().is_success(){return Err("Snapshot retry discovery failed".into());}
+    let previous:serde_json::Value=serde_json::from_str(&previous.text().map_err(|_|"Snapshot discovery unavailable")?).map_err(|_|"Invalid snapshot discovery")?;
+    if let Some(id)=previous["files"][0]["id"].as_str(){
+        // Existing object is not accepted solely by matching metadata. Download
+        // it and compare to the immutable local payload before acknowledging.
+        let temporary=path.with_extension(format!("verify-{}",crate::new_id()));
+        download_file(id,&temporary,size)?;
+        let compare=(||->Result<bool,String>{
+            let mut left=std::fs::File::open(path).map_err(|_|"Local payload unavailable")?;let mut right=std::fs::File::open(&temporary).map_err(|_|"Remote payload unavailable")?;
+            let mut a=[0u8;65536];let mut b=[0u8;65536];
+            loop{let n=left.read(&mut a).map_err(|_|"Local verification failed")?;right.read_exact(&mut b[..n]).map_err(|_|"Remote payload truncated")?;if a[..n]!=b[..n]{return Ok(false);}if n==0{return Ok(right.read(&mut b[..1]).map_err(|_|"Remote verification failed")?==0);}}
+        })();let _=std::fs::remove_file(temporary);
+        if compare?{return Ok(id.to_owned());}return Err("Snapshot identity conflict; both copies retained".into());
+    }
     let metadata = serde_json::json!({"name":name,"parents":[folder],"appProperties":{"gigaamSnapshot":key}});
     let response = client.post("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,size")
         .bearer_auth(&token).header("Content-Type","application/json").header("X-Upload-Content-Length",size).body(metadata.to_string()).send().map_err(|_| "Drive upload initialization failed")?;

@@ -2,6 +2,7 @@ pub mod capture_recovery;
 pub mod domain;
 pub mod export;
 pub mod google_drive;
+pub mod drive_outbox;
 pub mod finalization;
 pub mod live;
 pub mod model_manager;
