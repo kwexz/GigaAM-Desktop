@@ -102,6 +102,7 @@ async fn google_drive_restore(file_id:String, app:tauri::AppHandle, state:tauri:
         let manifest=directory.join("manifest.json");
         google_drive::download_file(&file_id,&manifest,8*1024*1024)?;
         let value:serde_json::Value=serde_json::from_slice(&std::fs::read(&manifest).map_err(|_|"Manifest unavailable")?).map_err(|_|"Invalid backup manifest")?;
+        google_drive::validate_manifest(&value)?;
         if value["version"]!=1{return Err("Unsupported backup version".into());}
         let mut recording:Transcription=serde_json::from_value(value["recording"].clone()).map_err(|_|"Invalid recording metadata")?;
         let segments:Vec<TranscriptSegment>=serde_json::from_value(value["segments"].clone()).map_err(|_|"Invalid transcript")?;

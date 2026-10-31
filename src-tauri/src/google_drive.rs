@@ -32,6 +32,27 @@ fn drive_error(status:reqwest::StatusCode,operation:&str)->String {
     if status==reqwest::StatusCode::UNAUTHORIZED {"Google access expired or was revoked. Reconnect Drive.".into()}
     else {format!("{operation} (HTTP {})",status.as_u16())}
 }
+
+pub fn validate_manifest(value:&serde_json::Value)->Result<(),String>{
+    if value["version"]!=1{return Err("Unsupported backup version".into());}
+    let audio=value["audio"].as_array().ok_or("Backup audio missing")?;
+    if audio.is_empty()||audio.len()>8{return Err("Invalid backup track count".into());}
+    let mut names=std::collections::HashSet::new();
+    for track in audio{
+        let name=track["original_filename"].as_str().ok_or("Track filename missing")?;
+        if name.is_empty()||name.len()>240||name.contains(['/', '\\'])||name.contains("..")||!names.insert(name){return Err("Unsafe or duplicate backup filename".into());}
+        let hash=track["sha256"].as_str().ok_or("Backup hash missing")?;
+        if hash.len()!=64||!hash.bytes().all(|c|c.is_ascii_hexdigit()){return Err("Invalid backup hash".into());}
+        if track["bytes"].as_u64().filter(|size|*size<=512*1024*1024).is_none(){return Err("Invalid backup audio size".into());}
+        let id=track["file_id"].as_str().ok_or("Track ID missing")?;
+        if id.is_empty()||!id.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'_'||c==b'-'){return Err("Invalid Drive file ID".into());}
+    }
+    if let Some(tracks)=value["tracks"].as_array(){for track in tracks{
+        let name=track["file"].as_str().ok_or("Offset filename missing")?;
+        if !names.contains(name)||track["offset_seconds"].as_f64().filter(|v|v.is_finite()&&*v>=0.0).is_none(){return Err("Invalid track offset".into());}
+    }}
+    Ok(())
+}
 fn random_secret() -> String { let mut bytes = [0u8;32]; rand::rng().fill_bytes(&mut bytes); URL_SAFE_NO_PAD.encode(bytes) }
 fn credential() -> Result<keyring::Entry,String> { keyring::Entry::new("GigaAM Desktop", "google-drive-refresh-token").map_err(|_| "Credential store unavailable".into()) }
 
@@ -219,6 +240,12 @@ pub fn disconnect() -> Result<(),String> {
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn rejects_malformed_restore_before_downloading_audio(){
+        let mut value=serde_json::json!({"version":1,"audio":[{"original_filename":"microphone.ogg","sha256":"a".repeat(64),"bytes":12,"file_id":"safe-id"}],"tracks":[{"file":"microphone.ogg","offset_seconds":0.5}]});
+        assert!(super::validate_manifest(&value).is_ok());
+        value["audio"][0]["original_filename"]="../private".into();assert!(super::validate_manifest(&value).is_err());
+        value["audio"][0]["original_filename"]="microphone.ogg".into();value["tracks"][0]["offset_seconds"]=(-1).into();assert!(super::validate_manifest(&value).is_err());
+    }
     #[test] fn token_error_does_not_expose_response_secrets() {
         let text = super::token_error(reqwest::StatusCode::UNAUTHORIZED, r#"{"error":"invalid_client","error_description":"secret-value","access_token":"private-token"}"#);
         assert!(text.contains("invalid_client")); assert!(!text.contains("secret-value")); assert!(!text.contains("private-token"));
