@@ -17,20 +17,21 @@ impl Outbox {
     }
     pub fn run_one(&mut self,now:i64,mut upload:impl FnMut(&Job)->Result<(),bool>)->rusqlite::Result<bool>{
         use rusqlite::OptionalExtension;
-        // Hold a short-lived SQLite write claim across transport: a second
-        // process cannot submit this job concurrently. No capture DB is held.
+        // Commit the claim before network I/O so enqueue never waits for upload.
         let tx=self.db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let job=tx.query_row("SELECT id,payload,attempts FROM drive_jobs WHERE state='pending' AND next_ms<=?1 ORDER BY next_ms,id LIMIT 1",[now],|r|Ok(Job{id:r.get(0)?,payload:r.get(1)?,attempts:r.get(2)?})).optional()?;
+        let job=tx.query_row("SELECT id,payload,attempts FROM drive_jobs WHERE (state='pending' OR state='uploading') AND next_ms<=?1 ORDER BY next_ms,id LIMIT 1",[now],|r|Ok(Job{id:r.get(0)?,payload:r.get(1)?,attempts:r.get(2)?})).optional()?;
         let Some(job)=job else {tx.commit()?;return Ok(false)};
+        tx.execute("UPDATE drive_jobs SET state='uploading',next_ms=?2 WHERE id=?1",params![job.id,now.saturating_add(3600000)])?;
+        tx.commit()?;
         match upload(&job){
-            Ok(())=>{tx.execute("UPDATE drive_jobs SET state='synced' WHERE id=?1",[&job.id])?;}
+            Ok(())=>{self.db.execute("UPDATE drive_jobs SET state='synced' WHERE id=?1",[&job.id])?;}
             Err(auth)=>{
                 let attempts=job.attempts.saturating_add(1);
                 let delay=1000i64.saturating_mul(1i64<<attempts.min(10)).min(900000);
-                tx.execute("UPDATE drive_jobs SET state=?2,attempts=?3,next_ms=?4 WHERE id=?1",params![job.id,if auth{"auth_required"}else{"pending"},attempts,now.saturating_add(delay)])?;
+                self.db.execute("UPDATE drive_jobs SET state=?2,attempts=?3,next_ms=?4 WHERE id=?1",params![job.id,if auth{"auth_required"}else{"pending"},attempts,now.saturating_add(delay)])?;
             }
         }
-        tx.commit()?;Ok(true)
+        Ok(true)
     }
     pub fn resume_after_auth(&self)->rusqlite::Result<()> {self.db.execute("UPDATE drive_jobs SET state='pending',next_ms=0 WHERE state='auth_required'",[])?;Ok(())}
 }
@@ -90,6 +91,12 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
     #[test]fn revoked_access_pauses_until_reconnect(){
         let path=std::env::temp_dir().join(format!("gigaam-outbox-{}.sqlite",crate::new_id()));
         let mut queue=super::Outbox::open(&path).unwrap();queue.enqueue("a","{}").unwrap();queue.run_one(0,|_|Err(true)).unwrap();assert!(!queue.run_one(99999,|_|panic!()).unwrap());queue.resume_after_auth().unwrap();assert!(queue.run_one(99999,|_|Ok(())).unwrap());drop(queue);let _=std::fs::remove_file(path);
+    }
+    #[test]fn network_work_does_not_block_enqueue(){
+        let path=std::env::temp_dir().join(format!("gigaam-outbox-{}.sqlite",crate::new_id()));
+        let mut queue=super::Outbox::open(&path).unwrap();queue.enqueue("a","{}").unwrap();
+        queue.run_one(0,|_|{let other=super::Outbox::open(&path).unwrap();other.enqueue("b","{}").unwrap();Ok(())}).unwrap();
+        assert!(queue.run_one(0,|job|{assert_eq!(job.id,"b");Ok(())}).unwrap());drop(queue);let _=std::fs::remove_file(path);
     }
     #[test]fn immutable_payload_survives_source_changes(){
         let root=std::env::temp_dir().join(format!("gigaam-payload-{}",crate::new_id()));std::fs::create_dir_all(&root).unwrap();
