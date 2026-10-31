@@ -8,7 +8,16 @@ use serde::Deserialize;
 pub const CLIENT_ID: &str = "591054714419-laosoks26n377qioh8pfr0dirhamocsq.apps.googleusercontent.com";
 const SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
 fn client_secret() -> Option<String> {
-    std::env::var("GIGAAM_GOOGLE_DESKTOP_CLIENT_SECRET").ok().filter(|value| !value.trim().is_empty())
+    if let Some(secret) = std::env::var("GIGAAM_GOOGLE_DESKTOP_CLIENT_SECRET").ok().filter(|value| !value.trim().is_empty()) { return Some(secret); }
+    // Desktop credential downloaded by the owner; never read Web credentials
+    // or expose this file through IPC/logging.
+    let root = std::env::var_os("APPDATA")?;
+    let path = std::path::PathBuf::from(root).join("ru.gigaam.desktop").join(format!("client_secret_{CLIENT_ID}.json"));
+    let metadata = std::fs::metadata(&path).ok()?;
+    if metadata.len() > 16384 { return None; }
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    if value["installed"]["client_id"].as_str()? != CLIENT_ID { return None; }
+    value["installed"]["client_secret"].as_str().filter(|value| !value.trim().is_empty()).map(str::to_owned)
 }
 fn token_error(status: reqwest::StatusCode, body: &str) -> String {
     let code = serde_json::from_str::<serde_json::Value>(body).ok().and_then(|value| value["error"].as_str().map(str::to_owned));
