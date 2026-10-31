@@ -16,6 +16,9 @@ impl Store {
         self.connection.query_row("SELECT local_id FROM drive_restores WHERE remote_id=?1",[remote_id],|row|row.get(0)).optional()
     }
     pub fn restore_snapshot(&mut self,remote_id:&str,record:&Transcription,segments:&[TranscriptSegment])->rusqlite::Result<String>{
+        self.restore_snapshot_organized(remote_id,record,segments,&serde_json::Value::Null)
+    }
+    pub fn restore_snapshot_organized(&mut self,remote_id:&str,record:&Transcription,segments:&[TranscriptSegment],manifest:&serde_json::Value)->rusqlite::Result<String>{
         if let Some(id)=self.restored_snapshot(remote_id)?{return Ok(id);}
         let tx=self.connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         if let Some(id)=tx.query_row("SELECT local_id FROM drive_restores WHERE remote_id=?1",[remote_id],|row|row.get::<_,String>(0)).optional()?{return Ok(id);}
@@ -25,6 +28,28 @@ impl Store {
             tx.execute("INSERT INTO transcript_segments(id,transcription_id,segment_index,start_seconds,end_seconds,text,source_track,speaker_id,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![segment.id,segment.transcription_id,segment.index,segment.start_seconds,segment.end_seconds,segment.text,source_track_value(segment.source_track),segment.speaker_id,segment_state_value(segment.state)])?;
         }
         tx.execute("INSERT INTO drive_restores(remote_id,local_id) VALUES(?1,?2)",params![remote_id,record.id])?;
+        // Import only this recording's ancestor path, using snapshot-local IDs.
+        // Never replace unrelated local folders or overwrite their names.
+        if let Some(nodes)=manifest["organization"].as_array(){
+            let original=manifest["original_recording_id"].as_str().or_else(||manifest["recording"]["id"].as_str()).unwrap_or("");
+            if let Some(recording)=nodes.iter().find(|node|node["kind"]=="recording"&&node["id"].as_str()==Some(original)){
+                let mut parent=recording["parent_id"].as_str();let mut chain=Vec::new();let mut seen=std::collections::HashSet::new();
+                while let Some(id)=parent{
+                    if !seen.insert(id)||chain.len()>=64{return Err(rusqlite::Error::InvalidQuery);}
+                    let folder=nodes.iter().find(|node|node["kind"]=="folder"&&node["id"].as_str()==Some(id)).ok_or(rusqlite::Error::InvalidQuery)?;
+                    chain.push(folder);parent=folder["parent_id"].as_str();
+                }
+                let mut local_parent:Option<String>=None;
+                for(index,folder)in chain.iter().rev().enumerate(){
+                    let name=folder["name"].as_str().filter(|name|!name.trim().is_empty()&&name.len()<=1024).ok_or(rusqlite::Error::InvalidQuery)?;
+                    let id=format!("restore-{}-folder-{index}",record.id);
+                    tx.execute("INSERT INTO recording_folders(id,parent_id,name,position) VALUES(?1,?2,?3,?4)",params![id,local_parent,name,folder["position"].as_i64().unwrap_or(0).max(0)])?;local_parent=Some(id);
+                }
+                tx.execute("INSERT INTO recording_positions(recording_id,folder_id,position) VALUES(?1,?2,?3)",params![record.id,local_parent,recording["position"].as_i64().unwrap_or(0).max(0)])?;
+            }
+        }
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS drive_lineage(local_id TEXT PRIMARY KEY REFERENCES transcriptions(id) ON DELETE CASCADE,original_id TEXT,device_id TEXT,revision TEXT)")?;
+        tx.execute("INSERT INTO drive_lineage(local_id,original_id,device_id,revision) VALUES(?1,?2,?3,?4)",params![record.id,manifest["original_recording_id"].as_str(),manifest["device_id"].as_str(),manifest["revision"].as_str()])?;
         tx.commit()?;Ok(record.id.clone())
     }
     pub fn clear_transcript(&mut self, id: &str) -> rusqlite::Result<()> {
@@ -812,6 +837,14 @@ fn map_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptSegment> {
 
 #[cfg(test)]
 mod tests {
+    #[test]fn drive_restore_keeps_folder_path_and_rolls_back_cycle(){
+        let mut store=super::Store::memory().unwrap();let record=transcription("restored-tree",TranscriptionStatus::Completed);
+        let mut manifest=serde_json::json!({"original_recording_id":"original","device_id":"device","revision":"one","organization":[{"id":"folder","kind":"folder","parent_id":"folder","name":"Folder","position":0},{"id":"original","kind":"recording","parent_id":"folder","position":2}]});
+        assert!(store.restore_snapshot_organized("remote-tree",&record,&[],&manifest).is_err());assert!(store.get(&record.id).unwrap().is_none());
+        manifest["organization"][0]["parent_id"]=serde_json::Value::Null;
+        store.restore_snapshot_organized("remote-tree",&record,&[],&manifest).unwrap();
+        let nodes=store.load_organization().unwrap();let nodes=nodes.as_array().unwrap();let folder=nodes.iter().find(|node|node["name"]=="Folder").unwrap();let placement=nodes.iter().find(|node|node["id"]==record.id).unwrap();assert_eq!(placement["parent_id"],folder["id"]);assert_eq!(placement["position"],2);
+    }
     #[test]fn drive_restore_is_atomic_and_idempotent(){
         let mut store=super::Store::memory().unwrap();let record=transcription("restored",TranscriptionStatus::Completed);
         let segment=TranscriptSegment::new("restored",0,0.0,1.0,"text".into(),SourceTrack::File,SegmentState::Final).unwrap();

@@ -138,7 +138,7 @@ async fn google_drive_restore(file_id:String, app:tauri::AppHandle, state:tauri:
         recording.status=TranscriptionStatus::Completed;recording.queue_visible=false;
         let mut store=store.lock().map_err(|_|"Store unavailable")?;
         let segments:Vec<_>=segments.into_iter().enumerate().map(|(index,mut segment)|{segment.transcription_id=id.clone();segment.id=format!("{id}:{index}");segment.index=index;segment}).collect();
-        store.restore_snapshot(&file_id,&recording,&segments).map_err(|_|"Could not atomically restore recording".into())
+        store.restore_snapshot_organized(&file_id,&recording,&segments,&value).map_err(|_|"Could not atomically restore recording".into())
     }).await.map_err(|_|"Drive restore worker failed")?
 }
 
