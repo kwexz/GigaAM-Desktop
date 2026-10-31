@@ -54,6 +54,12 @@ async fn google_drive_disconnect() -> Result<(),String> {
 fn google_drive_connected() -> bool { google_drive::connected() }
 
 #[tauri::command]
+async fn google_drive_queue_status(app:tauri::AppHandle)->Result<drive_outbox::QueueStatus,String>{
+    let path=app.path().app_data_dir().map_err(|_|"App data unavailable")?.join("drive-outbox.sqlite");
+    tauri::async_runtime::spawn_blocking(move||drive_outbox::Outbox::open(&path).and_then(|queue|queue.status()).map_err(|_|"Drive queue status unavailable".into())).await.map_err(|_|"Drive status worker failed")?
+}
+
+#[tauri::command]
 async fn google_drive_prepare_folder() -> Result<String,String> {
     tauri::async_runtime::spawn_blocking(google_drive::ensure_folder).await.map_err(|_| "Google folder task failed")?
 }
@@ -1413,6 +1419,7 @@ pub fn run() {
             google_drive_connect,
             google_drive_disconnect,
             google_drive_connected,
+            google_drive_queue_status,
             google_drive_prepare_folder,
             google_drive_upload,
             google_drive_snapshots,

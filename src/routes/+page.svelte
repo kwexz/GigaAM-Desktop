@@ -56,6 +56,7 @@
 	let googleConnected = $state(false);
 	let googleBusy = $state(false);
 	let googleUploading = $state(false);
+	let driveQueue = $state({ pending: 0, uploading: 0, synced: 0, auth_required: 0 });
 	async function uploadSelectedToDrive() {
 		if (!selected || googleUploading) return;
 		googleUploading = true;
@@ -269,6 +270,7 @@
 	}
 
 	async function refresh() {
+		if (!browserMode && googleConnected) void invoke<typeof driveQueue>('google_drive_queue_status').then((status) => { if (status) driveQueue = status; }).catch(() => {});
 		if (browserMode) {
 			await refreshBrowser();
 			const id = selectedId;
@@ -837,7 +839,7 @@
 				{/each}
 				{#if !segments.length}{#if selected.status === 'completed'}<div class="empty-transcript"><p>{locale === 'ru' ? 'В записи не найдена речь: сегментов нет. Если аудио не пустое, нажмите «Повторить» для перезапуска распознавания.' : 'No speech found in this recording. If the audio is not empty, press Retry to re-run recognition.'}</p></div>{:else}<div class="processing"><span></span><p>{statuses[locale][selected.status]}</p></div>{/if}{/if}
 			</section>
-			<footer><div class="export">{#if !browserMode && googleConnected}<button disabled={googleUploading || recording || busy} onclick={() => void uploadSelectedToDrive()}>{googleUploading ? (locale === 'ru' ? 'Подготовка копии…' : 'Preparing snapshot…') : (locale === 'ru' ? 'На Google Drive' : 'Back up to Google Drive')}</button>{/if}<div class="tools">{#if ['queued', 'failed', 'cancelled', 'interrupted', 'completed'].includes(selected.status)}<button class="primary" onclick={() => void action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', selected.id)}>{t.start}</button>{/if}{#if ['preparing', 'transcribing'].includes(selected.status)}<button class="primary" onclick={() => void action('cancel_transcription', selected.id)}>{locale === 'ru' ? 'Остановить' : 'Stop'}</button>{/if}</div><button onclick={() => void exportResult()}>{t.export}</button><button onclick={() => void copyTranscript()}>{t.copy}</button></div><div class="danger">{#if !['queued', 'preparing', 'transcribing'].includes(selected.status)}<button disabled={recording || busy || !segments.length} onclick={() => confirmClear = true}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button>{/if}</div></footer>
+			<footer><div class="export">{#if !browserMode && googleConnected}<span class="hint" role="status">Drive: {driveQueue.auth_required ? (locale === 'ru' ? 'нужен повторный вход' : 'sign in again') : driveQueue.uploading ? (locale === 'ru' ? 'отправка и проверка' : 'uploading and verifying') : driveQueue.pending ? (locale === 'ru' ? `в очереди: ${driveQueue.pending}` : `queued: ${driveQueue.pending}`) : (locale === 'ru' ? `проверено: ${driveQueue.synced}` : `verified: ${driveQueue.synced}`)}</span>{/if}{#if !browserMode && googleConnected}<button disabled={googleUploading || recording || busy} onclick={() => void uploadSelectedToDrive()}>{googleUploading ? (locale === 'ru' ? 'Подготовка копии…' : 'Preparing snapshot…') : (locale === 'ru' ? 'На Google Drive' : 'Back up to Google Drive')}</button>{/if}<div class="tools">{#if ['queued', 'failed', 'cancelled', 'interrupted', 'completed'].includes(selected.status)}<button class="primary" onclick={() => void action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', selected.id)}>{t.start}</button>{/if}{#if ['preparing', 'transcribing'].includes(selected.status)}<button class="primary" onclick={() => void action('cancel_transcription', selected.id)}>{locale === 'ru' ? 'Остановить' : 'Stop'}</button>{/if}</div><button onclick={() => void exportResult()}>{t.export}</button><button onclick={() => void copyTranscript()}>{t.copy}</button></div><div class="danger">{#if !['queued', 'preparing', 'transcribing'].includes(selected.status)}<button disabled={recording || busy || !segments.length} onclick={() => confirmClear = true}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button>{/if}</div></footer>
 		{:else}
 			<div class="welcome"><div class="wave">∿</div><h1>{t.waiting}</h1><p>{t.empty}</p><button class="add-large" disabled={!model.installed && !browserMode} onclick={pickFiles}>＋ {t.add}</button></div>
 		{/if}

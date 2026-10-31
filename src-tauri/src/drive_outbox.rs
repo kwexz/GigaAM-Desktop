@@ -4,6 +4,8 @@ use rusqlite::{Connection, params};
 pub struct Outbox { db: Connection }
 #[derive(Debug, PartialEq)]
 pub struct Job { pub id: String, pub payload: String, pub attempts: u32 }
+#[derive(serde::Serialize)]
+pub struct QueueStatus { pub pending:u64,pub uploading:u64,pub synced:u64,pub auth_required:u64 }
 #[derive(serde::Serialize,serde::Deserialize)]
 pub struct SnapshotPayload { pub revision:String, pub recording_id:String, pub manifest:serde_json::Value, pub audio:Vec<std::path::PathBuf> }
 impl Outbox {
@@ -37,6 +39,10 @@ impl Outbox {
     }
     pub fn resume_after_auth(&self)->rusqlite::Result<()> {self.db.execute("UPDATE drive_jobs SET state='pending',next_ms=0 WHERE state='auth_required'",[])?;Ok(())}
     pub fn recover_interrupted(&self)->rusqlite::Result<()> {self.db.execute("UPDATE drive_jobs SET state='pending',next_ms=0 WHERE state='uploading'",[])?;Ok(())}
+    pub fn status(&self)->rusqlite::Result<QueueStatus>{
+        let count=|state:&str|self.db.query_row("SELECT count(*) FROM drive_jobs WHERE state=?1",[state],|row|row.get(0));
+        Ok(QueueStatus{pending:count("pending")?,uploading:count("uploading")?,synced:count("synced")?,auth_required:count("auth_required")?})
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
