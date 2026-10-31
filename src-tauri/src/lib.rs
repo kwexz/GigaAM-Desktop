@@ -68,37 +68,14 @@ async fn google_drive_upload(id: String, app: tauri::AppHandle, state: tauri::St
     if matches!(record.status, TranscriptionStatus::Transcribing | TranscriptionStatus::Preparing) { return Err("Wait until recording/recognition completes".into()); }
     let root = app.path().app_data_dir().map_err(|_|"App data unavailable")?;
     tauri::async_runtime::spawn_blocking(move || -> Result<(),String> {
-        let directory = root.join("drive-outbox").join(&id);
-        std::fs::create_dir_all(&directory).map_err(|_|"Could not create backup job")?;
-        let job = directory.join("job.json");
-        std::fs::write(&job, serde_json::json!({"recording_id":id,"state":"pending"}).to_string()).map_err(|_|"Could not persist backup job")?;
-        let result = (|| {
-            let folder = google_drive::ensure_folder()?;
-            let mut paths = Vec::new();
-            let live = root.join("live").join(&id);
-            if let Ok(entries) = std::fs::read_dir(live) { for entry in entries.flatten() { let path=entry.path(); if matches!(path.extension().and_then(|x|x.to_str()),Some("ogg"|"flac"|"wav"|"mp3")) && !path.file_stem().is_some_and(|s|s=="mixed") { paths.push(path); } } }
-            if paths.is_empty() { let path=record.audio_path.as_ref().unwrap_or(&record.source_path); if std::path::Path::new(path).is_file() {paths.push(PathBuf::from(path));} }
-            if paths.is_empty() { return Err("Original audio missing; backup not published".into()); }
-            let revision = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_millis();
-            let mut audio = Vec::new();
-            for (index,path) in paths.iter().enumerate() {
-                let name=format!("{id}-{revision}-{index}.{}",path.extension().and_then(|e|e.to_str()).unwrap_or("audio"));
-                let remote_id=google_drive::upload_snapshot(&folder,&format!("{id}:{revision}:{index}"),&name,path)?;
-                use sha2::{Digest, Sha256};
-                use std::io::Read;
-                let mut source=std::fs::File::open(path).map_err(|_|"Backup source unavailable")?;
-                let mut hash=Sha256::new();let mut buffer=[0u8;65536];let mut size=0u64;
-                loop{let n=source.read(&mut buffer).map_err(|_|"Backup checksum failed")?;if n==0{break;}size+=n as u64;hash.update(&buffer[..n]);}
-                audio.push(serde_json::json!({"file_id":remote_id,"original_filename":path.file_name().and_then(|s|s.to_str()),"bytes":size,"sha256":format!("{:x}",hash.finalize())}));
-            }
-            let manifest = directory.join("manifest.json");
-            std::fs::write(&manifest,serde_json::json!({"version":1,"recording":record,"segments":segments,"audio":audio}).to_string()).map_err(|_|"Could not persist manifest")?;
-            google_drive::upload_snapshot(&folder,&format!("{id}:{revision}:manifest"),&format!("{id}-{revision}.json"),&manifest)?;
-            Ok(())
-        })();
-        let status=if result.is_ok(){"synced"}else{"failed"};
-        std::fs::write(&job,serde_json::json!({"recording_id":id,"state":status}).to_string()).map_err(|_|"Could not persist sync status")?;
-        result
+        let mut paths=Vec::new();
+        if let Ok(entries)=std::fs::read_dir(root.join("live").join(&id)) {
+            for entry in entries.flatten(){let path=entry.path();if matches!(path.extension().and_then(|s|s.to_str()),Some("ogg"|"wav"|"flac"|"mp3"))&&!path.file_stem().is_some_and(|s|s=="mixed"){paths.push(path);}}
+        }
+        paths.sort();
+        if paths.is_empty(){let path=PathBuf::from(record.audio_path.as_ref().unwrap_or(&record.source_path));if path.is_file(){paths.push(path);}}
+        let offsets=std::fs::read(root.join("live").join(&id).join("tracks.json")).ok().and_then(|bytes|serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        drive_outbox::enqueue_recording(&root,&id,serde_json::json!({"version":1,"recording":record,"segments":segments,"tracks":offsets}),&paths)
     }).await.map_err(|_|"Drive backup worker failed")?
 }
 

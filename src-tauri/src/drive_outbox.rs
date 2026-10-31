@@ -4,6 +4,8 @@ use rusqlite::{Connection, params};
 pub struct Outbox { db: Connection }
 #[derive(Debug, PartialEq)]
 pub struct Job { pub id: String, pub payload: String, pub attempts: u32 }
+#[derive(serde::Serialize,serde::Deserialize)]
+pub struct SnapshotPayload { pub revision:String, pub recording_id:String, pub manifest:serde_json::Value, pub audio:Vec<std::path::PathBuf> }
 impl Outbox {
     pub fn open(path: &std::path::Path) -> rusqlite::Result<Self> {
         let db=Connection::open(path)?;
@@ -52,14 +54,57 @@ pub fn start_worker(root: std::path::PathBuf) {
                 if let Ok(mut queue)=Outbox::open(&path) {
                     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|v|v.as_millis() as i64).unwrap_or(0);
                     let _=queue.run_one(now,|job| {
-                        let payload:UploadPayload=serde_json::from_str(&job.payload).map_err(|_|true)?;
-                        crate::google_drive::upload_snapshot(&payload.folder,&payload.key,&payload.name,&payload.path).map(|_|()).map_err(|error|error.contains("revoked")||error.contains("expired")||error.contains("Connect Google"))
+                        let result = if let Ok(snapshot)=serde_json::from_str::<SnapshotPayload>(&job.payload) {
+                            upload_recording(&root,&snapshot)
+                        } else {
+                            let payload:UploadPayload=serde_json::from_str(&job.payload).map_err(|_|true)?;
+                            crate::google_drive::upload_snapshot(&payload.folder,&payload.key,&payload.name,&payload.path).map(|_|())
+                        };
+                        result.map_err(|error|error.contains("revoked")||error.contains("expired")||error.contains("Connect Google"))
                     });
                 }
             }
             std::thread::sleep(std::time::Duration::from_secs(5));
         }
     });
+}
+
+fn upload_recording(root:&std::path::Path,snapshot:&SnapshotPayload)->Result<(),String>{
+    let folder=crate::google_drive::ensure_folder()?;
+    let mut manifest=snapshot.manifest.clone();
+    let audio=manifest["audio"].as_array_mut().ok_or("Invalid queued manifest")?;
+    if audio.len()!=snapshot.audio.len(){return Err("Invalid queued audio count".into());}
+    for(index,path)in snapshot.audio.iter().enumerate(){
+        let key=format!("{}:{}:{index}",snapshot.recording_id,snapshot.revision);
+        let name=format!("{}-{}-{index}.{}",snapshot.recording_id,snapshot.revision,audio[index]["original_filename"].as_str().and_then(|s|std::path::Path::new(s).extension()).and_then(|s|s.to_str()).unwrap_or("audio"));
+        audio[index]["file_id"]=crate::google_drive::upload_snapshot(&folder,&key,&name,path)?.into();
+    }
+    let path=root.join("drive-payloads").join(format!("{}-manifest.json",snapshot.revision));
+    let staged=path.with_extension("json.partial");
+    std::fs::write(&staged,manifest.to_string()).map_err(|_|"Manifest staging failed")?;
+    std::fs::rename(staged,&path).map_err(|_|"Manifest publication failed")?;
+    crate::google_drive::upload_snapshot(&folder,&format!("{}:{}:manifest",snapshot.recording_id,snapshot.revision),&format!("{}-{}.json",snapshot.recording_id,snapshot.revision),&path)?;
+    Ok(())
+}
+
+pub fn enqueue_recording(root:&std::path::Path,id:&str,mut manifest:serde_json::Value,paths:&[std::path::PathBuf])->Result<(),String>{
+    use sha2::{Digest,Sha256};use std::io::Read;
+    let revision=crate::new_id();let directory=root.join("drive-payloads").join(&revision);
+    std::fs::create_dir_all(&directory).map_err(|_|"Could not create immutable snapshot")?;
+    let mut audio=Vec::new();let mut metadata=Vec::new();
+    for(index,source)in paths.iter().enumerate(){
+        let path=directory.join(index.to_string());
+        std::fs::copy(source,&path).map_err(|_|"Could not snapshot source audio")?;
+        let mut file=std::fs::OpenOptions::new().read(true).write(true).open(&path).map_err(|_|"Snapshot unavailable")?;
+        file.sync_all().map_err(|_|"Snapshot flush failed")?;
+        let mut hash=Sha256::new();let mut bytes=0u64;let mut buffer=[0u8;65536];
+        loop{let n=file.read(&mut buffer).map_err(|_|"Snapshot checksum failed")?;if n==0{break;}bytes+=n as u64;hash.update(&buffer[..n]);}
+        metadata.push(serde_json::json!({"original_filename":source.file_name().and_then(|s|s.to_str()),"bytes":bytes,"sha256":format!("{:x}",hash.finalize())}));audio.push(path);
+    }
+    if audio.is_empty(){return Err("Original audio missing; no snapshot queued".into());}
+    manifest["audio"]=metadata.into();
+    let payload=SnapshotPayload{revision:revision.clone(),recording_id:id.into(),manifest,audio};
+    Outbox::open(&root.join("drive-outbox.sqlite")).and_then(|queue|queue.enqueue(&revision,&serde_json::to_string(&payload).unwrap())).map_err(|_|"Could not persist snapshot job".into())
 }
 
 pub fn resume(root:&std::path::Path)->Result<(),String>{
@@ -82,6 +127,11 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
 }
 
 #[cfg(test)]mod tests{
+    #[test]fn recording_job_contains_immutable_audio_and_manifest(){
+        let root=std::env::temp_dir().join(format!("gigaam-record-job-{}",crate::new_id()));std::fs::create_dir_all(&root).unwrap();let path=root.join("mic.ogg");std::fs::write(&path,b"audio").unwrap();
+        super::enqueue_recording(&root,"session",serde_json::json!({"version":1,"segments":[],"tracks":[{"offset_seconds":0.5}]}),&[path.clone()]).unwrap();std::fs::write(path,b"edited").unwrap();
+        let mut queue=super::Outbox::open(&root.join("drive-outbox.sqlite")).unwrap();queue.run_one(0,|job|{let snapshot:super::SnapshotPayload=serde_json::from_str(&job.payload).unwrap();assert_eq!(std::fs::read(&snapshot.audio[0]).unwrap(),b"audio");assert_eq!(snapshot.manifest["audio"][0]["bytes"],5);assert_eq!(snapshot.manifest["tracks"][0]["offset_seconds"],0.5);Ok(())}).unwrap();drop(queue);std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]fn retry_survives_restart_and_keeps_immutable_payload(){
         let path=std::env::temp_dir().join(format!("gigaam-outbox-{}.sqlite",crate::new_id()));
         {let mut queue=super::Outbox::open(&path).unwrap();queue.enqueue("snapshot","original").unwrap();queue.enqueue("snapshot","replacement").unwrap();assert!(queue.run_one(0,|job|{assert_eq!(job.payload,"original");Err(false)}).unwrap());assert!(!queue.run_one(1,|_|panic!()).unwrap());}
