@@ -483,6 +483,11 @@ fn session_audio_files(
 }
 
 #[tauri::command]
+fn clear_transcript(id: String, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(), String> {
+    lock_store(&state)?.clear_transcript(&id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn update_segment_text(
     transcription_id: String,
     index: usize,
@@ -1332,6 +1337,7 @@ pub fn run() {
             session_audio_files,
             mixed_session_audio,
             update_segment_text,
+            clear_transcript,
             rename_transcription,
             start_live,
             set_mic_gain,

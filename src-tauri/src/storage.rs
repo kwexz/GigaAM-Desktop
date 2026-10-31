@@ -11,14 +11,26 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn complete_live_archive(&mut self, id: &str, duration: f64, audio_path: Option<&str>, now_ms: i64) -> rusqlite::Result<()> {
+    pub fn clear_transcript(&mut self, id: &str) -> rusqlite::Result<()> {
+        self.connection.execute("DELETE FROM transcript_segments WHERE transcription_id=?1", [id])?;
+        Ok(())
+    }
+    pub fn complete_live_archive(
+        &mut self,
+        id: &str,
+        duration: f64,
+        audio_path: Option<&str>,
+        now_ms: i64,
+    ) -> rusqlite::Result<()> {
         let transaction = self.connection.transaction()?;
         let changed = transaction.execute(
             "UPDATE transcriptions SET duration_seconds=?2,audio_path=?3,status='completed',completed_ms=?4,error=NULL
              WHERE id=?1 AND status='transcribing' AND cancel_requested=0",
             params![id, duration, audio_path, now_ms],
         )?;
-        if changed != 1 { return Err(rusqlite::Error::QueryReturnedNoRows); }
+        if changed != 1 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
         transaction.commit()
     }
 
@@ -784,6 +796,17 @@ fn map_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptSegment> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clearing_transcript_keeps_recording_and_audio() {
+        let mut store = super::Store::memory().unwrap();
+        let mut recording = transcription("clear-text", TranscriptionStatus::Completed);
+        recording.audio_path = Some("archive.ogg".into());
+        store.enqueue(&recording).unwrap();
+        store.append_segment(&TranscriptSegment::new("clear-text", 0, 0.0, 1.0, "text".into(), SourceTrack::File, SegmentState::Final).unwrap()).unwrap();
+        store.clear_transcript("clear-text").unwrap();
+        assert!(store.segments("clear-text").unwrap().is_empty());
+        assert_eq!(store.get("clear-text").unwrap().unwrap().audio_path, recording.audio_path);
+    }
     #[test]
     fn organization_stale_writer_cannot_overwrite_new_folder() {
         let mut store = super::Store::memory().unwrap();

@@ -13,6 +13,7 @@
 	import { mixBrowserAudio } from '#lib/browser-mix.ts';
 	import { archivedBlocks } from '#lib/browser-storage.ts';
 	import { prepareAsrUpload } from '#lib/asr-upload.ts';
+	import { clearBrowserTranscript } from '#lib/browser-storage.ts';
 	import { savedRecordingFormat, saveRecordingFormat, DEFAULT_RECORDING_FORMAT } from '#lib/recording-format.ts';
 	import { mergeBrowserOrganization } from '#lib/browser-storage.ts';
 	import { renameBrowserRecording, editBrowserSegment } from '#lib/browser-storage.ts';
@@ -135,6 +136,7 @@
 	async function loadOrganization() {
 		if (organizationBusy) return;
 		organization = browserMode ? await loadBrowserOrganization() : await invoke<OrganizationNode[]>('load_organization');
+		if (!organizationInitialized) { collapsedFolders = new Set(organization.filter((node) => node.kind === 'folder').map((node) => node.id)); organizationInitialized = true; }
 		for (const item of items) if (!organization.some((node) => node.id === item.id)) organization.push({ id: item.id, kind: 'recording', parent_id: null, name: item.source_filename, position: organization.length });
 	}
 	async function persistOrganization(next: OrganizationNode[]) {
@@ -200,6 +202,16 @@
 	let mixedSrc = $state('');
 	let mixing = $state(false);
 	let confirmDelete = $state(false);
+	let confirmClear = $state(false);
+	let notification = $state('');
+	let notificationTimer: ReturnType<typeof setTimeout> | undefined;
+	function notify(text: string) { notification = text; clearTimeout(notificationTimer); notificationTimer = setTimeout(() => notification = '', 3500); }
+	let organizationInitialized = false;
+	async function clearCurrentTranscript() {
+		if (!selected || recording || busy) return;
+		try { if (browserMode) await clearBrowserTranscript(selected.id); else await invoke('clear_transcript', { id: selected.id }); segments = []; confirmClear = false; notify(locale === 'ru' ? 'Текст очищен. Аудио сохранено.' : 'Transcript cleared. Audio preserved.'); }
+		catch { error = locale === 'ru' ? 'Не удалось очистить текст.' : 'Could not clear transcript.'; }
+	}
 	let folderDialog = $state<'create' | 'delete' | null>(null);
 	let deletingFolder = $state('');
 	let dropTarget = $state('');
@@ -455,6 +467,7 @@
 				const url = URL.createObjectURL(new Blob([segments.map((segment) => `[${time(segment.start_seconds)}] ${segment.text}`).join('\n')], { type: 'text/plain;charset=utf-8' }));
 				const link = document.createElement('a'); link.href = url; link.download = `${selected.source_filename}.txt`; link.click();
 				window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+				notify(locale === 'ru' ? 'Файл передан в загрузки браузера. Папку можно открыть в списке загрузок.' : 'File sent to browser downloads. Open its folder from the downloads list.');
 				return;
 			}
 			const path = await save({ defaultPath: exportName(), filters: [{ name: 'Text', extensions: ['txt'] }, { name: 'SubRip', extensions: ['srt'] }, { name: 'WebVTT', extensions: ['vtt'] }, { name: 'JSON', extensions: ['json'] }] });
@@ -462,6 +475,7 @@
 			const extension = path.split('.').pop()?.toLowerCase();
 			const format = extension === 'srt' || extension === 'vtt' || extension === 'json' ? extension : 'txt';
 			await invoke('save_export', { id: selected.id, format, path });
+			await revealItemInDir(path);
 		} catch {
 			error = locale === 'ru' ? 'Не удалось сохранить файл экспорта.' : 'Could not save the export file.';
 		}
@@ -475,6 +489,7 @@
 	async function copyTranscriptText(text: string) {
 		try {
 			await navigator.clipboard.writeText(text);
+			notify(locale === 'ru' ? 'Расшифровка скопирована' : 'Transcript copied');
 		} catch {
 			error = locale === 'ru' ? 'Не удалось скопировать текст.' : 'Could not copy the text.';
 		}
@@ -770,7 +785,7 @@
 					{@const item = items.find((entry) => entry.id === node.id)}
 					{#if item}<button data-testid="recording-item" class="item tree-recording" class:selected={selectedId === item.id} onclick={() => void selectItem(item.id)} ondblclick={() => beginRename(item, 'list')}><span class="status" data-status={item.status}></span><span class="item-copy">{#if editingNameId === item.id && editingNamePlace === 'list'}<input class="rename-input" data-place="list" bind:value={editingName} onclick={(event) => event.stopPropagation()} onkeydown={(event) => { if (event.key === 'Enter') void commitRename(); if (event.key === 'Escape') editingNameId = ''; }} onblur={() => void commitRename()} />{:else}<strong>{item.source_filename}</strong><small>{duration(item.duration_seconds)}</small>{/if}</span></button>{/if}
 				{/if}
-				{#if node.kind === 'folder'}<button class="tree-delete" aria-label={locale === 'ru' ? 'Удалить папку' : 'Delete folder'} title={locale === 'ru' ? 'Удалить папку, сохранив записи' : 'Delete folder, keep recordings'} onclick={() => { deletingFolder = node.id; folderDialog = 'delete'; }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></svg></button>{/if}
+				{#if node.kind === 'recording'}<button class="tree-delete" aria-label={locale === 'ru' ? 'Удалить запись' : 'Delete recording'} onclick={async () => { await selectItem(node.id); requestDelete(); }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></svg></button>{/if}{#if node.kind === 'folder'}<button class="tree-delete" aria-label={locale === 'ru' ? 'Удалить папку' : 'Delete folder'} title={locale === 'ru' ? 'Удалить папку, сохранив записи' : 'Delete folder, keep recordings'} onclick={() => { deletingFolder = node.id; folderDialog = 'delete'; }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></svg></button>{/if}
 				</div>
 			{/each}
 			</div>
@@ -789,7 +804,7 @@
 	<main>
 		{#if recording}<div class="live-strip"><strong>REC</strong><span>{new Date(Math.max(0, paused ? pausedElapsed : uiNow - liveStarted)).toISOString().slice(11,19)}</span>{#if paused}<span class="pause-blink">{locale === 'ru' ? 'Пауза' : 'Paused'}</span>{/if}{#if !modelReady}<span>{locale === 'ru' ? 'Загрузка модели…' : 'Loading model…'}</span>{:else}<span>MIC <i style={`--level:${Math.min(1,micLevel*4)}`}></i></span><span>SYS <i style={`--level:${Math.min(1,systemLevel*4)}`}></i></span>{/if}</div>{/if}
 		{#if selected}
-			<div class="document-head"><div class="document-title">{#if editingNameId === selected.id && editingNamePlace === 'header'}<input class="title-rename rename-input" data-place="header" bind:value={editingName} onkeydown={(event) => { if (event.key === 'Enter') void commitRename(); if (event.key === 'Escape') { editingNameId = ''; editingNamePlace = ''; } }} onblur={() => void commitRename()} />{:else}<h1><button class="title-button" onclick={() => beginRename(selected, 'header')} title={locale === 'ru' ? 'Переименовать' : 'Rename'}>{selected.source_filename}</button></h1>{/if}</div><div class="tools">{#if ['queued', 'failed', 'cancelled', 'interrupted', 'completed'].includes(selected.status)}<button class="primary" onclick={() => void action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', selected.id)}>{t.start}</button>{/if}{#if ['preparing', 'transcribing'].includes(selected.status)}<button class="primary" onclick={() => void action('cancel_transcription', selected.id)}>{locale === 'ru' ? 'Остановить' : 'Stop'}</button>{/if}</div><div class="document-meta"><p><span>{selected.status === 'completed' ? duration(selected.duration_seconds) : `${statuses[locale][selected.status]}${selected.total_chunks ? ` · ${selected.completed_chunks} / ${selected.total_chunks}` : ''}`}{friendlyError(selected) ? ` · ${friendlyError(selected)}` : ''}</span>{#if selectedPath}<button class="path-link" title={locale === 'ru' ? 'Показать файл' : 'Show file'} onclick={() => void reveal(selectedPath)}>{selectedPath}</button>{/if}</p></div>{#if selected.status !== 'completed' && selected.total_chunks}<progress class="transcribe-progress" max={selected.total_chunks} value={selected.completed_chunks}></progress>{:else if audioSrc}<div class="player-row">{#key audioSrc}<audio bind:this={audio} src={browserMode ? audioSrc : convertFileSrc(audioSrc)} ontimeupdate={() => playhead = audio?.currentTime ?? 0} onloadedmetadata={updatePlaybackDuration} ondurationchange={updatePlaybackDuration} onplay={() => audioPaused = false} onpause={() => audioPaused = true} onerror={audioFailed} controls></audio>{/key}{#if mixing}<span class="mix-hint">{locale === 'ru' ? 'Готовим общий звук…' : 'Preparing mixed audio…'}</span>{/if}</div>{/if}</div>
+			<div class="document-head"><div class="document-title">{#if editingNameId === selected.id && editingNamePlace === 'header'}<input class="title-rename rename-input" data-place="header" bind:value={editingName} onkeydown={(event) => { if (event.key === 'Enter') void commitRename(); if (event.key === 'Escape') { editingNameId = ''; editingNamePlace = ''; } }} onblur={() => void commitRename()} />{:else}<h1><button class="title-button" onclick={() => beginRename(selected, 'header')} title={locale === 'ru' ? 'Переименовать' : 'Rename'}>{selected.source_filename}</button></h1>{/if}</div><div class="document-meta"><p><span>{selected.status === 'completed' ? duration(selected.duration_seconds) : `${statuses[locale][selected.status]}${selected.total_chunks ? ` · ${selected.completed_chunks} / ${selected.total_chunks}` : ''}`}{friendlyError(selected) ? ` · ${friendlyError(selected)}` : ''}</span>{#if selectedPath}<button class="path-link" title={locale === 'ru' ? 'Показать файл' : 'Show file'} onclick={() => void reveal(selectedPath)}>{selectedPath}</button>{/if}</p></div>{#if selected.status !== 'completed' && selected.total_chunks}<progress class="transcribe-progress" max={selected.total_chunks} value={selected.completed_chunks}></progress>{:else if audioSrc}<div class="player-row">{#key audioSrc}<audio bind:this={audio} src={browserMode ? audioSrc : convertFileSrc(audioSrc)} ontimeupdate={() => playhead = audio?.currentTime ?? 0} onloadedmetadata={updatePlaybackDuration} ondurationchange={updatePlaybackDuration} onplay={() => audioPaused = false} onpause={() => audioPaused = true} onerror={audioFailed} controls></audio>{/key}{#if mixing}<span class="mix-hint">{locale === 'ru' ? 'Готовим общий звук…' : 'Preparing mixed audio…'}</span>{/if}</div>{/if}</div>
 			<section class="transcript">
 				{#if recognitionStage}<div class="recognition-status" role="status"><progress aria-label={locale === 'ru' ? 'Распознавание' : 'Recognition'}></progress><span>{recognitionStage}</span></div>{/if}
 				{#if browserMode && browserTracks.length > 1}<label>{locale === 'ru' ? 'Аудиодорожка' : 'Audio track'}<select onchange={(event) => void chooseBrowserTrack(event.currentTarget.value)}><option value="mix">{locale === 'ru' ? 'Все дорожки вместе' : 'All tracks mixed'}</option>{#each [...browserTracks].sort((a,b) => Number(b.track === 'system') - Number(a.track === 'system')) as track}<option value={track.path}>{track.track === 'system' ? (locale === 'ru' ? 'Система' : 'System') : (locale === 'ru' ? 'Микрофон' : 'Microphone')}</option>{/each}</select></label>{/if}
@@ -801,7 +816,7 @@
 				{/each}
 				{#if !segments.length}{#if selected.status === 'completed'}<div class="empty-transcript"><p>{locale === 'ru' ? 'В записи не найдена речь: сегментов нет. Если аудио не пустое, нажмите «Повторить» для перезапуска распознавания.' : 'No speech found in this recording. If the audio is not empty, press Retry to re-run recognition.'}</p></div>{:else}<div class="processing"><span></span><p>{statuses[locale][selected.status]}</p></div>{/if}{/if}
 			</section>
-			<footer><div class="export"><button onclick={() => void exportResult()}>{t.export}</button><button onclick={() => void copyTranscript()}>{t.copy}</button></div><div class="danger">{#if !['queued', 'preparing', 'transcribing'].includes(selected.status)}<button onclick={() => requestDelete()}>{t.remove}</button>{/if}</div></footer>
+			<footer><div class="export"><div class="tools">{#if ['queued', 'failed', 'cancelled', 'interrupted', 'completed'].includes(selected.status)}<button class="primary" onclick={() => void action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', selected.id)}>{t.start}</button>{/if}{#if ['preparing', 'transcribing'].includes(selected.status)}<button class="primary" onclick={() => void action('cancel_transcription', selected.id)}>{locale === 'ru' ? 'Остановить' : 'Stop'}</button>{/if}</div><button onclick={() => void exportResult()}>{t.export}</button><button onclick={() => void copyTranscript()}>{t.copy}</button></div><div class="danger">{#if !['queued', 'preparing', 'transcribing'].includes(selected.status)}<button disabled={recording || busy || !segments.length} onclick={() => confirmClear = true}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button>{/if}</div></footer>
 		{:else}
 			<div class="welcome"><div class="wave">∿</div><h1>{t.waiting}</h1><p>{t.empty}</p><button class="add-large" disabled={!model.installed && !browserMode} onclick={pickFiles}>＋ {t.add}</button></div>
 		{/if}
@@ -819,7 +834,11 @@
 	</section></div>
 {/if}
 
+{#if notification}<div class="notification-toast" role="status">{notification}</div>{/if}
+{#if confirmClear}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={() => confirmClear = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label={locale === 'ru' ? 'Очистить текст' : 'Clear transcript'}><h2>{locale === 'ru' ? 'Очистить весь текст?' : 'Clear the entire transcript?'}</h2><p>{locale === 'ru' ? 'Аудиозапись останется. Удалённый текст нельзя восстановить отменой.' : 'Audio will remain. Deleted text cannot be undone.'}</p><div class="modal-actions"><button class="ghost" onclick={() => confirmClear = false}>{t.cancel}</button><button class="danger-solid" onclick={() => void clearCurrentTranscript()}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button></div></div></div>{/if}
+
 <style>
+	.notification-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:100;background:#173f35;color:white;border-radius:8px;padding:12px 18px;max-width:90vw;font-size:13px;box-shadow:0 4px 18px #0002}
 	.recognition-status{display:flex;align-items:center;gap:12px;padding:12px 0;color:#315746;font-size:13px}.recognition-status progress{width:120px;accent-color:#28705a}
 	.modal{display:flex;flex-direction:column;gap:16px}.modal h2{margin:0!important}.modal p{margin:0!important;white-space:normal!important;line-height:1.5}.modal>input{width:100%;min-width:0;padding:10px 12px;border:1px solid #c9cdc2;border-radius:8px;font:inherit}.modal .modal-actions{margin-top:4px;gap:10px}.modal-actions>button{min-height:36px;padding:8px 14px}
 	.header-web-status{font-size:11px;color:#65766b;margin-left:auto;margin-right:18px;order:1}.header-actions{order:2}

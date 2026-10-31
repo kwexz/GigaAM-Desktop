@@ -306,6 +306,19 @@ export async function browserSegments(sessionId: string): Promise<TranscriptSegm
 	return rows.filter((row) => row.session_id === sessionId).sort((a, b) => a.start_seconds - b.start_seconds);
 }
 
+export async function clearBrowserTranscript(sessionId: string): Promise<void> {
+	const db = await openDb();
+	await new Promise<void>((resolve, reject) => {
+		const tx = db.transaction([SEGMENT_STORE, CHANGE_STORE], 'readwrite');
+		for (const name of [SEGMENT_STORE, CHANGE_STORE]) {
+			const request = tx.objectStore(name).openCursor();
+			request.onsuccess = () => { const row = request.result; if (!row) return; if (row.value.session_id === sessionId) row.delete(); row.continue(); };
+		}
+		tx.oncomplete = () => { db.close(); resolve(); };
+		tx.onerror = tx.onabort = () => { db.close(); reject(tx.error ?? new Error('Could not clear transcript')); };
+	});
+}
+
 /** Recover UI state from durable session FSM, not an invented duration/status. */
 export async function browserRecordingStatus(sessionId: string): Promise<'completed' | 'interrupted' | 'failed'> {
 	const state = await getSessionState(sessionId);
