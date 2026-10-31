@@ -56,6 +56,21 @@
 	let googleConnected = $state(false);
 	let googleBusy = $state(false);
 	let googleUploading = $state(false);
+	let driveBrowserOpen = $state(false);
+	let driveSnapshots = $state<Array<{ id: string; name: string }>>([]);
+	let driveLoading = $state(false);
+	async function openDriveBackups() {
+		driveBrowserOpen = true; driveLoading = true;
+		try { driveSnapshots = await invoke('google_drive_snapshots'); }
+		catch (cause) { error = String(cause); }
+		finally { driveLoading = false; }
+	}
+	async function restoreDriveBackup(id: string) {
+		driveLoading = true;
+		try { const localId = await invoke<string>('google_drive_restore', { fileId: id }); await refresh(); await selectItem(localId); driveBrowserOpen = false; notify(locale === 'ru' ? 'Копия восстановлена. Локальные версии сохранены.' : 'Backup restored. Local versions preserved.'); }
+		catch (cause) { error = String(cause); }
+		finally { driveLoading = false; }
+	}
 	let driveQueue = $state({ pending: 0, uploading: 0, synced: 0, auth_required: 0 });
 	async function uploadSelectedToDrive() {
 		if (!selected || googleUploading) return;
@@ -839,7 +854,7 @@
 				{/each}
 				{#if !segments.length}{#if selected.status === 'completed'}<div class="empty-transcript"><p>{locale === 'ru' ? 'В записи не найдена речь: сегментов нет. Если аудио не пустое, нажмите «Повторить» для перезапуска распознавания.' : 'No speech found in this recording. If the audio is not empty, press Retry to re-run recognition.'}</p></div>{:else}<div class="processing"><span></span><p>{statuses[locale][selected.status]}</p></div>{/if}{/if}
 			</section>
-			<footer><div class="export">{#if !browserMode && googleConnected}<span class="hint" role="status">Drive: {driveQueue.auth_required ? (locale === 'ru' ? 'нужен повторный вход' : 'sign in again') : driveQueue.uploading ? (locale === 'ru' ? 'отправка и проверка' : 'uploading and verifying') : driveQueue.pending ? (locale === 'ru' ? `в очереди: ${driveQueue.pending}` : `queued: ${driveQueue.pending}`) : (locale === 'ru' ? `проверено: ${driveQueue.synced}` : `verified: ${driveQueue.synced}`)}</span>{/if}{#if !browserMode && googleConnected}<button disabled={googleUploading || recording || busy} onclick={() => void uploadSelectedToDrive()}>{googleUploading ? (locale === 'ru' ? 'Подготовка копии…' : 'Preparing snapshot…') : (locale === 'ru' ? 'На Google Drive' : 'Back up to Google Drive')}</button>{/if}<div class="tools">{#if ['queued', 'failed', 'cancelled', 'interrupted', 'completed'].includes(selected.status)}<button class="primary" onclick={() => void action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', selected.id)}>{t.start}</button>{/if}{#if ['preparing', 'transcribing'].includes(selected.status)}<button class="primary" onclick={() => void action('cancel_transcription', selected.id)}>{locale === 'ru' ? 'Остановить' : 'Stop'}</button>{/if}</div><button onclick={() => void exportResult()}>{t.export}</button><button onclick={() => void copyTranscript()}>{t.copy}</button></div><div class="danger">{#if !['queued', 'preparing', 'transcribing'].includes(selected.status)}<button disabled={recording || busy || !segments.length} onclick={() => confirmClear = true}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button>{/if}</div></footer>
+			<footer><div class="export">{#if !browserMode && googleConnected}<button onclick={() => void openDriveBackups()}>{locale === 'ru' ? 'Копии в Drive' : 'Drive backups'}</button><span class="hint" role="status">Drive: {driveQueue.auth_required ? (locale === 'ru' ? 'нужен повторный вход' : 'sign in again') : driveQueue.uploading ? (locale === 'ru' ? 'отправка и проверка' : 'uploading and verifying') : driveQueue.pending ? (locale === 'ru' ? `в очереди: ${driveQueue.pending}` : `queued: ${driveQueue.pending}`) : (locale === 'ru' ? `проверено: ${driveQueue.synced}` : `verified: ${driveQueue.synced}`)}</span>{/if}{#if !browserMode && googleConnected}<button disabled={googleUploading || recording || busy} onclick={() => void uploadSelectedToDrive()}>{googleUploading ? (locale === 'ru' ? 'Подготовка копии…' : 'Preparing snapshot…') : (locale === 'ru' ? 'На Google Drive' : 'Back up to Google Drive')}</button>{/if}<div class="tools">{#if ['queued', 'failed', 'cancelled', 'interrupted', 'completed'].includes(selected.status)}<button class="primary" onclick={() => void action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', selected.id)}>{t.start}</button>{/if}{#if ['preparing', 'transcribing'].includes(selected.status)}<button class="primary" onclick={() => void action('cancel_transcription', selected.id)}>{locale === 'ru' ? 'Остановить' : 'Stop'}</button>{/if}</div><button onclick={() => void exportResult()}>{t.export}</button><button onclick={() => void copyTranscript()}>{t.copy}</button></div><div class="danger">{#if !['queued', 'preparing', 'transcribing'].includes(selected.status)}<button disabled={recording || busy || !segments.length} onclick={() => confirmClear = true}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button>{/if}</div></footer>
 		{:else}
 			<div class="welcome"><div class="wave">∿</div><h1>{t.waiting}</h1><p>{t.empty}</p><button class="add-large" disabled={!model.installed && !browserMode} onclick={pickFiles}>＋ {t.add}</button></div>
 		{/if}
@@ -857,10 +872,13 @@
 	</section></div>
 {/if}
 
+{#if driveBrowserOpen}<div class="modal-wrap"><button class="modal-backdrop" disabled={driveLoading} aria-label={t.cancel} onclick={() => driveBrowserOpen = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label="Google Drive backups"><h2>Google Drive</h2><p>{locale === 'ru' ? 'Восстановление создаёт отдельную локальную копию, не заменяя текущие правки.' : 'Restore creates a separate local copy without replacing current edits.'}</p>{#if driveLoading}<p role="status">{locale === 'ru' ? 'Загрузка и проверка…' : 'Loading and verifying…'}</p>{:else}<div class="drive-snapshots">{#each driveSnapshots as snapshot}<button class="ghost" onclick={() => void restoreDriveBackup(snapshot.id)}>{snapshot.name}</button>{:else}<p>{locale === 'ru' ? 'Резервных копий не найдено' : 'No backups found'}</p>{/each}</div>{/if}<div class="modal-actions"><button class="ghost" disabled={driveLoading} onclick={() => driveBrowserOpen = false}>{t.cancel}</button></div></div></div>{/if}
+
 {#if notification}<div class="notification-toast" role="status">{notification}</div>{/if}
 {#if confirmClear}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={() => confirmClear = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label={locale === 'ru' ? 'Очистить текст' : 'Clear transcript'}><h2>{locale === 'ru' ? 'Очистить весь текст?' : 'Clear the entire transcript?'}</h2><p>{locale === 'ru' ? 'Аудиозапись останется. Удалённый текст нельзя восстановить отменой.' : 'Audio will remain. Deleted text cannot be undone.'}</p><div class="modal-actions"><button class="ghost" onclick={() => confirmClear = false}>{t.cancel}</button><button class="danger-solid" onclick={() => void clearCurrentTranscript()}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button></div></div></div>{/if}
 
 <style>
+	.drive-snapshots{display:flex;flex-direction:column;gap:8px;max-height:40vh;overflow:auto}.drive-snapshots button{text-align:left;overflow-wrap:anywhere}
 	.header-actions{align-items:center}.header-actions>button.ghost{display:inline-flex;align-items:center;justify-content:center;flex:0 0 36px;width:36px;min-width:36px;height:34px;min-height:34px;padding:0!important;border-radius:8px;line-height:1;box-sizing:border-box}.header-actions>button.drive-toggle svg{display:block;flex:none}.header-actions>button:not(.theme-toggle){font-size:12px;font-weight:600}
 	.notification-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:100;background:#173f35;color:white;border-radius:8px;padding:12px 18px;max-width:90vw;font-size:13px;box-shadow:0 4px 18px #0002}
 	.recognition-status{display:flex;align-items:center;gap:12px;padding:12px 0;color:#315746;font-size:13px}.recognition-status progress{width:120px;accent-color:#28705a}
