@@ -92,6 +92,48 @@ pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Pa
     Ok(id)
 }
 
+#[derive(Deserialize, serde::Serialize, Clone)]
+pub struct RemoteFile { pub id: String, pub name: String }
+
+pub fn list_snapshots() -> Result<Vec<RemoteFile>,String> {
+    let folder = ensure_folder()?;
+    let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(60)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"HTTP setup failed")?;
+    let token = access_token(&client)?;
+    let mut files = Vec::new(); let mut next = String::new();
+    loop {
+        let mut endpoint=url::Url::parse("https://www.googleapis.com/drive/v3/files").unwrap();
+        endpoint.query_pairs_mut().append_pair("q",&format!("'{folder}' in parents and trashed = false and appProperties has {{ key='gigaamSnapshot' }}"))
+            .append_pair("fields","nextPageToken,files(id,name)").append_pair("pageSize","100");
+        if !next.is_empty(){endpoint.query_pairs_mut().append_pair("pageToken",&next);}
+        let response=client.get(endpoint).bearer_auth(&token).send().map_err(|_|"Drive discovery unavailable")?;
+        if !response.status().is_success(){return Err("Drive discovery rejected".into());}
+        #[derive(Deserialize)] struct Page { files:Vec<RemoteFile>, #[serde(rename="nextPageToken")] next:Option<String> }
+        let page:Page=serde_json::from_str(&response.text().map_err(|_|"Drive discovery unavailable")?).map_err(|_|"Invalid discovery response")?;
+        files.extend(page.files.into_iter().filter(|file|file.name.ends_with(".json")));
+        if files.len()>10000{return Err("Too many snapshots; discovery limit reached".into());}
+        match page.next {Some(value)=>next=value,None=>break}
+    }
+    Ok(files)
+}
+
+pub fn download_file(id:&str, destination:&std::path::Path, max_bytes:u64) -> Result<(),String> {
+    if id.is_empty() || !id.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'_'||c==b'-'){return Err("Invalid Drive file ID".into());}
+    let client=reqwest::blocking::Client::builder().timeout(Duration::from_secs(600)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"HTTP setup failed")?;
+    let token=access_token(&client)?;
+    let mut response=client.get(format!("https://www.googleapis.com/drive/v3/files/{id}?alt=media")).bearer_auth(token).send().map_err(|_|"Drive download unavailable")?;
+    if !response.status().is_success(){return Err("Drive download rejected".into());}
+    let staged=destination.with_extension("download.partial");
+    let result=(||{
+        let mut output=std::fs::File::create(&staged).map_err(|_|"Could not create download")?;
+        let mut buffer=[0u8;65536];let mut total=0u64;
+        loop{let n=response.read(&mut buffer).map_err(|_|"Download interrupted")?;if n==0{break;}total+=n as u64;if total>max_bytes{return Err("Download exceeds configured size limit".into());}output.write_all(&buffer[..n]).map_err(|_|"Download write failed")?;}
+        output.sync_all().map_err(|_|"Download flush failed")?;
+        if destination.exists(){return Err("Restore destination already exists".into());}
+        std::fs::rename(&staged,destination).map_err(|_|"Download publication failed")?;Ok(())
+    })();
+    if result.is_err(){let _=std::fs::remove_file(staged);}result
+}
+
 pub fn connect(open: impl FnOnce(String) -> Result<(),String>) -> Result<(),String> {
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|_| "Could not open local callback")?;
     listener.set_nonblocking(true).map_err(|_| "Callback setup failed")?;

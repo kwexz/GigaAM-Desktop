@@ -82,7 +82,12 @@ async fn google_drive_upload(id: String, app: tauri::AppHandle, state: tauri::St
             for (index,path) in paths.iter().enumerate() {
                 let name=format!("{id}-{revision}-{index}.{}",path.extension().and_then(|e|e.to_str()).unwrap_or("audio"));
                 let remote_id=google_drive::upload_snapshot(&folder,&format!("{id}:{revision}:{index}"),&name,path)?;
-                audio.push(serde_json::json!({"file_id":remote_id,"original_filename":path.file_name().and_then(|s|s.to_str())}));
+                use sha2::{Digest, Sha256};
+                use std::io::Read;
+                let mut source=std::fs::File::open(path).map_err(|_|"Backup source unavailable")?;
+                let mut hash=Sha256::new();let mut buffer=[0u8;65536];let mut size=0u64;
+                loop{let n=source.read(&mut buffer).map_err(|_|"Backup checksum failed")?;if n==0{break;}size+=n as u64;hash.update(&buffer[..n]);}
+                audio.push(serde_json::json!({"file_id":remote_id,"original_filename":path.file_name().and_then(|s|s.to_str()),"bytes":size,"sha256":format!("{:x}",hash.finalize())}));
             }
             let manifest = directory.join("manifest.json");
             std::fs::write(&manifest,serde_json::json!({"version":1,"recording":record,"segments":segments,"audio":audio}).to_string()).map_err(|_|"Could not persist manifest")?;
@@ -93,6 +98,52 @@ async fn google_drive_upload(id: String, app: tauri::AppHandle, state: tauri::St
         std::fs::write(&job,serde_json::json!({"recording_id":id,"state":status}).to_string()).map_err(|_|"Could not persist sync status")?;
         result
     }).await.map_err(|_|"Drive backup worker failed")?
+}
+
+#[tauri::command]
+async fn google_drive_snapshots() -> Result<Vec<google_drive::RemoteFile>,String> {
+    tauri::async_runtime::spawn_blocking(google_drive::list_snapshots).await.map_err(|_|"Drive discovery worker failed")?
+}
+
+#[tauri::command]
+async fn google_drive_restore(file_id:String, app:tauri::AppHandle, state:tauri::State<'_,Arc<Mutex<Store>>>) -> Result<String,String> {
+    let store=state.inner().clone();
+    let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<String,String> {
+        // Always restore as a separate stable local copy; never overwrite edits.
+        let id=new_id(); let directory=root.join("live").join(&id);
+        std::fs::create_dir_all(&directory).map_err(|_|"Restore directory unavailable")?;
+        let manifest=directory.join("manifest.json");
+        google_drive::download_file(&file_id,&manifest,8*1024*1024)?;
+        let value:serde_json::Value=serde_json::from_slice(&std::fs::read(&manifest).map_err(|_|"Manifest unavailable")?).map_err(|_|"Invalid backup manifest")?;
+        if value["version"]!=1{return Err("Unsupported backup version".into());}
+        let mut recording:Transcription=serde_json::from_value(value["recording"].clone()).map_err(|_|"Invalid recording metadata")?;
+        let segments:Vec<TranscriptSegment>=serde_json::from_value(value["segments"].clone()).map_err(|_|"Invalid transcript")?;
+        let audio=value["audio"].as_array().ok_or("Backup audio missing")?;
+        if audio.is_empty()||audio.len()>8{return Err("Invalid backup track count".into());}
+        let mut paths=Vec::new();
+        for (index,track) in audio.iter().enumerate(){
+            let name=track["original_filename"].as_str().ok_or("Track filename missing")?;
+            if name.contains(['/', '\\'])||name.contains("..")||name.len()>240{return Err("Unsafe backup filename".into());}
+            let extension=Path::new(name).extension().and_then(|s|s.to_str()).ok_or("Track extension missing")?;
+            if !["ogg","wav","flac","mp3","webm","m4a"].contains(&extension){return Err("Unsupported backup audio".into());}
+            let path=directory.join(format!("restored-{index}.{extension}"));
+            google_drive::download_file(track["file_id"].as_str().ok_or("Track ID missing")?,&path,512*1024*1024)?;
+            use sha2::{Digest,Sha256};use std::io::Read;
+            let expected=track["sha256"].as_str().ok_or("Legacy backup has no integrity hash; cannot safely restore")?;
+            let mut file=std::fs::File::open(&path).map_err(|_|"Downloaded audio unavailable")?;let mut hash=Sha256::new();let mut buffer=[0u8;65536];let mut size=0u64;
+            loop{let n=file.read(&mut buffer).map_err(|_|"Restore checksum failed")?;if n==0{break;}size+=n as u64;hash.update(&buffer[..n]);}
+            if track["bytes"].as_u64()!=Some(size)||format!("{:x}",hash.finalize())!=expected{return Err("Restored audio integrity mismatch".into());}
+            paths.push(path);
+        }
+        recording.id=id.clone();recording.source_filename=format!("{} (Drive)",recording.source_filename);
+        recording.source_path=paths[0].to_string_lossy().into();recording.audio_path=Some(recording.source_path.clone());
+        recording.status=TranscriptionStatus::Completed;recording.queue_visible=false;
+        let mut store=store.lock().map_err(|_|"Store unavailable")?;
+        store.enqueue(&recording).map_err(|_|"Could not restore recording metadata")?;
+        for (index,mut segment) in segments.into_iter().enumerate(){segment.transcription_id=id.clone();segment.id=format!("{id}:{index}");store.append_segment(&segment).map_err(|_|"Could not restore transcript")?;}
+        Ok(id)
+    }).await.map_err(|_|"Drive restore worker failed")?
 }
 
 struct WorkerHandle(Sender<()>);
@@ -1384,6 +1435,8 @@ pub fn run() {
             google_drive_connected,
             google_drive_prepare_folder,
             google_drive_upload,
+            google_drive_snapshots,
+            google_drive_restore,
             load_organization,
             save_organization,
             enqueue_files,
