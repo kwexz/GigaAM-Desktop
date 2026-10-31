@@ -53,6 +53,17 @@
 	let archiveFormat = $state<'flac' | 'wav' | 'mp3' | 'ogg'>(DEFAULT_RECORDING_FORMAT);
 	let theme = $state<'system' | 'dark' | 'light'>('system');
 	let browserMode = $state(false);
+	let googleConnected = $state(false);
+	let googleBusy = $state(false);
+	async function toggleGoogleDrive() {
+		googleBusy = true;
+		try {
+			await invoke(googleConnected ? 'google_drive_disconnect' : 'google_drive_connect');
+			googleConnected = await invoke<boolean>('google_drive_connected');
+			notify(googleConnected ? (locale === 'ru' ? 'Google Drive: доступ сохранён. Синхронизация ещё не подключена.' : 'Google Drive credentials saved. Sync is not connected yet.') : (locale === 'ru' ? 'Google Drive отключён' : 'Google Drive disconnected'));
+		} catch (cause) { error = String(cause); }
+		finally { googleBusy = false; }
+	}
 	let capabilities = $derived(runtimeCapabilities(!browserMode));
 	let webSession: WebSession | undefined;
 	let browserAudioUrl = '';
@@ -715,6 +726,7 @@
 			return () => { window.clearInterval(timer); replayController?.abort(); if (replayEngine) void replayEngine.cancel(''); if (browserAudioUrl) URL.revokeObjectURL(browserAudioUrl); };
 		}
 		let refreshing = false;
+		void invoke<boolean>('google_drive_connected').then((connected) => googleConnected = connected).catch(() => {});
 		const poll = () => {
 			if (refreshing) return;
 			refreshing = true;
@@ -764,6 +776,7 @@
 	{#if browserMode && capabilities.system_audio === 'optional'}<span class="hint" role="note">{locale === 'ru' ? 'Системное аудио доступно только если браузер вернул аудиодорожку.' : 'System audio is available only when the browser returns an audio track.'}</span>{/if}
 	{#if !model.installed && !browserMode}<div class="model-banner"><div><strong>{locale === 'ru' ? 'Требуется модель распознавания' : 'Recognition model required'}</strong><span>{(model.total_bytes / 1024 / 1024).toFixed(0)} MB</span>{#if model.downloading}<progress max={model.total_bytes} value={model.downloaded_bytes}></progress>{/if}</div>{#if model.downloading}<button onclick={() => invoke('cancel_model_download')}>{t.cancel}</button>{:else}<button onclick={() => invoke('download_model')}>{model.error ? t.retry : locale === 'ru' ? 'Загрузить' : 'Download'}</button>{/if}</div>{/if}
 	<header>
+		{#if !browserMode}<button class="ghost" disabled={googleBusy} onclick={() => void toggleGoogleDrive()}>{googleBusy ? (locale === 'ru' ? 'Ожидание Google…' : 'Waiting for Google…') : googleConnected ? (locale === 'ru' ? 'Отключить Drive' : 'Disconnect Drive') : (locale === 'ru' ? 'Подключить Drive' : 'Connect Drive')}</button>{/if}
 		{#if browserMode}<span class="header-web-status" data-testid="web-mode-banner">{locale === 'ru' ? 'Web · аудио локально · ASR на сервере' : 'Web · local audio · server ASR'}</span>{/if}
 		<div class="brand"><span class="mark">G</span><strong>GigaAM</strong><span>Desktop</span><button class="version-link" title="GitHub" onclick={() => { if (browserMode) window.open('https://github.com/kwexz/GigaAM-Desktop', '_blank', 'noopener,noreferrer'); else void openUrl('https://github.com/kwexz/GigaAM-Desktop'); }}>{locale === 'ru' ? 'Версия' : 'Version'} {__APP_VERSION__} b{__BUILD_ID__}</button></div>
 		<div class="header-actions"><button class="ghost theme-toggle" title={theme === 'system' ? (locale === 'ru' ? 'Тема: системная' : 'Theme: system') : theme === 'light' ? (locale === 'ru' ? 'Тема: светлая' : 'Theme: light') : (locale === 'ru' ? 'Тема: тёмная' : 'Theme: dark')} onclick={nextTheme}>{theme === 'system' ? '◐' : theme === 'light' ? '☀' : '☾'}</button><button class="ghost" onclick={() => locale = locale === 'ru' ? 'en' : 'ru'}>{locale.toUpperCase()}</button></div>

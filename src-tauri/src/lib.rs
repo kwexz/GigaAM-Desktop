@@ -1,6 +1,7 @@
 pub mod capture_recovery;
 pub mod domain;
 pub mod export;
+pub mod google_drive;
 pub mod finalization;
 pub mod live;
 pub mod model_manager;
@@ -35,6 +36,20 @@ use storage::Store;
 use tauri::Manager;
 
 static ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[tauri::command]
+async fn google_drive_connect(app: tauri::AppHandle) -> Result<(),String> {
+    tauri::async_runtime::spawn_blocking(move || google_drive::connect(|url| {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener().open_url(url, None::<String>).map_err(|_| "Could not open system browser".into())
+    })).await.map_err(|_| "Google connection task failed")?
+}
+#[tauri::command]
+async fn google_drive_disconnect() -> Result<(),String> {
+    tauri::async_runtime::spawn_blocking(google_drive::disconnect).await.map_err(|_| "Google disconnect task failed")?
+}
+#[tauri::command]
+fn google_drive_connected() -> bool { google_drive::connected() }
 
 struct WorkerHandle(Sender<()>);
 
@@ -1320,6 +1335,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            google_drive_connect,
+            google_drive_disconnect,
+            google_drive_connected,
             load_organization,
             save_organization,
             enqueue_files,
