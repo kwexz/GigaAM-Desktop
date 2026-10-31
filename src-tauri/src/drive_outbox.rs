@@ -35,6 +35,47 @@ impl Outbox {
     pub fn resume_after_auth(&self)->rusqlite::Result<()> {self.db.execute("UPDATE drive_jobs SET state='pending',next_ms=0 WHERE state='auth_required'",[])?;Ok(())}
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct UploadPayload {
+    pub folder: String,
+    pub key: String,
+    pub name: String,
+    pub path: std::path::PathBuf,
+}
+
+pub fn start_worker(root: std::path::PathBuf) {
+    std::thread::spawn(move || {
+        let path=root.join("drive-outbox.sqlite");
+        loop {
+            if crate::google_drive::connected() {
+                if let Ok(mut queue)=Outbox::open(&path) {
+                    let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|v|v.as_millis() as i64).unwrap_or(0);
+                    let _=queue.run_one(now,|job| {
+                        let payload:UploadPayload=serde_json::from_str(&job.payload).map_err(|_|true)?;
+                        crate::google_drive::upload_snapshot(&payload.folder,&payload.key,&payload.name,&payload.path).map(|_|()).map_err(|error|error.contains("revoked")||error.contains("expired")||error.contains("Connect Google"))
+                    });
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+    });
+}
+
+pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,source:&std::path::Path)->Result<(),String>{
+    use sha2::{Digest,Sha256};
+    let identity=format!("{:x}",Sha256::digest(key.as_bytes()));
+    let directory=root.join("drive-payloads");std::fs::create_dir_all(&directory).map_err(|_|"Could not create durable payload directory")?;
+    let path=directory.join(&identity);
+    if !path.exists(){
+        let staged=directory.join(format!("{identity}.{}",crate::new_id()));
+        std::fs::copy(source,&staged).map_err(|_|"Could not snapshot backup source")?;
+        std::fs::OpenOptions::new().write(true).open(&staged).and_then(|file|file.sync_all()).map_err(|_|"Could not flush backup payload")?;
+        std::fs::rename(staged,&path).map_err(|_|"Could not publish backup payload")?;
+    }
+    let payload=UploadPayload{folder:folder.into(),key:key.into(),name:name.into(),path};
+    Outbox::open(&root.join("drive-outbox.sqlite")).and_then(|queue|queue.enqueue(key,&serde_json::to_string(&payload).unwrap())).map_err(|_|"Could not persist upload queue")
+}
+
 #[cfg(test)]mod tests{
     #[test]fn retry_survives_restart_and_keeps_immutable_payload(){
         let path=std::env::temp_dir().join(format!("gigaam-outbox-{}.sqlite",crate::new_id()));

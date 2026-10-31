@@ -1408,6 +1408,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            if let Ok(root)=app.path().app_data_dir() { drive_outbox::start_worker(root); }
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let mut store = Store::open(data_dir.join("gigaam.sqlite3"))?;
