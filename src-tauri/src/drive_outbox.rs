@@ -116,7 +116,9 @@ pub fn enqueue_recording(root:&std::path::Path,id:&str,mut manifest:serde_json::
     }
     if audio.is_empty(){return Err("Original audio missing; no snapshot queued".into());}
     manifest["audio"]=metadata.into();
-    manifest["original_recording_id"]=id.into();
+    let parent=snapshot_lineage(root,id)?;
+    manifest["original_recording_id"]=parent.as_ref().map(|value|value.original_id.as_str()).unwrap_or(id).into();
+    manifest["parent_revision"]=parent.as_ref().map(|value|value.revision.clone()).into();
     manifest["revision"]=revision.clone().into();
     manifest["device_id"]=device_id(root)?.into();
     let payload=SnapshotPayload{revision:revision.clone(),recording_id:id.into(),manifest,audio};
@@ -132,6 +134,17 @@ fn device_id(root:&std::path::Path)->Result<String,String>{
         Err(error)if error.kind()==std::io::ErrorKind::AlreadyExists=>std::fs::read_to_string(path).map_err(|_|"Device identity unavailable".into()),
         Err(_)=>Err("Device identity unavailable".into()),
     }
+}
+
+#[derive(serde::Serialize,serde::Deserialize,Debug,PartialEq)]
+pub struct Lineage { pub original_id:String,pub device_id:String,pub revision:String }
+
+pub fn snapshot_lineage(root:&std::path::Path,id:&str)->Result<Option<Lineage>,String>{
+    let path=root.join("live").join(id).join("manifest.json");
+    if !path.exists(){return Ok(None);}
+    let bytes=std::fs::read(path).map_err(|_|"Original snapshot lineage unavailable")?;
+    let value:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|"Invalid original snapshot lineage")?;
+    Ok(Some(Lineage{original_id:value["original_recording_id"].as_str().or_else(||value["recording"]["id"].as_str()).ok_or("Original identity missing")?.into(),device_id:value["device_id"].as_str().unwrap_or("legacy").into(),revision:value["revision"].as_str().unwrap_or("legacy").into()}))
 }
 
 pub fn resume(root:&std::path::Path)->Result<(),String>{
@@ -154,6 +167,12 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
 }
 
 #[cfg(test)]mod tests{
+    #[test]fn restored_copy_retains_original_identity_on_next_upload(){
+        let root=std::env::temp_dir().join(format!("gigaam-lineage-{}",crate::new_id()));let live=root.join("live").join("local-copy");std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join("manifest.json"),r#"{"original_recording_id":"original","device_id":"other-device","revision":"parent"}"#).unwrap();let path=live.join("microphone.ogg");std::fs::write(&path,b"audio").unwrap();
+        super::enqueue_recording(&root,"local-copy",serde_json::json!({"version":1}),&[path]).unwrap();let mut queue=super::Outbox::open(&root.join("drive-outbox.sqlite")).unwrap();
+        queue.run_one(0,|job|{let snapshot:super::SnapshotPayload=serde_json::from_str(&job.payload).unwrap();assert_eq!(snapshot.manifest["original_recording_id"],"original");assert_eq!(snapshot.manifest["parent_revision"],"parent");assert_ne!(snapshot.manifest["device_id"],"other-device");Ok(())}).unwrap();drop(queue);std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]fn distinguishes_auth_failures_from_transient_transport(){
         for error in ["Google access expired or was revoked. Reconnect Drive.","Connect Google Drive first","invalid_client","invalid_grant"]{assert!(super::requires_auth(error));}
         for error in ["Drive upload interrupted","Remote verification unavailable","HTTP 429","HTTP 503"]{assert!(!super::requires_auth(error));}
