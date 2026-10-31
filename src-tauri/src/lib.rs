@@ -67,9 +67,9 @@ async fn google_drive_prepare_folder() -> Result<String,String> {
 #[tauri::command]
 async fn google_drive_upload(id: String, app: tauri::AppHandle, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(),String> {
     if id.is_empty() || id.contains(['/', '\\']) || id.contains("..") { return Err("Invalid recording ID".into()); }
-    let (record, segments) = {
+    let (record, segments, organization) = {
         let store = lock_store(&state)?;
-        (store.get(&id).map_err(|e|e.to_string())?.ok_or("Recording not found")?, store.segments(&id).map_err(|e|e.to_string())?)
+        (store.get(&id).map_err(|e|e.to_string())?.ok_or("Recording not found")?, store.segments(&id).map_err(|e|e.to_string())?, store.load_organization().map_err(|e|e.to_string())?)
     };
     if matches!(record.status, TranscriptionStatus::Transcribing | TranscriptionStatus::Preparing) { return Err("Wait until recording/recognition completes".into()); }
     let root = app.path().app_data_dir().map_err(|_|"App data unavailable")?;
@@ -81,7 +81,7 @@ async fn google_drive_upload(id: String, app: tauri::AppHandle, state: tauri::St
         paths.sort();
         if paths.is_empty(){let path=PathBuf::from(record.audio_path.as_ref().unwrap_or(&record.source_path));if path.is_file(){paths.push(path);}}
         let offsets=std::fs::read(root.join("live").join(&id).join("tracks.json")).ok().and_then(|bytes|serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-        drive_outbox::enqueue_recording(&root,&id,serde_json::json!({"version":1,"recording":record,"segments":segments,"tracks":offsets}),&paths)
+        drive_outbox::enqueue_recording(&root,&id,serde_json::json!({"version":1,"recording":record,"segments":segments,"tracks":offsets,"organization":organization}),&paths)
     }).await.map_err(|_|"Drive backup worker failed")?
 }
 
@@ -121,6 +121,17 @@ async fn google_drive_restore(file_id:String, app:tauri::AppHandle, state:tauri:
             loop{let n=file.read(&mut buffer).map_err(|_|"Restore checksum failed")?;if n==0{break;}size+=n as u64;hash.update(&buffer[..n]);}
             if track["bytes"].as_u64()!=Some(size)||format!("{:x}",hash.finalize())!=expected{return Err("Restored audio integrity mismatch".into());}
             paths.push(path);
+        }
+        if let Some(tracks)=value["tracks"].as_array(){
+            let mut restored=Vec::new();
+            for track in tracks {
+                let name=track["file"].as_str().ok_or("Invalid track offset filename")?;
+                let offset=track["offset_seconds"].as_f64().ok_or("Invalid track offset")?;
+                if !offset.is_finite()||offset<0.0{return Err("Invalid track offset".into());}
+                let index=audio.iter().position(|item|item["original_filename"].as_str()==Some(name)).ok_or("Offset references missing track")?;
+                restored.push(serde_json::json!({"file":paths[index].file_name().and_then(|s|s.to_str()),"offset_seconds":offset}));
+            }
+            std::fs::write(directory.join("tracks.json"),serde_json::to_vec(&restored).map_err(|_|"Offset serialization failed")?).map_err(|_|"Offset restore failed")?;
         }
         recording.id=id.clone();recording.source_filename=format!("{} (Drive)",recording.source_filename);
         recording.source_path=paths[0].to_string_lossy().into();recording.audio_path=Some(recording.source_path.clone());

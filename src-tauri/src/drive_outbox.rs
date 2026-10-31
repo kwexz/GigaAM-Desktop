@@ -116,8 +116,22 @@ pub fn enqueue_recording(root:&std::path::Path,id:&str,mut manifest:serde_json::
     }
     if audio.is_empty(){return Err("Original audio missing; no snapshot queued".into());}
     manifest["audio"]=metadata.into();
+    manifest["original_recording_id"]=id.into();
+    manifest["revision"]=revision.clone().into();
+    manifest["device_id"]=device_id(root)?.into();
     let payload=SnapshotPayload{revision:revision.clone(),recording_id:id.into(),manifest,audio};
     Outbox::open(&root.join("drive-outbox.sqlite")).and_then(|queue|queue.enqueue(&revision,&serde_json::to_string(&payload).unwrap())).map_err(|_|"Could not persist snapshot job".into())
+}
+
+fn device_id(root:&std::path::Path)->Result<String,String>{
+    let path=root.join("drive-device-id");
+    if let Ok(value)=std::fs::read_to_string(&path){if !value.trim().is_empty(){return Ok(value);}}
+    let id=crate::new_id();
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(&path){
+        Ok(mut file)=>{use std::io::Write;file.write_all(id.as_bytes()).and_then(|_|file.sync_all()).map_err(|_|"Device identity write failed")?;Ok(id)}
+        Err(error)if error.kind()==std::io::ErrorKind::AlreadyExists=>std::fs::read_to_string(path).map_err(|_|"Device identity unavailable".into()),
+        Err(_)=>Err("Device identity unavailable".into()),
+    }
 }
 
 pub fn resume(root:&std::path::Path)->Result<(),String>{
