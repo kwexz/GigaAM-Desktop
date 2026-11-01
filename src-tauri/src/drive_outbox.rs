@@ -11,6 +11,12 @@ fn requires_auth(error:&str)->bool {
 }
 #[derive(serde::Serialize,serde::Deserialize)]
 pub struct SnapshotPayload { pub revision:String, pub recording_id:String, pub manifest:serde_json::Value, pub audio:Vec<std::path::PathBuf> }
+
+pub fn conflict_heads(manifests:&[serde_json::Value])->Vec<String>{
+    let parents:std::collections::HashSet<&str>=manifests.iter().filter_map(|value|value["parent_revision"].as_str()).collect();
+    let mut heads:Vec<String>=manifests.iter().filter_map(|value|value["revision"].as_str()).filter(|revision|!parents.contains(revision)).map(str::to_owned).collect();
+    heads.sort();heads.dedup();heads
+}
 impl Outbox {
     pub fn open(path: &std::path::Path) -> rusqlite::Result<Self> {
         let db=Connection::open(path)?;
@@ -167,6 +173,11 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
 }
 
 #[cfg(test)]mod tests{
+    #[test]fn concurrent_revisions_keep_both_heads_without_timestamp_winner(){
+        let versions=vec![serde_json::json!({"revision":"base"}),serde_json::json!({"revision":"left","parent_revision":"base"}),serde_json::json!({"revision":"right","parent_revision":"base"})];
+        assert_eq!(super::conflict_heads(&versions),vec!["left","right"]);
+        let mut merged=versions;merged.push(serde_json::json!({"revision":"next","parent_revision":"left"}));assert_eq!(super::conflict_heads(&merged),vec!["next","right"]);
+    }
     #[test]fn restored_copy_retains_original_identity_on_next_upload(){
         let root=std::env::temp_dir().join(format!("gigaam-lineage-{}",crate::new_id()));let live=root.join("live").join("local-copy");std::fs::create_dir_all(&live).unwrap();
         std::fs::write(live.join("manifest.json"),r#"{"original_recording_id":"original","device_id":"other-device","revision":"parent"}"#).unwrap();let path=live.join("microphone.ogg");std::fs::write(&path,b"audio").unwrap();
