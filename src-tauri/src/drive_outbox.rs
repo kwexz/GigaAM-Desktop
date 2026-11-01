@@ -145,6 +145,7 @@ pub fn enqueue_recording(root:&std::path::Path,id:&str,mut manifest:serde_json::
             else{format!("drive-folder-{:x}",Sha256::digest(format!("{device}:{id}").as_bytes()))}
         };
         let folders:std::collections::HashMap<String,String>=nodes.iter().filter(|node|node["kind"]=="folder").filter_map(|node|node["id"].as_str().map(|id|(id.to_owned(),canonical(id)))).collect();
+        manifest_folder_mappings(root,&folders)?;
         for node in nodes{
             if node["kind"]=="folder"{if let Some(id)=node["id"].as_str().and_then(|id|folders.get(id)).cloned(){node["id"]=id.into();}}
             if let Some(parent)=node["parent_id"].as_str().and_then(|id|folders.get(id)).cloned(){node["parent_id"]=parent.into();}
@@ -152,6 +153,23 @@ pub fn enqueue_recording(root:&std::path::Path,id:&str,mut manifest:serde_json::
     }
     let payload=SnapshotPayload{revision:revision.clone(),recording_id:id.into(),manifest,audio};
     Outbox::open(&root.join("drive-outbox.sqlite")).and_then(|queue|queue.enqueue(&revision,&serde_json::to_string(&payload).unwrap())).map_err(|_|"Could not persist snapshot job".into())
+}
+
+fn manifest_folder_mappings(root:&std::path::Path,folders:&std::collections::HashMap<String,String>)->Result<(),String>{
+    // Optional app DB: unit harnesses only contain the isolated queue DB.
+    let path=root.join("drive-folder-mapping.sqlite");
+    let mut db=Connection::open(path).map_err(|_|"Folder mapping store unavailable")?;
+    db.execute_batch("PRAGMA synchronous=FULL;CREATE TABLE IF NOT EXISTS mappings(cloud_id TEXT PRIMARY KEY,local_id TEXT NOT NULL)").map_err(|_|"Folder mapping schema unavailable")?;
+    let tx=db.transaction().map_err(|_|"Folder mapping transaction unavailable")?;
+    for(local,cloud)in folders{tx.execute("INSERT OR IGNORE INTO mappings(cloud_id,local_id) VALUES(?1,?2)",params![cloud,local]).map_err(|_|"Folder mapping write failed")?;}
+    tx.commit().map_err(|_|"Folder mapping commit failed".into())
+}
+
+pub fn local_folder_mappings(root:&std::path::Path)->Result<std::collections::HashMap<String,String>,String>{
+    let path=root.join("drive-folder-mapping.sqlite");if !path.exists(){return Ok(Default::default());}
+    let db=Connection::open(path).map_err(|_|"Folder mapping store unavailable")?;
+    let mut stmt=db.prepare("SELECT cloud_id,local_id FROM mappings").map_err(|_|"Folder mappings unavailable")?;
+    stmt.query_map([],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).map_err(|_|"Folder mappings unavailable")?.collect::<rusqlite::Result<_>>().map_err(|_|"Folder mappings invalid".into())
 }
 
 fn device_id(root:&std::path::Path)->Result<String,String>{

@@ -101,7 +101,9 @@ async fn google_drive_restore(file_id:String, app:tauri::AppHandle, state:tauri:
         std::fs::create_dir_all(&directory).map_err(|_|"Restore directory unavailable")?;
         let manifest=directory.join("manifest.json");
         google_drive::download_file(&file_id,&manifest,8*1024*1024)?;
-        let value:serde_json::Value=serde_json::from_slice(&std::fs::read(&manifest).map_err(|_|"Manifest unavailable")?).map_err(|_|"Invalid backup manifest")?;
+        let mut value:serde_json::Value=serde_json::from_slice(&std::fs::read(&manifest).map_err(|_|"Manifest unavailable")?).map_err(|_|"Invalid backup manifest")?;
+        let mappings=drive_outbox::local_folder_mappings(&root)?;
+        value["local_folder_mappings"]=serde_json::to_value(mappings).map_err(|_|"Folder mapping serialization failed")?;
         google_drive::validate_manifest(&value)?;
         if value["version"]!=1{return Err("Unsupported backup version".into());}
         let mut recording:Transcription=serde_json::from_value(value["recording"].clone()).map_err(|_|"Invalid recording metadata")?;

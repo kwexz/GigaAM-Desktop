@@ -37,6 +37,7 @@ impl Store {
             // before committing any recording or tree data.
             let device=manifest["device_id"].as_str().unwrap_or("legacy");
             let folder_id=|id:&str|{
+                if let Some(local)=manifest["local_folder_mappings"][id].as_str(){return local.to_owned();}
                 if id.starts_with("drive-folder-")&&id.len()==77&&id[13..].bytes().all(|c|c.is_ascii_hexdigit()){return id.to_owned();}
                 use sha2::{Digest,Sha256};format!("drive-folder-{:x}",Sha256::digest(format!("{device}:{id}").as_bytes()))
             };
@@ -86,10 +87,8 @@ impl Store {
                 let mut local_parent:Option<String>=None;
                 for folder in chain.iter().rev(){
                     let name=folder["name"].as_str().filter(|name|!name.trim().is_empty()&&name.len()<=1024).ok_or(rusqlite::Error::InvalidQuery)?;
-                    use sha2::{Digest,Sha256};
                     let source_folder=folder["id"].as_str().ok_or(rusqlite::Error::InvalidQuery)?;
-                    let device=manifest["device_id"].as_str().unwrap_or("legacy");
-                    let id=if source_folder.starts_with("drive-folder-")&&source_folder.len()==77&&source_folder[13..].bytes().all(|c|c.is_ascii_hexdigit()){source_folder.to_owned()}else{format!("drive-folder-{:x}",Sha256::digest(format!("{device}:{source_folder}").as_bytes()))};
+                    let id=folder_id(source_folder);
                     tx.execute("INSERT OR IGNORE INTO recording_folders(id,parent_id,name,position) VALUES(?1,?2,?3,?4)",params![id,local_parent,name,folder["position"].as_i64().unwrap_or(0).max(0)])?;local_parent=Some(id);
                 }
                 tx.execute("INSERT INTO recording_positions(recording_id,folder_id,position) VALUES(?1,?2,?3)",params![record.id,local_parent,recording["position"].as_i64().unwrap_or(0).max(0)])?;
