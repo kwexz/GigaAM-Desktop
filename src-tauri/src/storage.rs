@@ -28,8 +28,9 @@ impl Store {
             tx.execute("INSERT INTO transcript_segments(id,transcription_id,segment_index,start_seconds,end_seconds,text,source_track,speaker_id,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![segment.id,segment.transcription_id,segment.index,segment.start_seconds,segment.end_seconds,segment.text,source_track_value(segment.source_track),segment.speaker_id,segment_state_value(segment.state)])?;
         }
         tx.execute("INSERT INTO drive_restores(remote_id,local_id) VALUES(?1,?2)",params![remote_id,record.id])?;
-        // Import only this recording's ancestor path, using snapshot-local IDs.
-        // Never replace unrelated local folders or overwrite their names.
+        // Three-way folder-name reconciliation: apply a remote rename only
+        // while the local value still matches the last imported baseline.
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS drive_folder_baselines(local_id TEXT PRIMARY KEY REFERENCES recording_folders(id) ON DELETE CASCADE,name TEXT NOT NULL)")?;
         if let Some(nodes)=manifest["organization"].as_array(){
             // Include empty folders too; validate every source parent chain
             // before committing any recording or tree data.
@@ -46,6 +47,12 @@ impl Store {
                 }
                 let name=folder["name"].as_str().filter(|name|!name.trim().is_empty()&&name.len()<=1024).ok_or(rusqlite::Error::InvalidQuery)?;
                 if tx.execute("INSERT OR IGNORE INTO recording_folders(id,parent_id,name,position) VALUES(?1,NULL,?2,?3)",params![folder_id(source),name,folder["position"].as_i64().unwrap_or(0).max(0)])?==1{imported.insert(folder_id(source));}
+                let local_id=folder_id(source);
+                let baseline:Option<String>=tx.query_row("SELECT name FROM drive_folder_baselines WHERE local_id=?1",[&local_id],|row|row.get(0)).optional()?;
+                if let Some(previous)=baseline {
+                    tx.execute("UPDATE recording_folders SET name=?2 WHERE id=?1 AND name=?3",params![local_id,name,previous])?;
+                }
+                tx.execute("INSERT INTO drive_folder_baselines(local_id,name) VALUES(?1,?2) ON CONFLICT(local_id) DO UPDATE SET name=excluded.name",params![local_id,name])?;
             }
             // Set parents only for newly imported folders; existing local
             // hierarchy is retained until explicit conflict resolution.
@@ -889,6 +896,14 @@ mod tests {
         let mut store=super::Store::memory().unwrap();let record=transcription("restore-empty",TranscriptionStatus::Completed);
         let manifest=serde_json::json!({"device_id":"device","organization":[{"id":"child","kind":"folder","parent_id":"parent","name":"Empty child","position":0},{"id":"parent","kind":"folder","parent_id":null,"name":"Empty parent","position":0}]});
         store.restore_snapshot_organized("empty-remote",&record,&[],&manifest).unwrap();let nodes=store.load_organization().unwrap();let nodes=nodes.as_array().unwrap();let parent=nodes.iter().find(|node|node["name"]=="Empty parent").unwrap();let child=nodes.iter().find(|node|node["name"]=="Empty child").unwrap();assert_eq!(child["parent_id"],parent["id"]);
+    }
+    #[test]fn drive_remote_rename_updates_only_unchanged_local_folder(){
+        let mut store=super::Store::memory().unwrap();let mut manifest=serde_json::json!({"device_id":"device","organization":[{"id":"folder","kind":"folder","parent_id":null,"name":"Before","position":0}]});
+        store.restore_snapshot_organized("rename-one",&transcription("rename-one",TranscriptionStatus::Completed),&[],&manifest).unwrap();
+        manifest["organization"][0]["name"]="Remote rename".into();store.restore_snapshot_organized("rename-two",&transcription("rename-two",TranscriptionStatus::Completed),&[],&manifest).unwrap();
+        assert_eq!(store.list_folders().unwrap()[0].2,"Remote rename");
+        store.connection.execute("UPDATE recording_folders SET name='Local edit'",[]).unwrap();manifest["organization"][0]["name"]="Other remote edit".into();
+        store.restore_snapshot_organized("rename-three",&transcription("rename-three",TranscriptionStatus::Completed),&[],&manifest).unwrap();assert_eq!(store.list_folders().unwrap()[0].2,"Local edit");
     }
     #[test]fn drive_restore_is_atomic_and_idempotent(){
         let mut store=super::Store::memory().unwrap();let record=transcription("restored",TranscriptionStatus::Completed);
