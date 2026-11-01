@@ -146,11 +146,12 @@ pub struct SnapshotBranch { pub file_id:String,pub original_id:String,pub revisi
 
 pub fn discover_branches()->Result<Vec<SnapshotBranch>,String>{
     let files=list_snapshots()?;
+    if files.len()>100{return Err("More than 100 snapshots: conflict discovery requires pagination; no partial result was accepted".into());}
     let root=std::env::temp_dir().join(format!("gigaam-drive-discovery-{}",crate::new_id()));
     std::fs::create_dir_all(&root).map_err(|_|"Could not stage snapshot discovery")?;
     let result=(||{
         let mut groups:std::collections::HashMap<String,Vec<(String,serde_json::Value)>>=Default::default();
-        for file in files.into_iter().take(100){
+        for file in files{
             let path=root.join(crate::new_id());download_file(&file.id,&path,8*1024*1024)?;
             let value:serde_json::Value=serde_json::from_slice(&std::fs::read(&path).map_err(|_|"Discovery manifest unavailable")?).map_err(|_|"Invalid snapshot manifest")?;
             validate_manifest(&value)?;

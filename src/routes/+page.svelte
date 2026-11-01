@@ -873,7 +873,25 @@
 	</section></div>
 {/if}
 
-{#if driveBrowserOpen}<div class="modal-wrap"><button class="modal-backdrop" disabled={driveLoading} aria-label={t.cancel} onclick={() => driveBrowserOpen = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label="Google Drive backups"><h2>Google Drive</h2><p>{locale === 'ru' ? 'Восстановление создаёт отдельную локальную копию, не заменяя текущие правки.' : 'Restore creates a separate local copy without replacing current edits.'}</p>{#if driveLoading}<p role="status">{locale === 'ru' ? 'Загрузка и проверка…' : 'Loading and verifying…'}</p>{:else}<div class="drive-snapshots">{#each driveSnapshots as snapshot}<button class="ghost" onclick={() => void restoreDriveBackup(snapshot.id)}>{snapshot.name}</button>{:else}<p>{locale === 'ru' ? 'Резервных копий не найдено' : 'No backups found'}</p>{/each}</div>{/if}<div class="modal-actions"><button class="ghost" disabled={driveLoading} onclick={() => driveBrowserOpen = false}>{t.cancel}</button></div></div></div>{/if}
+{#if driveBrowserOpen}
+	<div class="modal-wrap">
+		<button class="modal-backdrop" disabled={driveLoading} aria-label={t.cancel} onclick={() => driveBrowserOpen = false}></button>
+		<div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label="Google Drive backups">
+			<h2>Google Drive</h2>
+			<p>{locale === 'ru' ? 'Восстановление создаёт отдельную локальную копию, не заменяя текущие правки. Удаление локальной записи не удаляет её копии в Drive.' : 'Restore creates a separate local copy without replacing current edits. Deleting a local recording does not delete its Drive backups.'}</p>
+			{#if driveLoading}<p role="status">{locale === 'ru' ? 'Загрузка и проверка…' : 'Loading and verifying…'}</p>
+			{:else}
+				<div class="drive-snapshots">
+					{#each driveBranches.filter((branch) => branch.concurrent) as branch}
+						<div class="drive-conflict"><strong>{locale === 'ru' ? 'Конкурирующие версии — обе сохранены' : 'Concurrent versions — both retained'}</strong><p>{branch.original_id} · {branch.revision}</p><button class="ghost" onclick={() => void restoreDriveBackup(branch.file_id)}>{locale === 'ru' ? 'Восстановить эту версию отдельно' : 'Restore this version separately'}</button></div>
+					{/each}
+					{#each driveSnapshots as snapshot}<button class="ghost" onclick={() => void restoreDriveBackup(snapshot.id)}>{snapshot.name}</button>{:else}<p>{locale === 'ru' ? 'Резервных копий не найдено' : 'No backups found'}</p>{/each}
+				</div>
+			{/if}
+			<div class="modal-actions"><button class="ghost" disabled={driveLoading} onclick={() => driveBrowserOpen = false}>{t.cancel}</button></div>
+		</div>
+	</div>
+{/if}
 
 {#if notification}<div class="notification-toast" role="status">{notification}</div>{/if}
 {#if confirmClear}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={() => confirmClear = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label={locale === 'ru' ? 'Очистить текст' : 'Clear transcript'}><h2>{locale === 'ru' ? 'Очистить весь текст?' : 'Clear the entire transcript?'}</h2><p>{locale === 'ru' ? 'Аудиозапись останется. Удалённый текст нельзя восстановить отменой.' : 'Audio will remain. Deleted text cannot be undone.'}</p><div class="modal-actions"><button class="ghost" onclick={() => confirmClear = false}>{t.cancel}</button><button class="danger-solid" onclick={() => void clearCurrentTranscript()}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button></div></div></div>{/if}
