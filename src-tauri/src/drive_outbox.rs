@@ -103,6 +103,13 @@ fn upload_recording(root:&std::path::Path,snapshot:&SnapshotPayload)->Result<(),
     std::fs::write(&staged,manifest.to_string()).map_err(|_|"Manifest staging failed")?;
     std::fs::rename(staged,&path).map_err(|_|"Manifest publication failed")?;
     crate::google_drive::upload_snapshot(&folder,&format!("{}:{}:manifest",snapshot.recording_id,snapshot.revision),&format!("{}-{}.json",snapshot.recording_id,snapshot.revision),&path)?;
+    let lineage_directory=root.join("drive-lineage");std::fs::create_dir_all(&lineage_directory).map_err(|_|"Could not persist uploaded lineage")?;
+    let target=lineage_directory.join(format!("{}.json",snapshot.recording_id));
+    let staged=target.with_extension("json.partial");
+    std::fs::write(&staged,serde_json::json!({"original_recording_id":manifest["original_recording_id"],"device_id":manifest["device_id"],"revision":manifest["revision"]}).to_string()).map_err(|_|"Could not stage uploaded lineage")?;
+    // Remove/rename is recoverable: a missing local lineage never deletes cloud data.
+    if target.exists(){std::fs::remove_file(&target).map_err(|_|"Could not replace uploaded lineage")?;}
+    std::fs::rename(staged,target).map_err(|_|"Could not publish uploaded lineage")?;
     Ok(())
 }
 
@@ -146,7 +153,8 @@ fn device_id(root:&std::path::Path)->Result<String,String>{
 pub struct Lineage { pub original_id:String,pub device_id:String,pub revision:String }
 
 pub fn snapshot_lineage(root:&std::path::Path,id:&str)->Result<Option<Lineage>,String>{
-    let path=root.join("live").join(id).join("manifest.json");
+    let latest=root.join("drive-lineage").join(format!("{id}.json"));
+    let path=if latest.exists(){latest}else{root.join("live").join(id).join("manifest.json")};
     if !path.exists(){return Ok(None);}
     let bytes=std::fs::read(path).map_err(|_|"Original snapshot lineage unavailable")?;
     let value:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|"Invalid original snapshot lineage")?;
@@ -177,6 +185,11 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
         let versions=vec![serde_json::json!({"revision":"base"}),serde_json::json!({"revision":"left","parent_revision":"base"}),serde_json::json!({"revision":"right","parent_revision":"base"})];
         assert_eq!(super::conflict_heads(&versions),vec!["left","right"]);
         let mut merged=versions;merged.push(serde_json::json!({"revision":"next","parent_revision":"left"}));assert_eq!(super::conflict_heads(&merged),vec!["next","right"]);
+    }
+    #[test]fn acknowledged_local_lineage_takes_precedence_over_imported_parent(){
+        let root=std::env::temp_dir().join(format!("gigaam-parent-{}",crate::new_id()));std::fs::create_dir_all(root.join("drive-lineage")).unwrap();
+        std::fs::write(root.join("drive-lineage/local.json"),r#"{"original_recording_id":"original","revision":"uploaded","device_id":"device"}"#).unwrap();
+        let lineage=super::snapshot_lineage(&root,"local").unwrap().unwrap();assert_eq!(lineage.revision,"uploaded");assert_eq!(lineage.original_id,"original");std::fs::remove_dir_all(root).unwrap();
     }
     #[test]fn restored_copy_retains_original_identity_on_next_upload(){
         let root=std::env::temp_dir().join(format!("gigaam-lineage-{}",crate::new_id()));let live=root.join("live").join("local-copy");std::fs::create_dir_all(&live).unwrap();
