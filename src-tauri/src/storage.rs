@@ -40,13 +40,12 @@ impl Store {
                     chain.push(folder);parent=folder["parent_id"].as_str();
                 }
                 let mut local_parent:Option<String>=None;
-                for(index,folder)in chain.iter().rev().enumerate(){
+                for folder in chain.iter().rev(){
                     let name=folder["name"].as_str().filter(|name|!name.trim().is_empty()&&name.len()<=1024).ok_or(rusqlite::Error::InvalidQuery)?;
                     use sha2::{Digest,Sha256};
                     let source_folder=folder["id"].as_str().ok_or(rusqlite::Error::InvalidQuery)?;
                     let device=manifest["device_id"].as_str().unwrap_or("legacy");
-                    let revision=manifest["revision"].as_str().unwrap_or(remote_id);
-                    let id=format!("drive-folder-{:x}",Sha256::digest(format!("{device}:{revision}:{source_folder}:{index}").as_bytes()));
+                    let id=format!("drive-folder-{:x}",Sha256::digest(format!("{device}:{source_folder}").as_bytes()));
                     tx.execute("INSERT OR IGNORE INTO recording_folders(id,parent_id,name,position) VALUES(?1,?2,?3,?4)",params![id,local_parent,name,folder["position"].as_i64().unwrap_or(0).max(0)])?;local_parent=Some(id);
                 }
                 tx.execute("INSERT INTO recording_positions(recording_id,folder_id,position) VALUES(?1,?2,?3)",params![record.id,local_parent,recording["position"].as_i64().unwrap_or(0).max(0)])?;
@@ -856,7 +855,8 @@ mod tests {
         store.restore_snapshot_organized("remote-first",&first,&[],&manifest).unwrap();
         store.connection.execute("UPDATE recording_folders SET name='Local rename'",[]).unwrap();
         let second=transcription("restore-second",TranscriptionStatus::Completed);
-        store.restore_snapshot_organized("remote-second",&second,&[],&manifest).unwrap();
+        let mut next_manifest=manifest.clone();next_manifest["revision"]="two".into();
+        store.restore_snapshot_organized("remote-second",&second,&[],&next_manifest).unwrap();
         let nodes=store.load_organization().unwrap();let nodes=nodes.as_array().unwrap();
         let folders:Vec<_>=nodes.iter().filter(|node|node["kind"]=="folder").collect();assert_eq!(folders.len(),1);assert_eq!(folders[0]["name"],"Local rename");
         let placements:Vec<_>=nodes.iter().filter(|node|node["kind"]=="recording").collect();assert_eq!(placements.len(),2);assert_eq!(placements[0]["parent_id"],placements[1]["parent_id"]);
