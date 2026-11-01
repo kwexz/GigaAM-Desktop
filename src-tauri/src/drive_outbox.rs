@@ -107,9 +107,13 @@ fn upload_recording(root:&std::path::Path,snapshot:&SnapshotPayload)->Result<(),
     let target=lineage_directory.join(format!("{}.json",snapshot.recording_id));
     let staged=target.with_extension("json.partial");
     std::fs::write(&staged,serde_json::json!({"original_recording_id":manifest["original_recording_id"],"device_id":manifest["device_id"],"revision":manifest["revision"]}).to_string()).map_err(|_|"Could not stage uploaded lineage")?;
-    // Remove/rename is recoverable: a missing local lineage never deletes cloud data.
-    if target.exists(){std::fs::remove_file(&target).map_err(|_|"Could not replace uploaded lineage")?;}
-    std::fs::rename(staged,target).map_err(|_|"Could not publish uploaded lineage")?;
+    // Keep the last acknowledged parent if publication is interrupted. A
+    // durable SQLite row avoids the Windows remove-then-rename crash window.
+    let db=rusqlite::Connection::open(root.join("drive-outbox.sqlite")).map_err(|_|"Lineage store unavailable")?;
+    db.busy_timeout(std::time::Duration::from_secs(5)).map_err(|_|"Lineage store unavailable")?;
+    db.execute_batch("PRAGMA synchronous=FULL;CREATE TABLE IF NOT EXISTS drive_local_lineage(recording_id TEXT PRIMARY KEY,manifest TEXT NOT NULL)").map_err(|_|"Lineage schema unavailable")?;
+    db.execute("INSERT INTO drive_local_lineage(recording_id,manifest) VALUES(?1,?2) ON CONFLICT(recording_id) DO UPDATE SET manifest=excluded.manifest",params![snapshot.recording_id,std::fs::read_to_string(&staged).map_err(|_|"Lineage staging unavailable")?]).map_err(|_|"Lineage persistence failed")?;
+    let _=std::fs::remove_file(staged);
     Ok(())
 }
 
@@ -153,6 +157,16 @@ fn device_id(root:&std::path::Path)->Result<String,String>{
 pub struct Lineage { pub original_id:String,pub device_id:String,pub revision:String }
 
 pub fn snapshot_lineage(root:&std::path::Path,id:&str)->Result<Option<Lineage>,String>{
+    let db_path=root.join("drive-outbox.sqlite");
+    if db_path.exists(){
+        use rusqlite::OptionalExtension;
+        let db=rusqlite::Connection::open(&db_path).map_err(|_|"Lineage store unavailable")?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS drive_local_lineage(recording_id TEXT PRIMARY KEY,manifest TEXT NOT NULL)").map_err(|_|"Lineage schema unavailable")?;
+        if let Some(value)=db.query_row("SELECT manifest FROM drive_local_lineage WHERE recording_id=?1",[id],|row|row.get::<_,String>(0)).optional().map_err(|_|"Lineage lookup failed")?{
+            let value:serde_json::Value=serde_json::from_str(&value).map_err(|_|"Invalid persisted lineage")?;
+            return Ok(Some(Lineage{original_id:value["original_recording_id"].as_str().ok_or("Original identity missing")?.into(),device_id:value["device_id"].as_str().ok_or("Device identity missing")?.into(),revision:value["revision"].as_str().ok_or("Revision missing")?.into()}));
+        }
+    }
     let latest=root.join("drive-lineage").join(format!("{id}.json"));
     let path=if latest.exists(){latest}else{root.join("live").join(id).join("manifest.json")};
     if !path.exists(){return Ok(None);}
