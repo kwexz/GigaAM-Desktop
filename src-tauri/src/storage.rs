@@ -36,7 +36,10 @@ impl Store {
             // Include empty folders too; validate every source parent chain
             // before committing any recording or tree data.
             let device=manifest["device_id"].as_str().unwrap_or("legacy");
-            let folder_id=|id:&str|{use sha2::{Digest,Sha256};format!("drive-folder-{:x}",Sha256::digest(format!("{device}:{id}").as_bytes()))};
+            let folder_id=|id:&str|{
+                if id.starts_with("drive-folder-")&&id.len()==77&&id[13..].bytes().all(|c|c.is_ascii_hexdigit()){return id.to_owned();}
+                use sha2::{Digest,Sha256};format!("drive-folder-{:x}",Sha256::digest(format!("{device}:{id}").as_bytes()))
+            };
             let mut imported=std::collections::HashSet::new();
             for folder in nodes.iter().filter(|node|node["kind"]=="folder"){
                 let source=folder["id"].as_str().filter(|id|!id.is_empty()).ok_or(rusqlite::Error::InvalidQuery)?;
@@ -86,7 +89,7 @@ impl Store {
                     use sha2::{Digest,Sha256};
                     let source_folder=folder["id"].as_str().ok_or(rusqlite::Error::InvalidQuery)?;
                     let device=manifest["device_id"].as_str().unwrap_or("legacy");
-                    let id=format!("drive-folder-{:x}",Sha256::digest(format!("{device}:{source_folder}").as_bytes()));
+                    let id=if source_folder.starts_with("drive-folder-")&&source_folder.len()==77&&source_folder[13..].bytes().all(|c|c.is_ascii_hexdigit()){source_folder.to_owned()}else{format!("drive-folder-{:x}",Sha256::digest(format!("{device}:{source_folder}").as_bytes()))};
                     tx.execute("INSERT OR IGNORE INTO recording_folders(id,parent_id,name,position) VALUES(?1,?2,?3,?4)",params![id,local_parent,name,folder["position"].as_i64().unwrap_or(0).max(0)])?;local_parent=Some(id);
                 }
                 tx.execute("INSERT INTO recording_positions(recording_id,folder_id,position) VALUES(?1,?2,?3)",params![record.id,local_parent,recording["position"].as_i64().unwrap_or(0).max(0)])?;
@@ -922,6 +925,12 @@ mod tests {
         store.restore_snapshot_organized("move-two",&transcription("move-two",TranscriptionStatus::Completed),&[],&manifest).unwrap();let folders=store.list_folders().unwrap();let b=folders.iter().find(|f|f.2=="B").unwrap();assert!(b.1.is_some());assert_eq!(b.3,3);
         store.connection.execute("UPDATE recording_folders SET parent_id=NULL,position=9 WHERE name='B'",[]).unwrap();manifest["organization"][1]["position"]=4.into();
         store.restore_snapshot_organized("move-three",&transcription("move-three",TranscriptionStatus::Completed),&[],&manifest).unwrap();let folders=store.list_folders().unwrap();let b=folders.iter().find(|f|f.2=="B").unwrap();assert!(b.1.is_none());assert_eq!(b.3,9);
+    }
+    #[test]fn drive_folder_identity_survives_second_device_roundtrip(){
+        let mut store=super::Store::memory().unwrap();let first=serde_json::json!({"device_id":"device-a","organization":[{"id":"folder","kind":"folder","parent_id":null,"name":"Folder","position":0}]});
+        store.restore_snapshot_organized("roundtrip-a",&transcription("roundtrip-a",TranscriptionStatus::Completed),&[],&first).unwrap();
+        let organization=store.load_organization().unwrap();let second=serde_json::json!({"device_id":"device-b","organization":organization});
+        store.restore_snapshot_organized("roundtrip-b",&transcription("roundtrip-b",TranscriptionStatus::Completed),&[],&second).unwrap();assert_eq!(store.list_folders().unwrap().len(),1);
     }
     #[test]fn drive_restore_is_atomic_and_idempotent(){
         let mut store=super::Store::memory().unwrap();let record=transcription("restored",TranscriptionStatus::Completed);
