@@ -31,6 +31,30 @@ impl Store {
         // Import only this recording's ancestor path, using snapshot-local IDs.
         // Never replace unrelated local folders or overwrite their names.
         if let Some(nodes)=manifest["organization"].as_array(){
+            // Include empty folders too; validate every source parent chain
+            // before committing any recording or tree data.
+            let device=manifest["device_id"].as_str().unwrap_or("legacy");
+            let folder_id=|id:&str|{use sha2::{Digest,Sha256};format!("drive-folder-{:x}",Sha256::digest(format!("{device}:{id}").as_bytes()))};
+            let mut imported=std::collections::HashSet::new();
+            for folder in nodes.iter().filter(|node|node["kind"]=="folder"){
+                let source=folder["id"].as_str().filter(|id|!id.is_empty()).ok_or(rusqlite::Error::InvalidQuery)?;
+                let mut cursor=Some(source);let mut seen=std::collections::HashSet::new();
+                while let Some(id)=cursor{
+                    if !seen.insert(id)||seen.len()>64{return Err(rusqlite::Error::InvalidQuery);}
+                    let node=nodes.iter().find(|node|node["kind"]=="folder"&&node["id"].as_str()==Some(id)).ok_or(rusqlite::Error::InvalidQuery)?;
+                    cursor=node["parent_id"].as_str();
+                }
+                let name=folder["name"].as_str().filter(|name|!name.trim().is_empty()&&name.len()<=1024).ok_or(rusqlite::Error::InvalidQuery)?;
+                if tx.execute("INSERT OR IGNORE INTO recording_folders(id,parent_id,name,position) VALUES(?1,NULL,?2,?3)",params![folder_id(source),name,folder["position"].as_i64().unwrap_or(0).max(0)])?==1{imported.insert(folder_id(source));}
+            }
+            // Set parents only for newly imported folders; existing local
+            // hierarchy is retained until explicit conflict resolution.
+            for folder in nodes.iter().filter(|node|node["kind"]=="folder"){
+                let id=folder_id(folder["id"].as_str().ok_or(rusqlite::Error::InvalidQuery)?);
+                if !imported.contains(&id){continue;}
+                let parent=folder["parent_id"].as_str().map(&folder_id);
+                tx.execute("UPDATE recording_folders SET parent_id=?2 WHERE id=?1 AND parent_id IS NULL AND ?2 IS NOT NULL",params![id,parent])?;
+            }
             let original=manifest["original_recording_id"].as_str().or_else(||manifest["recording"]["id"].as_str()).unwrap_or("");
             if let Some(recording)=nodes.iter().find(|node|node["kind"]=="recording"&&node["id"].as_str()==Some(original)){
                 let mut parent=recording["parent_id"].as_str();let mut chain=Vec::new();let mut seen=std::collections::HashSet::new();
@@ -860,6 +884,11 @@ mod tests {
         let nodes=store.load_organization().unwrap();let nodes=nodes.as_array().unwrap();
         let folders:Vec<_>=nodes.iter().filter(|node|node["kind"]=="folder").collect();assert_eq!(folders.len(),1);assert_eq!(folders[0]["name"],"Local rename");
         let placements:Vec<_>=nodes.iter().filter(|node|node["kind"]=="recording").collect();assert_eq!(placements.len(),2);assert_eq!(placements[0]["parent_id"],placements[1]["parent_id"]);
+    }
+    #[test]fn drive_restore_preserves_empty_nested_folders(){
+        let mut store=super::Store::memory().unwrap();let record=transcription("restore-empty",TranscriptionStatus::Completed);
+        let manifest=serde_json::json!({"device_id":"device","organization":[{"id":"child","kind":"folder","parent_id":"parent","name":"Empty child","position":0},{"id":"parent","kind":"folder","parent_id":null,"name":"Empty parent","position":0}]});
+        store.restore_snapshot_organized("empty-remote",&record,&[],&manifest).unwrap();let nodes=store.load_organization().unwrap();let nodes=nodes.as_array().unwrap();let parent=nodes.iter().find(|node|node["name"]=="Empty parent").unwrap();let child=nodes.iter().find(|node|node["name"]=="Empty child").unwrap();assert_eq!(child["parent_id"],parent["id"]);
     }
     #[test]fn drive_restore_is_atomic_and_idempotent(){
         let mut store=super::Store::memory().unwrap();let record=transcription("restored",TranscriptionStatus::Completed);
