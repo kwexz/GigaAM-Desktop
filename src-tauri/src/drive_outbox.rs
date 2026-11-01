@@ -138,6 +138,18 @@ pub fn enqueue_recording(root:&std::path::Path,id:&str,mut manifest:serde_json::
     manifest["parent_revision"]=parent.as_ref().map(|value|value.revision.clone()).into();
     manifest["revision"]=revision.clone().into();
     manifest["device_id"]=device_id(root)?.into();
+    if let Some(nodes)=manifest["organization"].as_array_mut(){
+        let device=device_id(root)?;
+        let canonical=|id:&str|{
+            if id.starts_with("drive-folder-")&&id.len()==77&&id[13..].bytes().all(|c|c.is_ascii_hexdigit()){id.to_owned()}
+            else{format!("drive-folder-{:x}",Sha256::digest(format!("{device}:{id}").as_bytes()))}
+        };
+        let folders:std::collections::HashMap<String,String>=nodes.iter().filter(|node|node["kind"]=="folder").filter_map(|node|node["id"].as_str().map(|id|(id.to_owned(),canonical(id)))).collect();
+        for node in nodes{
+            if node["kind"]=="folder"{if let Some(id)=node["id"].as_str().and_then(|id|folders.get(id)).cloned(){node["id"]=id.into();}}
+            if let Some(parent)=node["parent_id"].as_str().and_then(|id|folders.get(id)).cloned(){node["parent_id"]=parent.into();}
+        }
+    }
     let payload=SnapshotPayload{revision:revision.clone(),recording_id:id.into(),manifest,audio};
     Outbox::open(&root.join("drive-outbox.sqlite")).and_then(|queue|queue.enqueue(&revision,&serde_json::to_string(&payload).unwrap())).map_err(|_|"Could not persist snapshot job".into())
 }
@@ -219,6 +231,11 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
         let root=std::env::temp_dir().join(format!("gigaam-record-job-{}",crate::new_id()));std::fs::create_dir_all(&root).unwrap();let path=root.join("mic.ogg");std::fs::write(&path,b"audio").unwrap();
         super::enqueue_recording(&root,"session",serde_json::json!({"version":1,"segments":[],"tracks":[{"offset_seconds":0.5}]}),&[path.clone()]).unwrap();std::fs::write(path,b"edited").unwrap();
         let mut queue=super::Outbox::open(&root.join("drive-outbox.sqlite")).unwrap();queue.run_one(0,|job|{let snapshot:super::SnapshotPayload=serde_json::from_str(&job.payload).unwrap();assert_eq!(std::fs::read(&snapshot.audio[0]).unwrap(),b"audio");assert_eq!(snapshot.manifest["audio"][0]["bytes"],5);assert_eq!(snapshot.manifest["tracks"][0]["offset_seconds"],0.5);Ok(())}).unwrap();drop(queue);std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]fn queued_tree_uses_canonical_ids_and_matching_parent_references(){
+        let root=std::env::temp_dir().join(format!("gigaam-tree-job-{}",crate::new_id()));std::fs::create_dir_all(&root).unwrap();let path=root.join("mic.ogg");std::fs::write(&path,b"audio").unwrap();
+        super::enqueue_recording(&root,"record",serde_json::json!({"organization":[{"id":"folder","kind":"folder","parent_id":null},{"id":"record","kind":"recording","parent_id":"folder"}]}),&[path]).unwrap();
+        let mut queue=super::Outbox::open(&root.join("drive-outbox.sqlite")).unwrap();queue.run_one(0,|job|{let snapshot:super::SnapshotPayload=serde_json::from_str(&job.payload).unwrap();let nodes=&snapshot.manifest["organization"];assert!(nodes[0]["id"].as_str().unwrap().starts_with("drive-folder-"));assert_eq!(nodes[1]["parent_id"],nodes[0]["id"]);Ok(())}).unwrap();drop(queue);std::fs::remove_dir_all(root).unwrap();
     }
     #[test]fn retry_survives_restart_and_keeps_immutable_payload(){
         let path=std::env::temp_dir().join(format!("gigaam-outbox-{}.sqlite",crate::new_id()));
