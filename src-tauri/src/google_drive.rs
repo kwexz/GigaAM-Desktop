@@ -141,6 +141,32 @@ pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Pa
 #[derive(Deserialize, serde::Serialize, Clone)]
 pub struct RemoteFile { pub id: String, pub name: String }
 
+#[derive(serde::Serialize)]
+pub struct SnapshotBranch { pub file_id:String,pub original_id:String,pub revision:String,pub concurrent:bool }
+
+pub fn discover_branches()->Result<Vec<SnapshotBranch>,String>{
+    let files=list_snapshots()?;
+    let root=std::env::temp_dir().join(format!("gigaam-drive-discovery-{}",crate::new_id()));
+    std::fs::create_dir_all(&root).map_err(|_|"Could not stage snapshot discovery")?;
+    let result=(||{
+        let mut groups:std::collections::HashMap<String,Vec<(String,serde_json::Value)>>=Default::default();
+        for file in files.into_iter().take(100){
+            let path=root.join(crate::new_id());download_file(&file.id,&path,8*1024*1024)?;
+            let value:serde_json::Value=serde_json::from_slice(&std::fs::read(&path).map_err(|_|"Discovery manifest unavailable")?).map_err(|_|"Invalid snapshot manifest")?;
+            validate_manifest(&value)?;
+            let original=value["original_recording_id"].as_str().or_else(||value["recording"]["id"].as_str()).ok_or("Snapshot identity missing")?.to_owned();
+            groups.entry(original).or_default().push((file.id,value));
+        }
+        let mut branches=Vec::new();
+        for(original,values)in groups{
+            let manifests:Vec<_>=values.iter().map(|(_,value)|value.clone()).collect();let heads=crate::drive_outbox::conflict_heads(&manifests);let concurrent=heads.len()>1;
+            for(file_id,value)in values{if let Some(revision)=value["revision"].as_str(){if heads.iter().any(|head|head==revision){branches.push(SnapshotBranch{file_id,original_id:original.clone(),revision:revision.into(),concurrent});}}}
+        }
+        Ok(branches)
+    })();
+    let _=std::fs::remove_dir_all(root);result
+}
+
 pub fn list_snapshots() -> Result<Vec<RemoteFile>,String> {
     let folder = ensure_folder()?;
     let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(60)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"HTTP setup failed")?;

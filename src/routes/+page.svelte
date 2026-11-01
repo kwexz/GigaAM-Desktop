@@ -58,10 +58,11 @@
 	let googleUploading = $state(false);
 	let driveBrowserOpen = $state(false);
 	let driveSnapshots = $state<Array<{ id: string; name: string }>>([]);
+	let driveBranches = $state<Array<{ file_id: string; original_id: string; revision: string; concurrent: boolean }>>([]);
 	let driveLoading = $state(false);
 	async function openDriveBackups() {
 		driveBrowserOpen = true; driveLoading = true;
-		try { driveSnapshots = await invoke('google_drive_snapshots'); }
+		try { driveSnapshots = await invoke('google_drive_snapshots'); driveBranches = await invoke('google_drive_branches'); }
 		catch (cause) { error = String(cause); }
 		finally { driveLoading = false; }
 	}

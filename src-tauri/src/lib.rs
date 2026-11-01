@@ -91,6 +91,11 @@ async fn google_drive_snapshots() -> Result<Vec<google_drive::RemoteFile>,String
 }
 
 #[tauri::command]
+async fn google_drive_branches()->Result<Vec<google_drive::SnapshotBranch>,String>{
+    tauri::async_runtime::spawn_blocking(google_drive::discover_branches).await.map_err(|_|"Drive branch discovery failed")?
+}
+
+#[tauri::command]
 async fn google_drive_restore(file_id:String, app:tauri::AppHandle, state:tauri::State<'_,Arc<Mutex<Store>>>) -> Result<String,String> {
     let store=state.inner().clone();
     let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;
@@ -1437,6 +1442,7 @@ pub fn run() {
             google_drive_prepare_folder,
             google_drive_upload,
             google_drive_snapshots,
+            google_drive_branches,
             google_drive_restore,
             load_organization,
             save_organization,
