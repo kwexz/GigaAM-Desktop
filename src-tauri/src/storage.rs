@@ -31,6 +31,7 @@ impl Store {
         // Three-way folder-name reconciliation: apply a remote rename only
         // while the local value still matches the last imported baseline.
         tx.execute_batch("CREATE TABLE IF NOT EXISTS drive_folder_baselines(local_id TEXT PRIMARY KEY REFERENCES recording_folders(id) ON DELETE CASCADE,name TEXT NOT NULL)")?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS drive_folder_locations(local_id TEXT PRIMARY KEY REFERENCES recording_folders(id) ON DELETE CASCADE,parent_id TEXT,position INTEGER NOT NULL)")?;
         if let Some(nodes)=manifest["organization"].as_array(){
             // Include empty folders too; validate every source parent chain
             // before committing any recording or tree data.
@@ -58,9 +59,18 @@ impl Store {
             // hierarchy is retained until explicit conflict resolution.
             for folder in nodes.iter().filter(|node|node["kind"]=="folder"){
                 let id=folder_id(folder["id"].as_str().ok_or(rusqlite::Error::InvalidQuery)?);
-                if !imported.contains(&id){continue;}
                 let parent=folder["parent_id"].as_str().map(&folder_id);
-                tx.execute("UPDATE recording_folders SET parent_id=?2 WHERE id=?1 AND parent_id IS NULL AND ?2 IS NOT NULL",params![id,parent])?;
+                let position=folder["position"].as_i64().unwrap_or(0).max(0);
+                let baseline:Option<(Option<String>,i64)>=tx.query_row("SELECT parent_id,position FROM drive_folder_locations WHERE local_id=?1",[&id],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+                let local:(Option<String>,i64)=tx.query_row("SELECT parent_id,position FROM recording_folders WHERE id=?1",[&id],|row|Ok((row.get(0)?,row.get(1)?)))?;
+                if imported.contains(&id)||baseline.as_ref()==Some(&local){
+                    // A valid source tree can still cycle with a conflicting
+                    // local move. Keep local structure rather than introduce it.
+                    let mut cursor=parent.clone();let mut seen=std::collections::HashSet::new();let mut safe=true;
+                    while let Some(current)=cursor{if current==id||!seen.insert(current.clone()){safe=false;break;}cursor=tx.query_row("SELECT parent_id FROM recording_folders WHERE id=?1",[current],|row|row.get(0)).optional()?.flatten();}
+                    if safe{tx.execute("UPDATE recording_folders SET parent_id=?2,position=?3 WHERE id=?1",params![id,parent,position])?;}
+                }
+                tx.execute("INSERT INTO drive_folder_locations(local_id,parent_id,position) VALUES(?1,?2,?3) ON CONFLICT(local_id) DO UPDATE SET parent_id=excluded.parent_id,position=excluded.position",params![id,parent,position])?;
             }
             let original=manifest["original_recording_id"].as_str().or_else(||manifest["recording"]["id"].as_str()).unwrap_or("");
             if let Some(recording)=nodes.iter().find(|node|node["kind"]=="recording"&&node["id"].as_str()==Some(original)){
@@ -904,6 +914,14 @@ mod tests {
         assert_eq!(store.list_folders().unwrap()[0].2,"Remote rename");
         store.connection.execute("UPDATE recording_folders SET name='Local edit'",[]).unwrap();manifest["organization"][0]["name"]="Other remote edit".into();
         store.restore_snapshot_organized("rename-three",&transcription("rename-three",TranscriptionStatus::Completed),&[],&manifest).unwrap();assert_eq!(store.list_folders().unwrap()[0].2,"Local edit");
+    }
+    #[test]fn drive_remote_move_preserves_concurrent_local_position(){
+        let mut store=super::Store::memory().unwrap();let mut manifest=serde_json::json!({"device_id":"device","organization":[{"id":"a","kind":"folder","parent_id":null,"name":"A","position":0},{"id":"b","kind":"folder","parent_id":null,"name":"B","position":1}]});
+        store.restore_snapshot_organized("move-one",&transcription("move-one",TranscriptionStatus::Completed),&[],&manifest).unwrap();
+        manifest["organization"][1]["parent_id"]="a".into();manifest["organization"][1]["position"]=3.into();
+        store.restore_snapshot_organized("move-two",&transcription("move-two",TranscriptionStatus::Completed),&[],&manifest).unwrap();let folders=store.list_folders().unwrap();let b=folders.iter().find(|f|f.2=="B").unwrap();assert!(b.1.is_some());assert_eq!(b.3,3);
+        store.connection.execute("UPDATE recording_folders SET parent_id=NULL,position=9 WHERE name='B'",[]).unwrap();manifest["organization"][1]["position"]=4.into();
+        store.restore_snapshot_organized("move-three",&transcription("move-three",TranscriptionStatus::Completed),&[],&manifest).unwrap();let folders=store.list_folders().unwrap();let b=folders.iter().find(|f|f.2=="B").unwrap();assert!(b.1.is_none());assert_eq!(b.3,9);
     }
     #[test]fn drive_restore_is_atomic_and_idempotent(){
         let mut store=super::Store::memory().unwrap();let record=transcription("restored",TranscriptionStatus::Completed);
