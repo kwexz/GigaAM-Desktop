@@ -883,6 +883,14 @@ fn map_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptSegment> {
 
 #[cfg(test)]
 mod tests {
+    #[test]fn drive_restore_uses_original_local_folder_mapping(){
+        let mut store=super::Store::memory().unwrap();
+        store.save_organization(serde_json::json!([{"id":"local-folder","kind":"folder","parent_id":null,"name":"Local folder","position":0}])).unwrap();
+        let manifest=serde_json::json!({"device_id":"device","local_folder_mappings":{"cloud-folder":"local-folder"},"original_recording_id":"original","organization":[{"id":"cloud-folder","kind":"folder","parent_id":null,"name":"Remote name","position":0},{"id":"original","kind":"recording","parent_id":"cloud-folder","position":0}]});
+        store.restore_snapshot_organized("mapped-remote",&transcription("mapped-local",TranscriptionStatus::Completed),&[],&manifest).unwrap();
+        assert_eq!(store.list_folders().unwrap().len(),1);assert_eq!(store.list_folders().unwrap()[0].2,"Local folder");
+        let nodes=store.load_organization().unwrap();let record=nodes.as_array().unwrap().iter().find(|node|node["id"]=="mapped-local").unwrap();assert_eq!(record["parent_id"],"local-folder");
+    }
     #[test]fn drive_restore_keeps_folder_path_and_rolls_back_cycle(){
         let mut store=super::Store::memory().unwrap();let record=transcription("restored-tree",TranscriptionStatus::Completed);
         let mut manifest=serde_json::json!({"original_recording_id":"original","device_id":"device","revision":"one","organization":[{"id":"folder","kind":"folder","parent_id":"folder","name":"Folder","position":0},{"id":"original","kind":"recording","parent_id":"folder","position":2}]});
