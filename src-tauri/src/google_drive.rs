@@ -214,9 +214,13 @@ pub fn download_file(id:&str, destination:&std::path::Path, max_bytes:u64) -> Re
     if id.is_empty() || !id.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'_'||c==b'-'){return Err("Invalid Drive file ID".into());}
     let client=reqwest::blocking::Client::builder().timeout(Duration::from_secs(600)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"HTTP setup failed")?;
     let token=access_token(&client)?;
-    let mut response=client.get(format!("https://www.googleapis.com/drive/v3/files/{id}?alt=media")).bearer_auth(token).send().map_err(|_|"Drive download unavailable")?;
+    let response=client.get(format!("https://www.googleapis.com/drive/v3/files/{id}?alt=media")).bearer_auth(token).send().map_err(|_|"Drive download unavailable")?;
     if !response.status().is_success(){return Err("Drive download rejected".into());}
-    let staged=destination.with_extension("download.partial");
+    store_download(response,destination,max_bytes)
+}
+
+fn store_download(mut response:impl Read,destination:&std::path::Path,max_bytes:u64)->Result<(),String>{
+    let staged=destination.with_extension(format!("{}.download.partial",crate::new_id()));
     let result=(||{
         let mut output=std::fs::File::create(&staged).map_err(|_|"Could not create download")?;
         let mut buffer=[0u8;65536];let mut total=0u64;
@@ -297,6 +301,15 @@ pub fn disconnect() -> Result<(),String> {
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn download_contract_streams_http_body_and_keeps_existing_destination(){
+        use std::io::Write;
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move||{let(mut stream,_)=listener.accept().unwrap();let mut request=[0u8;1024];let _=std::io::Read::read(&mut stream,&mut request);stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\naudio").unwrap();});
+        let root=std::env::temp_dir().join(format!("gigaam-http-download-{}",crate::new_id()));std::fs::create_dir_all(&root).unwrap();let path=root.join("audio.ogg");
+        let response=reqwest::blocking::get(format!("http://{address}/media")).unwrap();super::store_download(response,&path,5).unwrap();server.join().unwrap();assert_eq!(std::fs::read(&path).unwrap(),b"audio");
+        assert!(super::store_download(std::io::Cursor::new(b"other"),&path,5).is_err());assert_eq!(std::fs::read(&path).unwrap(),b"audio");
+        assert!(super::store_download(std::io::Cursor::new(b"too large"),&root.join("oversized"),2).is_err());assert!(!root.join("oversized").exists());assert_eq!(std::fs::read_dir(&root).unwrap().count(),1);std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]fn merge_selection_rejects_other_recordings_stale_heads_and_duplicates(){
         let branches=vec![super::SnapshotBranch{file_id:"a".into(),original_id:"record".into(),revision:"left".into(),concurrent:true},super::SnapshotBranch{file_id:"b".into(),original_id:"record".into(),revision:"right".into(),concurrent:true}];
         assert!(super::validate_merge_selection("record",&["left".into(),"right".into()],&branches).is_ok());
