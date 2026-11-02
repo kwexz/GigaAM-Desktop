@@ -107,11 +107,15 @@ pub fn ensure_folder() -> Result<String,String> {
 pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Path) -> Result<String,String> {
     let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(600)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "HTTP setup failed")?;
     let token = access_token(&client)?;
+    upload_snapshot_api(&client,&token,folder,key,name,path,"https://www.googleapis.com")
+}
+
+fn upload_snapshot_api(client:&reqwest::blocking::Client,token:&str,folder:&str,key:&str,name:&str,path:&std::path::Path,base:&str)->Result<String,String>{
     let size = std::fs::metadata(path).map_err(|_| "Backup source unavailable")?.len();
     // Reconcile a previous successful PUT whose response was lost before the
     // durable local acknowledgement. Never invent a new snapshot identity.
     if !key.bytes().all(|c|c.is_ascii_alphanumeric()||b":-_".contains(&c)) {return Err("Invalid snapshot identity".into());}
-    let mut lookup=url::Url::parse("https://www.googleapis.com/drive/v3/files").unwrap();
+    let mut lookup=url::Url::parse(&format!("{base}/drive/v3/files")).map_err(|_|"Invalid Drive endpoint")?;
     lookup.query_pairs_mut().append_pair("q",&format!("'{folder}' in parents and trashed = false and appProperties has {{ key='gigaamSnapshot' and value='{key}' }}")).append_pair("fields","files(id,size)").append_pair("pageSize","2");
     let previous=client.get(lookup).bearer_auth(&token).send().map_err(|_|"Could not reconcile snapshot retry")?;
     if !previous.status().is_success(){return Err(drive_error(previous.status(),"Snapshot retry discovery failed"));}
@@ -120,7 +124,9 @@ pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Pa
         // Existing object is not accepted solely by matching metadata. Download
         // it and compare to the immutable local payload before acknowledging.
         let temporary=path.with_extension(format!("verify-{}",crate::new_id()));
-        download_file(id,&temporary,size)?;
+        let response=client.get(format!("{base}/drive/v3/files/{id}?alt=media")).bearer_auth(token).send().map_err(|_|"Remote verification unavailable")?;
+        if !response.status().is_success(){return Err(drive_error(response.status(),"Remote verification failed"));}
+        store_download(response,&temporary,size)?;
         let compare=(||->Result<bool,String>{
             let mut left=std::fs::File::open(path).map_err(|_|"Local payload unavailable")?;let mut right=std::fs::File::open(&temporary).map_err(|_|"Remote payload unavailable")?;
             let mut a=[0u8;65536];let mut b=[0u8;65536];
@@ -129,10 +135,10 @@ pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Pa
         if compare?{return Ok(id.to_owned());}return Err("Snapshot identity conflict; both copies retained".into());
     }
     let metadata = serde_json::json!({"name":name,"parents":[folder],"appProperties":{"gigaamSnapshot":key}});
-    let response = initialize_upload(&client,"https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,size",&token,&metadata,size)?;
+    let response = initialize_upload(client,&format!("{base}/upload/drive/v3/files?uploadType=resumable&fields=id,size"),token,&metadata,size)?;
     if !response.status().is_success() { return Err(drive_error(response.status(),"Drive rejected upload initialization")); }
     let location = response.headers().get(reqwest::header::LOCATION).and_then(|value| value.to_str().ok()).ok_or("Drive upload URL missing")?;
-    let location = validate_upload_destination(location)?;
+    let location = if cfg!(test)&&base.starts_with("http://127.0.0.1:"){let url=url::Url::parse(location).map_err(|_|"Invalid test session")?;if url.origin()!=url::Url::parse(base).unwrap().origin(){return Err("Untrusted test session".into());}url}else{validate_upload_destination(location)?};
     let response = put_upload_body(&client,location,&token,path,size)?;
     if !response.status().is_success() { return Err(drive_error(response.status(),"Drive upload failed; local backup retained")); }
     let result: serde_json::Value = serde_json::from_str(&response.text().map_err(|_| "Upload response unavailable")?).map_err(|_| "Invalid upload response")?;
@@ -141,7 +147,7 @@ pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Pa
     let mut local = std::fs::File::open(path).map_err(|_| "Backup source unavailable")?;
     let mut expected = Sha256::new(); let mut buffer = [0u8;65536];
     loop { let n=local.read(&mut buffer).map_err(|_| "Local verification failed")?; if n==0 {break;} expected.update(&buffer[..n]); }
-    let mut response = client.get(format!("https://www.googleapis.com/drive/v3/files/{id}?alt=media")).bearer_auth(&token).send().map_err(|_| "Remote verification unavailable")?;
+    let mut response = client.get(format!("{base}/drive/v3/files/{id}?alt=media")).bearer_auth(token).send().map_err(|_| "Remote verification unavailable")?;
     if !response.status().is_success() { return Err(drive_error(response.status(),"Remote verification failed")); }
     let mut actual=Sha256::new(); let mut received=0u64;
     loop { let n=response.read(&mut buffer).map_err(|_| "Remote verification interrupted")?; if n==0 {break;} received+=n as u64; if received>size{return Err("Remote file size mismatch".into());} actual.update(&buffer[..n]); }
@@ -349,6 +355,20 @@ pub fn disconnect() -> Result<(),String> {
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn complete_upload_api_reconciles_retry_without_second_creation(){
+        use std::io::{Read,Write};let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();let base=format!("http://{address}");let server_base=base.clone();
+        let server=std::thread::spawn(move||{for step in 0..6{
+            let(mut socket,_)=listener.accept().unwrap();socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();let mut headers=Vec::new();let mut byte=[0u8;1];while !headers.ends_with(b"\r\n\r\n"){socket.read_exact(&mut byte).unwrap();headers.push(byte[0]);}let headers=String::from_utf8(headers).unwrap().to_lowercase();let length:usize=headers.lines().find_map(|line|line.strip_prefix("content-length: ")).unwrap_or("0").trim().parse().unwrap();let mut body=vec![0;length];socket.read_exact(&mut body).unwrap();
+            let(body,extra)=match step{
+                0=>{assert!(headers.starts_with("get /drive/v3/files?"));("{\"files\":[]}".to_owned(),String::new())},
+                1=>{assert!(headers.starts_with("post /upload/"));let metadata:serde_json::Value=serde_json::from_slice(&body).unwrap();assert_eq!(metadata["appProperties"]["gigaamSnapshot"],"record:rev:0");(String::new(),format!("Location: {server_base}/upload/session\r\n"))},
+                2=>{assert!(headers.starts_with("put /upload/session"));assert_eq!(body,b"audio");("{\"id\":\"remote-id\"}".into(),String::new())},
+                3|5=>{assert!(headers.starts_with("get /drive/v3/files/remote-id?alt=media"));("audio".into(),String::new())},
+                _=>{assert!(headers.starts_with("get /drive/v3/files?"));("{\"files\":[{\"id\":\"remote-id\",\"size\":\"5\"}]}".into(),String::new())}
+            };write!(socket,"HTTP/1.1 200 OK\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+        }});
+        let path=std::env::temp_dir().join(format!("gigaam-api-{}",crate::new_id()));std::fs::write(&path,b"audio").unwrap();let client=reqwest::blocking::Client::new();for _ in 0..2{assert_eq!(super::upload_snapshot_api(&client,"test-token","folder","record:rev:0","audio.ogg",&path,&base).unwrap(),"remote-id");}server.join().unwrap();std::fs::remove_file(path).unwrap();
+    }
     #[test]fn http_upload_retry_survives_queue_reopen_and_requires_readback(){
         use std::io::{Read,Write};
         let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
