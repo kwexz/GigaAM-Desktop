@@ -238,6 +238,29 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
 }
 
 #[cfg(test)]mod tests{
+    #[test]fn lost_manifest_response_retries_same_bytes_and_revision_after_reopen(){
+        let root=std::env::temp_dir().join(format!("gigaam-manifest-retry-{}",crate::new_id()));std::fs::create_dir_all(&root).unwrap();let audio=root.join("audio.ogg");std::fs::write(&audio,b"audio").unwrap();
+        super::enqueue_recording(&root,"record",serde_json::json!({"version":1}),&[audio]).unwrap();
+        let mut published=Vec::new();
+        {
+            let mut queue=super::Outbox::open(&root.join("drive-outbox.sqlite")).unwrap();
+            queue.run_one(0,|job|{
+                let snapshot:super::SnapshotPayload=serde_json::from_str(&job.payload).unwrap();
+                super::upload_recording_with(&root,&snapshot,"folder",|key,_,path|{
+                    if key.ends_with("manifest"){published=std::fs::read(path).unwrap();return Err("response lost".into());}
+                    Ok("remote-audio".into())
+                }).map_err(|_|false)
+            }).unwrap();assert_eq!(queue.status().unwrap().synced,0);
+        }
+        let mut queue=super::Outbox::open(&root.join("drive-outbox.sqlite")).unwrap();
+        queue.run_one(2000,|job|{
+            let snapshot:super::SnapshotPayload=serde_json::from_str(&job.payload).unwrap();
+            super::upload_recording_with(&root,&snapshot,"folder",|key,_,path|{
+                if key.ends_with("manifest"){assert_eq!(std::fs::read(path).unwrap(),published);}
+                Ok("remote-audio".into())
+            }).map_err(|_|false)
+        }).unwrap();assert_eq!(queue.status().unwrap().synced,1);drop(queue);std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]fn failed_audio_never_publishes_manifest_and_retry_keeps_order(){
         let root=std::env::temp_dir().join(format!("gigaam-publish-{}",crate::new_id()));std::fs::create_dir_all(root.join("drive-payloads")).unwrap();let a=root.join("a");let b=root.join("b");std::fs::write(&a,b"a").unwrap();std::fs::write(&b,b"b").unwrap();
         let snapshot=super::SnapshotPayload{revision:"rev".into(),recording_id:"record".into(),manifest:serde_json::json!({"audio":[{"original_filename":"a.ogg"},{"original_filename":"b.ogg"}]}),audio:vec![a,b]};
