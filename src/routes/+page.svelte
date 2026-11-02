@@ -880,11 +880,11 @@
 </div>
 
 {#if folderDialog}
-	<div class="modal-wrap"><button class="modal-backdrop" aria-label="Close dialog" onclick={() => folderDialog = null}></button><section tabindex="-1" class="modal" role="dialog" aria-modal="true" aria-label={folderDialog === 'create' ? 'Создать папку' : 'Удалить папку'}>
+	<div class="modal-wrap"><button class="modal-backdrop" aria-label="Close dialog" onclick={() => folderDialog = null}></button><div tabindex="-1" class="modal" role="dialog" aria-modal="true" aria-label={folderDialog === 'create' ? 'Создать папку' : 'Удалить папку'}>
 		<h2>{folderDialog === 'create' ? (locale === 'ru' ? 'Создать папку' : 'Create folder') : (locale === 'ru' ? 'Удалить папку?' : 'Delete folder?')}</h2>
 		{#if folderDialog === 'create'}<input aria-label={locale === 'ru' ? 'Название папки' : 'Folder name'} bind:value={folderName} onkeydown={(event) => { if (event.key === 'Enter' && folderName.trim()) { void createFolder(); folderDialog = null; } }} />{:else}<p>{locale === 'ru' ? 'Записи и вложенные папки будут сохранены в родительской папке.' : 'Recordings and nested folders will be kept in the parent folder.'}</p>{/if}
 		<div class="modal-actions"><button class="ghost" onclick={() => folderDialog = null}>{t.cancel}</button><button class={folderDialog === 'delete' ? 'danger-solid' : 'primary'} disabled={folderDialog === 'create' && !folderName.trim()} onclick={() => { if (folderDialog === 'create') void createFolder(); else void persistOrganization(deleteFolder(organization, deletingFolder)); folderDialog = null; }}>{folderDialog === 'create' ? (locale === 'ru' ? 'Создать' : 'Create') : (locale === 'ru' ? 'Удалить' : 'Delete')}</button></div>
-	</section></div>
+	</div></div>
 {/if}
 
 {#if driveBrowserOpen}
