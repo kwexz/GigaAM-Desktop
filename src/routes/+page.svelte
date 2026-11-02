@@ -60,6 +60,19 @@
 	let driveSnapshots = $state<Array<{ id: string; name: string }>>([]);
 	let driveBranches = $state<Array<{ file_id: string; original_id: string; revision: string; concurrent: boolean }>>([]);
 	let driveLoading = $state(false);
+	let pendingMerge = $state<{ original: string; parents: string[] } | null>(null);
+	let confirmMerge = $state(false);
+	async function restoreConflictVersion(branch: { file_id: string; original_id: string }) {
+		await restoreDriveBackup(branch.file_id);
+		if (!driveBrowserOpen) pendingMerge = { original: branch.original_id, parents: driveBranches.filter((entry) => entry.original_id === branch.original_id && entry.concurrent).map((entry) => entry.revision) };
+	}
+	async function publishConflictResolution() {
+		if (!selected || !pendingMerge) return;
+		googleUploading = true;
+		try { await invoke('google_drive_resolve', { id: selected.id, parents: pendingMerge.parents }); pendingMerge = null; confirmMerge = false; notify(locale === 'ru' ? 'Новая версия добавлена в очередь. Предыдущие копии сохранены.' : 'Resolution queued. Previous backups retained.'); }
+		catch (cause) { error = String(cause); }
+		finally { googleUploading = false; }
+	}
 	async function openDriveBackups() {
 		driveBrowserOpen = true; driveLoading = true;
 		try { driveSnapshots = await invoke('google_drive_snapshots'); driveBranches = await invoke('google_drive_branches'); }
@@ -883,7 +896,7 @@
 			{:else}
 				<div class="drive-snapshots">
 					{#each driveBranches.filter((branch) => branch.concurrent) as branch}
-						<div class="drive-conflict"><strong>{locale === 'ru' ? 'Конкурирующие версии — обе сохранены' : 'Concurrent versions — both retained'}</strong><p>{branch.original_id} · {branch.revision}</p><button class="ghost" onclick={() => void restoreDriveBackup(branch.file_id)}>{locale === 'ru' ? 'Восстановить эту версию отдельно' : 'Restore this version separately'}</button></div>
+						<div class="drive-conflict"><strong>{locale === 'ru' ? 'Конкурирующие версии — обе сохранены' : 'Concurrent versions — both retained'}</strong><p>{branch.original_id} · {branch.revision}</p><button class="ghost" onclick={() => void restoreConflictVersion(branch)}>{locale === 'ru' ? 'Восстановить эту версию отдельно' : 'Restore this version separately'}</button></div>
 					{/each}
 					{#each driveSnapshots as snapshot}<button class="ghost" onclick={() => void restoreDriveBackup(snapshot.id)}>{snapshot.name}</button>{:else}<p>{locale === 'ru' ? 'Резервных копий не найдено' : 'No backups found'}</p>{/each}
 				</div>
@@ -894,9 +907,12 @@
 {/if}
 
 {#if notification}<div class="notification-toast" role="status">{notification}</div>{/if}
+{#if pendingMerge && selected && !driveBrowserOpen}<div class="merge-prompt" role="status"><span>{locale === 'ru' ? 'Восстановлена конфликтующая версия. Проверьте и при необходимости отредактируйте текст.' : 'A conflicting version was restored. Review and edit its text as needed.'}</span><button class="ghost" disabled={googleUploading} onclick={() => confirmMerge = true}>{locale === 'ru' ? 'Опубликовать как решение конфликта' : 'Publish as conflict resolution'}</button><button class="ghost" onclick={() => pendingMerge = null}>{t.cancel}</button></div>{/if}
+{#if confirmMerge}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={() => confirmMerge = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label="Resolve Drive conflict"><h2>{locale === 'ru' ? 'Опубликовать текущую версию?' : 'Publish the current version?'}</h2><p>{locale === 'ru' ? 'Это не автоматическое объединение текста. Текущая запись станет новой версией выбранных ветвей; исходные облачные копии останутся доступными.' : 'This is not automatic text merging. The current recording becomes a new revision of the selected branches; original cloud backups remain available.'}</p><div class="modal-actions"><button class="ghost" onclick={() => confirmMerge = false}>{t.cancel}</button><button class="primary" disabled={googleUploading} onclick={() => void publishConflictResolution()}>{locale === 'ru' ? 'Опубликовать' : 'Publish'}</button></div></div></div>{/if}
 {#if confirmClear}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={() => confirmClear = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label={locale === 'ru' ? 'Очистить текст' : 'Clear transcript'}><h2>{locale === 'ru' ? 'Очистить весь текст?' : 'Clear the entire transcript?'}</h2><p>{locale === 'ru' ? 'Аудиозапись останется. Удалённый текст нельзя восстановить отменой.' : 'Audio will remain. Deleted text cannot be undone.'}</p><div class="modal-actions"><button class="ghost" onclick={() => confirmClear = false}>{t.cancel}</button><button class="danger-solid" onclick={() => void clearCurrentTranscript()}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button></div></div></div>{/if}
 
 <style>
+	.merge-prompt{position:fixed;bottom:80px;right:20px;z-index:25;max-width:480px;padding:16px;background:#eef4ed;border:1px solid #9aaf9e;border-radius:10px;display:flex;flex-wrap:wrap;gap:10px;font-size:13px}
 	.drive-snapshots{display:flex;flex-direction:column;gap:8px;max-height:40vh;overflow:auto}.drive-snapshots button{text-align:left;overflow-wrap:anywhere}
 	.header-actions{align-items:center}.header-actions>button.ghost{display:inline-flex;align-items:center;justify-content:center;flex:0 0 36px;width:36px;min-width:36px;height:34px;min-height:34px;padding:0!important;border-radius:8px;line-height:1;box-sizing:border-box}.header-actions>button.drive-toggle svg{display:block;flex:none}.header-actions>button:not(.theme-toggle){font-size:12px;font-weight:600}
 	.notification-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:100;background:#173f35;color:white;border-radius:8px;padding:12px 18px;max-width:90vw;font-size:13px;box-shadow:0 4px 18px #0002}

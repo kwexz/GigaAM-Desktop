@@ -66,6 +66,16 @@ async fn google_drive_prepare_folder() -> Result<String,String> {
 
 #[tauri::command]
 async fn google_drive_upload(id: String, app: tauri::AppHandle, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(),String> {
+    queue_drive_snapshot(id,None,app,state).await
+}
+
+#[tauri::command]
+async fn google_drive_resolve(id:String,parents:Vec<String>,app:tauri::AppHandle,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<(),String>{
+    if parents.len()<2||parents.len()>32{return Err("Select two or more conflicting revisions".into());}
+    queue_drive_snapshot(id,Some(parents),app,state).await
+}
+
+async fn queue_drive_snapshot(id:String,merge_parents:Option<Vec<String>>,app:tauri::AppHandle,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<(),String>{
     if id.is_empty() || id.contains(['/', '\\']) || id.contains("..") { return Err("Invalid recording ID".into()); }
     let (record, segments, organization) = {
         let store = lock_store(&state)?;
@@ -81,7 +91,14 @@ async fn google_drive_upload(id: String, app: tauri::AppHandle, state: tauri::St
         paths.sort();
         if paths.is_empty(){let path=PathBuf::from(record.audio_path.as_ref().unwrap_or(&record.source_path));if path.is_file(){paths.push(path);}}
         let offsets=std::fs::read(root.join("live").join(&id).join("tracks.json")).ok().and_then(|bytes|serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-        drive_outbox::enqueue_recording(&root,&id,serde_json::json!({"version":1,"recording":record,"segments":segments,"tracks":offsets,"organization":organization}),&paths)
+        let mut manifest=serde_json::json!({"version":1,"recording":record,"segments":segments,"tracks":offsets,"organization":organization});
+        if let Some(parents)=merge_parents{
+            let lineage=drive_outbox::snapshot_lineage(&root,&id)?.ok_or("Restore a conflict version before resolving")?;
+            let branches=google_drive::discover_branches()?;
+            google_drive::validate_merge_selection(&lineage.original_id,&parents,&branches)?;
+            manifest["merge_parents"]=serde_json::to_value(parents).map_err(|_|"Merge parents invalid")?;
+        }
+        drive_outbox::enqueue_recording(&root,&id,manifest,&paths)
     }).await.map_err(|_|"Drive backup worker failed")?
 }
 
@@ -1441,6 +1458,7 @@ pub fn run() {
             google_drive_queue_status,
             google_drive_prepare_folder,
             google_drive_upload,
+            google_drive_resolve,
             google_drive_snapshots,
             google_drive_branches,
             google_drive_restore,
