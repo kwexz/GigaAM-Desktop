@@ -349,6 +349,33 @@ pub fn disconnect() -> Result<(),String> {
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn http_upload_retry_survives_queue_reopen_and_requires_readback(){
+        use std::io::{Read,Write};
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move||{
+            for step in 0..3{
+                let(mut socket,_)=listener.accept().unwrap();socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                let mut request=Vec::new();let mut byte=[0u8;1];while !request.ends_with(b"\r\n\r\n"){socket.read_exact(&mut byte).unwrap();request.push(byte[0]);}
+                let headers=String::from_utf8(request).unwrap().to_lowercase();
+                if step<2{
+                    assert!(headers.starts_with("put /session"));let length:usize=headers.lines().find_map(|line|line.strip_prefix("content-length: ")).unwrap().trim().parse().unwrap();let mut body=vec![0;length];socket.read_exact(&mut body).unwrap();assert_eq!(body,b"immutable audio");
+                    let status=if step==0{"503 Service Unavailable"}else{"200 OK"};write!(socket,"HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                }else{
+                    assert!(headers.starts_with("get /media"));socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\nConnection: close\r\n\r\nimmutable audio").unwrap();
+                }
+            }
+        });
+        let root=std::env::temp_dir().join(format!("gigaam-http-retry-{}",crate::new_id()));std::fs::create_dir_all(&root).unwrap();let source=root.join("source.ogg");std::fs::write(&source,b"immutable audio").unwrap();let queue_path=root.join("queue.sqlite");
+        let client=reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(5)).build().unwrap();
+        let upload_url=url::Url::parse(&format!("http://{address}/session")).unwrap();
+        {let mut queue=crate::drive_outbox::Outbox::open(&queue_path).unwrap();queue.enqueue("revision","immutable").unwrap();queue.run_one(0,|_|{let response=super::put_upload_body(&client,upload_url.clone(),"test-token",&source,15).unwrap();assert_eq!(response.status(),reqwest::StatusCode::SERVICE_UNAVAILABLE);Err(false)}).unwrap();assert_eq!(queue.status().unwrap().synced,0);}
+        let mut queue=crate::drive_outbox::Outbox::open(&queue_path).unwrap();
+        assert!(!queue.run_one(1,|_|panic!("backoff bypassed")).unwrap());
+        queue.run_one(2000,|job|{
+            assert_eq!(job.attempts,1);assert_eq!(job.id,"revision");let response=super::put_upload_body(&client,upload_url.clone(),"test-token",&source,15).unwrap();assert!(response.status().is_success());
+            let response=client.get(format!("http://{address}/media")).send().unwrap();let restored=root.join("readback.ogg");super::store_download(response,&restored,15).unwrap();assert_eq!(std::fs::read(restored).unwrap(),std::fs::read(&source).unwrap());Ok(())
+        }).unwrap();assert_eq!(queue.status().unwrap().synced,1);server.join().unwrap();drop(queue);std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]fn cyclic_remote_revision_graph_is_rejected_not_hidden(){
         let cycle=vec![("one".into(),serde_json::json!({"revision":"a","parent_revision":"b"})),("two".into(),serde_json::json!({"revision":"b","parent_revision":"a"}))];assert!(super::validate_revision_graph(&cycle).is_err());
         let valid=vec![("one".into(),serde_json::json!({"revision":"a"})),("two".into(),serde_json::json!({"revision":"b","parent_revision":"a"}))];assert!(super::validate_revision_graph(&valid).is_ok());
