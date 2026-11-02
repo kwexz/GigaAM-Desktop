@@ -129,8 +129,7 @@ pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Pa
         if compare?{return Ok(id.to_owned());}return Err("Snapshot identity conflict; both copies retained".into());
     }
     let metadata = serde_json::json!({"name":name,"parents":[folder],"appProperties":{"gigaamSnapshot":key}});
-    let response = client.post("https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,size")
-        .bearer_auth(&token).header("Content-Type","application/json").header("X-Upload-Content-Length",size).body(metadata.to_string()).send().map_err(|_| "Drive upload initialization failed")?;
+    let response = initialize_upload(&client,"https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,size",&token,&metadata,size)?;
     if !response.status().is_success() { return Err(drive_error(response.status(),"Drive rejected upload initialization")); }
     let location = response.headers().get(reqwest::header::LOCATION).and_then(|value| value.to_str().ok()).ok_or("Drive upload URL missing")?;
     let location = validate_upload_destination(location)?;
@@ -153,6 +152,10 @@ pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Pa
 fn put_upload_body(client:&reqwest::blocking::Client,location:url::Url,token:&str,path:&std::path::Path,size:u64)->Result<reqwest::blocking::Response,String>{
     let file=std::fs::File::open(path).map_err(|_|"Backup source unavailable")?;
     client.put(location).bearer_auth(token).header(reqwest::header::CONTENT_TYPE,"application/octet-stream").header(reqwest::header::CONTENT_LENGTH,size).body(file).send().map_err(|_|"Drive upload interrupted; local backup retained".into())
+}
+
+fn initialize_upload(client:&reqwest::blocking::Client,endpoint:&str,token:&str,metadata:&serde_json::Value,size:u64)->Result<reqwest::blocking::Response,String>{
+    client.post(endpoint).bearer_auth(token).header("Content-Type","application/json").header("X-Upload-Content-Length",size).body(metadata.to_string()).send().map_err(|_|"Drive upload initialization failed".into())
 }
 
 #[derive(Deserialize, serde::Serialize, Clone)]
@@ -324,6 +327,11 @@ pub fn disconnect() -> Result<(),String> {
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn upload_initialization_contract_sends_snapshot_identity_and_size(){
+        use std::io::{Read,Write};let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move||{let(mut socket,_)=listener.accept().unwrap();socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();let mut headers=Vec::new();let mut byte=[0u8;1];while !headers.ends_with(b"\r\n\r\n"){socket.read_exact(&mut byte).unwrap();headers.push(byte[0]);}let headers=String::from_utf8(headers).unwrap().to_lowercase();assert!(headers.contains("x-upload-content-length: 5"));assert!(headers.contains("content-type: application/json"));let size:usize=headers.lines().find_map(|s|s.strip_prefix("content-length: ")).unwrap().trim().parse().unwrap();let mut body=vec![0;size];socket.read_exact(&mut body).unwrap();let value:serde_json::Value=serde_json::from_slice(&body).unwrap();assert_eq!(value["appProperties"]["gigaamSnapshot"],"record:revision:0");assert_eq!(value["parents"][0],"folder");socket.write_all(b"HTTP/1.1 200 OK\r\nLocation: https://www.googleapis.com/upload/drive/v3/files?upload_id=test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();});
+        let response=super::initialize_upload(&reqwest::blocking::Client::new(),&format!("http://{address}/upload"),"test-token",&serde_json::json!({"name":"audio.ogg","parents":["folder"],"appProperties":{"gigaamSnapshot":"record:revision:0"}}),5).unwrap();assert!(response.status().is_success());assert!(super::validate_upload_destination(response.headers()[reqwest::header::LOCATION].to_str().unwrap()).is_ok());server.join().unwrap();
+    }
     #[test]fn token_refresh_http_contract_uses_form_and_redacts_invalid_grant(){
         use std::io::{Read,Write};let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
         let server=std::thread::spawn(move||{for attempt in 0..2{let(mut socket,_)=listener.accept().unwrap();socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();let mut request=Vec::new();let mut byte=[0u8;1];while !request.ends_with(b"\r\n\r\n"){socket.read_exact(&mut byte).unwrap();request.push(byte[0]);}let headers=String::from_utf8(request).unwrap().to_lowercase();let length:usize=headers.lines().find_map(|line|line.strip_prefix("content-length: ")).unwrap().trim().parse().unwrap();let mut body=vec![0;length];socket.read_exact(&mut body).unwrap();let form:std::collections::HashMap<_,_>=url::form_urlencoded::parse(&body).into_owned().collect();assert_eq!(form["grant_type"],"refresh_token");assert_eq!(form["refresh_token"],"test-refresh");assert_eq!(form["client_secret"],"test-secret");let(status,body)=if attempt==0{("200 OK",r#"{"access_token":"test-access"}"#)}else{("400 Bad Request",r#"{"error":"invalid_grant","error_description":"test-secret"}"#)};write!(socket,"HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();}});
