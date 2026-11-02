@@ -35,6 +35,16 @@ fn drive_error(status:reqwest::StatusCode,operation:&str)->String {
 
 pub fn validate_manifest(value:&serde_json::Value)->Result<(),String>{
     if value["version"]!=1{return Err("Unsupported backup version".into());}
+    if let Some(parents)=value.get("merge_parents") {
+        let parents=parents.as_array().ok_or("Invalid merge parents")?;
+        if parents.len()<2||parents.len()>32{return Err("Invalid merge parent count".into());}
+        let revision=value["revision"].as_str().ok_or("Merge revision missing")?;
+        let mut seen=std::collections::HashSet::new();
+        for parent in parents{
+            let parent=parent.as_str().filter(|v|!v.is_empty()&&v.len()<=256).ok_or("Invalid merge parent")?;
+            if parent==revision||!seen.insert(parent){return Err("Cyclic or duplicate merge parent".into());}
+        }
+    }
     let audio=value["audio"].as_array().ok_or("Backup audio missing")?;
     if audio.is_empty()||audio.len()>8{return Err("Invalid backup track count".into());}
     let mut names=std::collections::HashSet::new();
@@ -278,6 +288,10 @@ pub fn disconnect() -> Result<(),String> {
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn rejects_self_referencing_and_duplicate_merge_parents(){
+        let mut value=serde_json::json!({"version":1,"revision":"merged","merge_parents":["left","right"],"audio":[{"original_filename":"audio.ogg","sha256":"a".repeat(64),"bytes":1,"file_id":"id"}]});
+        assert!(super::validate_manifest(&value).is_ok());value["merge_parents"]=serde_json::json!(["merged","left"]);assert!(super::validate_manifest(&value).is_err());value["merge_parents"]=serde_json::json!(["left","left"]);assert!(super::validate_manifest(&value).is_err());
+    }
     #[test]fn discovery_returns_both_conflicting_restore_targets_but_not_ancestor(){
         let values=vec![("base-file".into(),serde_json::json!({"revision":"base"})),("left-file".into(),serde_json::json!({"revision":"left","parent_revision":"base"})),("right-file".into(),serde_json::json!({"revision":"right","parent_revision":"base"}))];
         let branches=super::branches_for_group("recording",values);assert_eq!(branches.len(),2);assert!(branches.iter().all(|branch|branch.concurrent&&branch.original_id=="recording"));assert_eq!(branches[0].file_id,"left-file");assert_eq!(branches[1].file_id,"right-file");
