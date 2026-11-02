@@ -239,6 +239,14 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
         let values=vec![serde_json::json!({"revision":"left"}),serde_json::json!({"revision":"right"}),serde_json::json!({"revision":"unrelated"}),serde_json::json!({"revision":"merged","merge_parents":["left","right"]})];
         assert_eq!(super::conflict_heads(&values),vec!["merged","unrelated"]);
     }
+    #[test]fn queued_resolution_keeps_parent_set_across_failure_and_restart(){
+        let root=std::env::temp_dir().join(format!("gigaam-merge-retry-{}",crate::new_id()));std::fs::create_dir_all(&root).unwrap();let audio=root.join("audio.ogg");std::fs::write(&audio,b"original audio").unwrap();
+        super::enqueue_recording(&root,"record",serde_json::json!({"version":1,"merge_parents":["left","right"]}),&[audio]).unwrap();
+        let mut revision=String::new();{
+            let mut queue=super::Outbox::open(&root.join("drive-outbox.sqlite")).unwrap();queue.run_one(0,|job|{let snapshot:super::SnapshotPayload=serde_json::from_str(&job.payload).unwrap();revision=snapshot.revision;assert_eq!(snapshot.manifest["merge_parents"],serde_json::json!(["left","right"]));Err(false)}).unwrap();
+        }
+        let mut queue=super::Outbox::open(&root.join("drive-outbox.sqlite")).unwrap();queue.run_one(2000,|job|{let snapshot:super::SnapshotPayload=serde_json::from_str(&job.payload).unwrap();assert_eq!(snapshot.revision,revision);assert_eq!(snapshot.manifest["merge_parents"],serde_json::json!(["left","right"]));assert_eq!(std::fs::read(&snapshot.audio[0]).unwrap(),b"original audio");Ok(())}).unwrap();assert_eq!(queue.status().unwrap().synced,1);drop(queue);std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]fn acknowledged_local_lineage_takes_precedence_over_imported_parent(){
         let root=std::env::temp_dir().join(format!("gigaam-parent-{}",crate::new_id()));std::fs::create_dir_all(root.join("drive-lineage")).unwrap();
         std::fs::write(root.join("drive-lineage/local.json"),r#"{"original_recording_id":"original","revision":"uploaded","device_id":"device"}"#).unwrap();
