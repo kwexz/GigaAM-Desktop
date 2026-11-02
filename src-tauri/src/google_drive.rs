@@ -313,6 +313,13 @@ pub fn disconnect() -> Result<(),String> {
         assert!(super::store_download(std::io::Cursor::new(b"other"),&path,5).is_err());assert_eq!(std::fs::read(&path).unwrap(),b"audio");
         assert!(super::store_download(std::io::Cursor::new(b"too large"),&root.join("oversized"),2).is_err());assert!(!root.join("oversized").exists());assert_eq!(std::fs::read_dir(&root).unwrap().count(),1);std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]fn concurrent_downloads_publish_exactly_one_complete_payload(){
+        let root=std::env::temp_dir().join(format!("gigaam-download-race-{}",crate::new_id()));std::fs::create_dir_all(&root).unwrap();
+        let path=root.join("audio.ogg");let barrier=std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles:Vec<_>=[b"left".to_vec(),b"right".to_vec()].into_iter().map(|bytes|{let path=path.clone();let barrier=barrier.clone();std::thread::spawn(move||{barrier.wait();super::store_download(std::io::Cursor::new(bytes),&path,16)})}).collect();
+        let results:Vec<_>=handles.into_iter().map(|handle|handle.join().unwrap()).collect();assert_eq!(results.iter().filter(|result|result.is_ok()).count(),1);
+        let actual=std::fs::read(&path).unwrap();assert!(actual==b"left"||actual==b"right");assert_eq!(std::fs::read_dir(&root).unwrap().count(),1);std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]fn merge_selection_rejects_other_recordings_stale_heads_and_duplicates(){
         let branches=vec![super::SnapshotBranch{file_id:"a".into(),original_id:"record".into(),revision:"left".into(),concurrent:true},super::SnapshotBranch{file_id:"b".into(),original_id:"record".into(),revision:"right".into(),concurrent:true}];
         assert!(super::validate_merge_selection("record",&["left".into(),"right".into()],&branches).is_ok());
