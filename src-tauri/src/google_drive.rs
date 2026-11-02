@@ -70,9 +70,13 @@ pub fn connected() -> bool { credential().and_then(|entry| entry.get_password().
 
 fn access_token(client: &reqwest::blocking::Client) -> Result<String,String> {
     let refresh = credential()?.get_password().map_err(|_| "Connect Google Drive first")?;
-    let mut form = vec![("client_id",CLIENT_ID.to_owned()),("grant_type","refresh_token".into()),("refresh_token",refresh)];
-    if let Some(secret) = client_secret() { form.push(("client_secret",secret)); }
-    let response = client.post("https://oauth2.googleapis.com/token").form(&form).send().map_err(|_| "Google token refresh unavailable")?;
+    refresh_access(client,"https://oauth2.googleapis.com/token",&refresh,client_secret().as_deref())
+}
+
+fn refresh_access(client:&reqwest::blocking::Client,endpoint:&str,refresh:&str,secret:Option<&str>)->Result<String,String>{
+    let mut form = vec![("client_id",CLIENT_ID.to_owned()),("grant_type","refresh_token".into()),("refresh_token",refresh.to_owned())];
+    if let Some(secret) = secret { form.push(("client_secret",secret.to_owned())); }
+    let response = client.post(endpoint).form(&form).send().map_err(|_| "Google token refresh unavailable")?;
     if !response.status().is_success() { let status=response.status();let body=response.text().unwrap_or_default();return Err(token_error(status,&body)); }
     #[derive(Deserialize)] struct Access { access_token: String }
     let access: Access = serde_json::from_str(&response.text().map_err(|_| "Token response unavailable")?).map_err(|_| "Invalid token response")?;
@@ -320,6 +324,11 @@ pub fn disconnect() -> Result<(),String> {
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn token_refresh_http_contract_uses_form_and_redacts_invalid_grant(){
+        use std::io::{Read,Write};let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move||{for attempt in 0..2{let(mut socket,_)=listener.accept().unwrap();socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();let mut request=Vec::new();let mut byte=[0u8;1];while !request.ends_with(b"\r\n\r\n"){socket.read_exact(&mut byte).unwrap();request.push(byte[0]);}let headers=String::from_utf8(request).unwrap().to_lowercase();let length:usize=headers.lines().find_map(|line|line.strip_prefix("content-length: ")).unwrap().trim().parse().unwrap();let mut body=vec![0;length];socket.read_exact(&mut body).unwrap();let form:std::collections::HashMap<_,_>=url::form_urlencoded::parse(&body).into_owned().collect();assert_eq!(form["grant_type"],"refresh_token");assert_eq!(form["refresh_token"],"test-refresh");assert_eq!(form["client_secret"],"test-secret");let(status,body)=if attempt==0{("200 OK",r#"{"access_token":"test-access"}"#)}else{("400 Bad Request",r#"{"error":"invalid_grant","error_description":"test-secret"}"#)};write!(socket,"HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();}});
+        let client=reqwest::blocking::Client::new();let endpoint=format!("http://{address}/token");assert_eq!(super::refresh_access(&client,&endpoint,"test-refresh",Some("test-secret")).unwrap(),"test-access");let error=super::refresh_access(&client,&endpoint,"test-refresh",Some("test-secret")).unwrap_err();assert!(error.contains("invalid_grant"));assert!(!error.contains("test-secret"));server.join().unwrap();
+    }
     #[test]fn discovery_http_contract_follows_next_page_and_filters_audio(){
         use std::io::{Read,Write};let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
         let server=std::thread::spawn(move||{for index in 0..2{let(mut socket,_)=listener.accept().unwrap();let mut request=Vec::new();let mut byte=[0u8;1];while !request.ends_with(b"\r\n\r\n"){socket.read_exact(&mut byte).unwrap();request.push(byte[0]);}let request=String::from_utf8(request).unwrap();assert!(request.contains("pageSize=100"));if index==1{assert!(request.contains("pageToken=next-page"));}let body=if index==0{r#"{"files":[{"id":"one","name":"one.json"},{"id":"audio","name":"audio.ogg"}],"nextPageToken":"next-page"}"#}else{r#"{"files":[{"id":"two","name":"two.json"}]}"#};write!(socket,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();}});
