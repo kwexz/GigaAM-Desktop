@@ -248,6 +248,7 @@ fn list_snapshot_pages(client:&reqwest::blocking::Client,token:&str,folder:&str,
         #[derive(Deserialize)] struct Page { files:Vec<RemoteFile>, #[serde(rename="nextPageToken")] next:Option<String> }
         let page:Page=serde_json::from_str(&response.text().map_err(|_|"Drive discovery unavailable")?).map_err(|_|"Invalid discovery response")?;
         files.extend(page.files.into_iter().filter(|file|file.name.ends_with(".json")));
+        if seen.len()>1000{return Err("Drive discovery exceeds page budget".into());}
         if files.len()>10000{return Err("Too many snapshots; discovery limit reached".into());}
         match page.next {Some(value)=>{if !seen.insert(value.clone()){return Err("Repeated Drive page cursor".into());}next=value;},None=>break}
     }
