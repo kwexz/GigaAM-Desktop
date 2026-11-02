@@ -204,9 +204,14 @@ pub fn list_snapshots() -> Result<Vec<RemoteFile>,String> {
     let folder = ensure_folder()?;
     let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(60)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"HTTP setup failed")?;
     let token = access_token(&client)?;
+    list_snapshot_pages(&client,&token,&folder,"https://www.googleapis.com/drive/v3/files")
+}
+
+fn list_snapshot_pages(client:&reqwest::blocking::Client,token:&str,folder:&str,base:&str)->Result<Vec<RemoteFile>,String>{
     let mut files = Vec::new(); let mut next = String::new();
+    let mut seen=std::collections::HashSet::new();
     loop {
-        let mut endpoint=url::Url::parse("https://www.googleapis.com/drive/v3/files").unwrap();
+        let mut endpoint=url::Url::parse(base).map_err(|_|"Invalid discovery endpoint")?;
         endpoint.query_pairs_mut().append_pair("q",&format!("'{folder}' in parents and trashed = false and appProperties has {{ key='gigaamSnapshot' }}"))
             .append_pair("fields","nextPageToken,files(id,name)").append_pair("pageSize","100");
         if !next.is_empty(){endpoint.query_pairs_mut().append_pair("pageToken",&next);}
@@ -216,7 +221,7 @@ pub fn list_snapshots() -> Result<Vec<RemoteFile>,String> {
         let page:Page=serde_json::from_str(&response.text().map_err(|_|"Drive discovery unavailable")?).map_err(|_|"Invalid discovery response")?;
         files.extend(page.files.into_iter().filter(|file|file.name.ends_with(".json")));
         if files.len()>10000{return Err("Too many snapshots; discovery limit reached".into());}
-        match page.next {Some(value)=>next=value,None=>break}
+        match page.next {Some(value)=>{if !seen.insert(value.clone()){return Err("Repeated Drive page cursor".into());}next=value;},None=>break}
     }
     Ok(files)
 }
@@ -315,6 +320,11 @@ pub fn disconnect() -> Result<(),String> {
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn discovery_http_contract_follows_next_page_and_filters_audio(){
+        use std::io::{Read,Write};let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move||{for index in 0..2{let(mut socket,_)=listener.accept().unwrap();let mut request=Vec::new();let mut byte=[0u8;1];while !request.ends_with(b"\r\n\r\n"){socket.read_exact(&mut byte).unwrap();request.push(byte[0]);}let request=String::from_utf8(request).unwrap();assert!(request.contains("pageSize=100"));if index==1{assert!(request.contains("pageToken=next-page"));}let body=if index==0{r#"{"files":[{"id":"one","name":"one.json"},{"id":"audio","name":"audio.ogg"}],"nextPageToken":"next-page"}"#}else{r#"{"files":[{"id":"two","name":"two.json"}]}"#};write!(socket,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();}});
+        let files=super::list_snapshot_pages(&reqwest::blocking::Client::new(),"test-token","folder",&format!("http://{address}/files")).unwrap();server.join().unwrap();assert_eq!(files.iter().map(|file|file.id.as_str()).collect::<Vec<_>>(),vec!["one","two"]);
+    }
     #[test]fn resumable_body_contract_sends_exact_length_and_bytes_over_http(){
         use std::io::{Read,Write};
         let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
