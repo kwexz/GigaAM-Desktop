@@ -180,11 +180,12 @@ fn validate_revision_graph(values:&[(String,serde_json::Value)])->Result<(),Stri
         let edges:Vec<_>=value["parent_revision"].as_str().into_iter().chain(value["merge_parents"].as_array().into_iter().flatten().filter_map(|v|v.as_str())).collect();
         if let Some(previous)=parents.insert(revision,edges.clone()){if previous!=edges{return Err("Conflicting duplicate snapshot revision".into());}}
     }
+    let mut total_visits=0usize;
     for start in parents.keys(){
         let mut stack=vec![(*start,std::collections::HashSet::new())];
         let mut visited=0;
         while let Some((revision,mut path))=stack.pop(){
-            visited+=1;if visited>100000{return Err("Snapshot ancestry exceeds validation budget".into());}
+            visited+=1;total_visits+=1;if visited>100000||total_visits>1000000{return Err("Snapshot ancestry exceeds validation budget".into());}
             if !path.insert(revision){return Err("Cyclic snapshot ancestry".into());}
             if let Some(edges)=parents.get(revision){for parent in edges{stack.push((*parent,path.clone()));}}
         }
