@@ -110,7 +110,7 @@ pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Pa
     let mut lookup=url::Url::parse("https://www.googleapis.com/drive/v3/files").unwrap();
     lookup.query_pairs_mut().append_pair("q",&format!("'{folder}' in parents and trashed = false and appProperties has {{ key='gigaamSnapshot' and value='{key}' }}")).append_pair("fields","files(id,size)").append_pair("pageSize","2");
     let previous=client.get(lookup).bearer_auth(&token).send().map_err(|_|"Could not reconcile snapshot retry")?;
-    if !previous.status().is_success(){return Err("Snapshot retry discovery failed".into());}
+    if !previous.status().is_success(){return Err(drive_error(previous.status(),"Snapshot retry discovery failed"));}
     let previous:serde_json::Value=serde_json::from_str(&previous.text().map_err(|_|"Snapshot discovery unavailable")?).map_err(|_|"Invalid snapshot discovery")?;
     if let Some(id)=previous["files"][0]["id"].as_str(){
         // Existing object is not accepted solely by matching metadata. Download
@@ -141,7 +141,7 @@ pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Pa
     let mut expected = Sha256::new(); let mut buffer = [0u8;65536];
     loop { let n=local.read(&mut buffer).map_err(|_| "Local verification failed")?; if n==0 {break;} expected.update(&buffer[..n]); }
     let mut response = client.get(format!("https://www.googleapis.com/drive/v3/files/{id}?alt=media")).bearer_auth(&token).send().map_err(|_| "Remote verification unavailable")?;
-    if !response.status().is_success() { return Err("Remote verification failed".into()); }
+    if !response.status().is_success() { return Err(drive_error(response.status(),"Remote verification failed")); }
     let mut actual=Sha256::new(); let mut received=0u64;
     loop { let n=response.read(&mut buffer).map_err(|_| "Remote verification interrupted")?; if n==0 {break;} received+=n as u64; if received>size{return Err("Remote file size mismatch".into());} actual.update(&buffer[..n]); }
     if received!=size || actual.finalize()!=expected.finalize() { return Err("Remote integrity mismatch; local data retained".into()); }
@@ -200,7 +200,7 @@ pub fn list_snapshots() -> Result<Vec<RemoteFile>,String> {
             .append_pair("fields","nextPageToken,files(id,name)").append_pair("pageSize","100");
         if !next.is_empty(){endpoint.query_pairs_mut().append_pair("pageToken",&next);}
         let response=client.get(endpoint).bearer_auth(&token).send().map_err(|_|"Drive discovery unavailable")?;
-        if !response.status().is_success(){return Err("Drive discovery rejected".into());}
+        if !response.status().is_success(){return Err(drive_error(response.status(),"Drive discovery rejected"));}
         #[derive(Deserialize)] struct Page { files:Vec<RemoteFile>, #[serde(rename="nextPageToken")] next:Option<String> }
         let page:Page=serde_json::from_str(&response.text().map_err(|_|"Drive discovery unavailable")?).map_err(|_|"Invalid discovery response")?;
         files.extend(page.files.into_iter().filter(|file|file.name.ends_with(".json")));
@@ -215,7 +215,7 @@ pub fn download_file(id:&str, destination:&std::path::Path, max_bytes:u64) -> Re
     let client=reqwest::blocking::Client::builder().timeout(Duration::from_secs(600)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"HTTP setup failed")?;
     let token=access_token(&client)?;
     let response=client.get(format!("https://www.googleapis.com/drive/v3/files/{id}?alt=media")).bearer_auth(token).send().map_err(|_|"Drive download unavailable")?;
-    if !response.status().is_success(){return Err("Drive download rejected".into());}
+    if !response.status().is_success(){return Err(drive_error(response.status(),"Drive download rejected"));}
     store_download(response,destination,max_bytes)
 }
 
@@ -304,6 +304,12 @@ pub fn disconnect() -> Result<(),String> {
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn all_drive_operations_pause_on_unauthorized_not_on_rate_limit(){
+        for operation in ["Snapshot retry discovery failed","Remote verification failed","Drive discovery rejected","Drive download rejected"]{
+            let unauthorized=super::drive_error(reqwest::StatusCode::UNAUTHORIZED,operation);assert!(unauthorized.contains("revoked"));assert!(!unauthorized.contains("token="));
+            let limited=super::drive_error(reqwest::StatusCode::TOO_MANY_REQUESTS,operation);assert!(limited.contains("429"));assert!(!limited.contains("revoked"));
+        }
+    }
     #[test]fn download_contract_streams_http_body_and_keeps_existing_destination(){
         use std::io::Write;
         let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
