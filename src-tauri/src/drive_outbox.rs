@@ -246,6 +246,14 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
 }
 
 #[cfg(test)]mod tests{
+    #[test]fn concurrent_enqueue_cannot_exceed_pending_capacity(){
+        let path=std::env::temp_dir().join(format!("gigaam-capacity-race-{}",crate::new_id()));
+        {let queue=super::Outbox::open(&path).unwrap();queue.db.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<999) INSERT INTO drive_jobs(id,payload) SELECT CAST(x AS TEXT),'{}' FROM n").unwrap();}
+        let barrier=std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles:Vec<_>=["left","right"].into_iter().map(|id|{let path=path.clone();let barrier=barrier.clone();std::thread::spawn(move||{let queue=super::Outbox::open(&path).unwrap();barrier.wait();queue.enqueue(id,"{}")})}).collect();
+        assert_eq!(handles.into_iter().map(|handle|handle.join().unwrap()).filter(|result|result.is_ok()).count(),1);
+        let queue=super::Outbox::open(&path).unwrap();assert_eq!(queue.status().unwrap().pending,1000);drop(queue);let _=std::fs::remove_file(path);
+    }
     #[test]fn full_queue_rejects_new_work_but_accepts_idempotent_enqueue(){
         let path=std::env::temp_dir().join(format!("gigaam-full-{}",crate::new_id()));let queue=super::Outbox::open(&path).unwrap();queue.db.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1000) INSERT INTO drive_jobs(id,payload) SELECT CAST(x AS TEXT),'original' FROM n").unwrap();assert!(queue.enqueue("new","{}").is_err());queue.enqueue("1","changed").unwrap();let payload:String=queue.db.query_row("SELECT payload FROM drive_jobs WHERE id='1'",[],|row|row.get(0)).unwrap();assert_eq!(payload,"original");drop(queue);let _=std::fs::remove_file(path);
     }
