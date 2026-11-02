@@ -66,6 +66,7 @@ describe('GigaAM page', () => {
 		const backend = invoke.getMockImplementation()!;
 		invoke.mockImplementation(async (command: string, ...args: unknown[]) => {
 			if (command === 'google_drive_connected') return true;
+			if (command === 'google_drive_restore') return 'tx-1';
 			if (command === 'google_drive_snapshots') return [{ id: 'left-file', name: 'Left snapshot' }, { id: 'right-file', name: 'Right snapshot' }];
 			if (command === 'google_drive_branches') return [{ file_id: 'left-file', original_id: 'original', revision: 'left', concurrent: true }, { file_id: 'right-file', original_id: 'original', revision: 'right', concurrent: true }];
 			return backend(command, ...args);
@@ -76,6 +77,11 @@ describe('GigaAM page', () => {
 		expect(await screen.findAllByText('Конкурирующие версии — обе сохранены')).toHaveLength(2);
 		expect(screen.getAllByRole('button', { name: 'Восстановить эту версию отдельно' })).toHaveLength(2);
 		expect(invoke).not.toHaveBeenCalledWith('google_drive_restore', expect.anything());
+		await fireEvent.click(screen.getAllByRole('button', { name: 'Восстановить эту версию отдельно' })[0]);
+		await fireEvent.click(await screen.findByRole('button', { name: 'Опубликовать как решение конфликта' }));
+		expect(invoke).not.toHaveBeenCalledWith('google_drive_resolve', expect.anything());
+		await fireEvent.click(screen.getByRole('button', { name: /^Опубликовать$/ }));
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('google_drive_resolve', { id: 'tx-1', parents: ['left', 'right'] }));
 	});
 	beforeEach(() => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });

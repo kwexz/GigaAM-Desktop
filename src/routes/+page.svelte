@@ -60,14 +60,14 @@
 	let driveSnapshots = $state<Array<{ id: string; name: string }>>([]);
 	let driveBranches = $state<Array<{ file_id: string; original_id: string; revision: string; concurrent: boolean }>>([]);
 	let driveLoading = $state(false);
-	let pendingMerge = $state<{ original: string; parents: string[] } | null>(null);
+	let pendingMerge = $state<{ original: string; localId: string; parents: string[] } | null>(null);
 	let confirmMerge = $state(false);
 	async function restoreConflictVersion(branch: { file_id: string; original_id: string }) {
 		await restoreDriveBackup(branch.file_id);
-		if (!driveBrowserOpen) pendingMerge = { original: branch.original_id, parents: driveBranches.filter((entry) => entry.original_id === branch.original_id && entry.concurrent).map((entry) => entry.revision) };
+		if (!driveBrowserOpen) pendingMerge = { original: branch.original_id, localId: selectedId, parents: driveBranches.filter((entry) => entry.original_id === branch.original_id && entry.concurrent).map((entry) => entry.revision) };
 	}
 	async function publishConflictResolution() {
-		if (!selected || !pendingMerge) return;
+		if (!selected || !pendingMerge || selected.id !== pendingMerge.localId) return;
 		googleUploading = true;
 		try { await invoke('google_drive_resolve', { id: selected.id, parents: pendingMerge.parents }); pendingMerge = null; confirmMerge = false; notify(locale === 'ru' ? 'Новая версия добавлена в очередь. Предыдущие копии сохранены.' : 'Resolution queued. Previous backups retained.'); }
 		catch (cause) { error = String(cause); }
@@ -328,6 +328,7 @@
 	}
 
 	async function selectItem(id: string) {
+		if (pendingMerge && pendingMerge.localId !== id) { pendingMerge = null; confirmMerge = false; }
 		if (editingNameId === id) return;
 		selectedId = id;
 		segments = [];
