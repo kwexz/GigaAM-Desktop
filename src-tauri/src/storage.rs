@@ -883,6 +883,20 @@ fn map_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptSegment> {
 
 #[cfg(test)]
 mod tests {
+    #[test]fn conflicting_drive_versions_remain_independent_after_edit_and_delete(){
+        let mut store=super::Store::memory().unwrap();
+        let left=transcription("conflict-left",TranscriptionStatus::Completed);let right=transcription("conflict-right",TranscriptionStatus::Completed);
+        let left_segment=TranscriptSegment::new(&left.id,0,0.0,1.0,"left text".into(),SourceTrack::File,SegmentState::Final).unwrap();
+        let right_segment=TranscriptSegment::new(&right.id,0,0.0,1.0,"right text".into(),SourceTrack::File,SegmentState::Final).unwrap();
+        let manifest=serde_json::json!({"original_recording_id":"original","device_id":"device","revision":"left"});
+        store.restore_snapshot_organized("remote-left",&left,&[left_segment],&manifest).unwrap();
+        let mut other=manifest.clone();other["revision"]="right".into();store.restore_snapshot_organized("remote-right",&right,&[right_segment],&other).unwrap();
+        store.update_segment_text(&left.id,0,"edited left".into()).unwrap();
+        assert_eq!(store.segments(&right.id).unwrap()[0].text,"right text");
+        assert_eq!(store.restored_snapshot("remote-left").unwrap(),Some(left.id.clone()));
+        assert_eq!(store.restored_snapshot("remote-right").unwrap(),Some(right.id.clone()));
+        store.clear_transcript(&left.id).unwrap();assert_eq!(store.segments(&right.id).unwrap().len(),1);assert!(store.get(&right.id).unwrap().is_some());
+    }
     #[test]fn drive_reuploaded_copy_keeps_recording_placement(){
         let mut store=super::Store::memory().unwrap();
         let manifest=serde_json::json!({"original_recording_id":"original","organization_recording_id":"copy-on-device-b","device_id":"device-b","organization":[{"id":"folder","kind":"folder","parent_id":null,"name":"Folder","position":0},{"id":"copy-on-device-b","kind":"recording","parent_id":"folder","position":4}]});
