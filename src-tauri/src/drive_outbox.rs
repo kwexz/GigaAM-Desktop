@@ -92,19 +92,27 @@ pub fn start_worker(root: std::path::PathBuf) {
 
 fn upload_recording(root:&std::path::Path,snapshot:&SnapshotPayload)->Result<(),String>{
     let folder=crate::google_drive::ensure_folder()?;
+    upload_recording_with(root,snapshot,&folder,|key,name,path|crate::google_drive::upload_snapshot(&folder,key,name,path))
+}
+
+fn upload_recording_with(root:&std::path::Path,snapshot:&SnapshotPayload,_folder:&str,mut upload:impl FnMut(&str,&str,&std::path::Path)->Result<String,String>)->Result<(),String>{
     let mut manifest=snapshot.manifest.clone();
     let audio=manifest["audio"].as_array_mut().ok_or("Invalid queued manifest")?;
     if audio.len()!=snapshot.audio.len(){return Err("Invalid queued audio count".into());}
     for(index,path)in snapshot.audio.iter().enumerate(){
         let key=format!("{}:{}:{index}",snapshot.recording_id,snapshot.revision);
         let name=format!("{}-{}-{index}.{}",snapshot.recording_id,snapshot.revision,audio[index]["original_filename"].as_str().and_then(|s|std::path::Path::new(s).extension()).and_then(|s|s.to_str()).unwrap_or("audio"));
-        audio[index]["file_id"]=crate::google_drive::upload_snapshot(&folder,&key,&name,path)?.into();
+        audio[index]["file_id"]=upload(&key,&name,path)?.into();
     }
     let path=root.join("drive-payloads").join(format!("{}-manifest.json",snapshot.revision));
     let staged=path.with_extension("json.partial");
     std::fs::write(&staged,manifest.to_string()).map_err(|_|"Manifest staging failed")?;
-    std::fs::rename(staged,&path).map_err(|_|"Manifest publication failed")?;
-    crate::google_drive::upload_snapshot(&folder,&format!("{}:{}:manifest",snapshot.recording_id,snapshot.revision),&format!("{}-{}.json",snapshot.recording_id,snapshot.revision),&path)?;
+    if path.exists(){
+        let existing=std::fs::read(&path).map_err(|_|"Queued manifest unavailable")?;
+        if existing!=manifest.to_string().as_bytes(){return Err("Snapshot manifest changed during retry".into());}
+        let _=std::fs::remove_file(staged);
+    }else{std::fs::rename(staged,&path).map_err(|_|"Manifest publication failed")?;}
+    upload(&format!("{}:{}:manifest",snapshot.recording_id,snapshot.revision),&format!("{}-{}.json",snapshot.recording_id,snapshot.revision),&path)?;
     let lineage_directory=root.join("drive-lineage");std::fs::create_dir_all(&lineage_directory).map_err(|_|"Could not persist uploaded lineage")?;
     let target=lineage_directory.join(format!("{}.json",snapshot.recording_id));
     let staged=target.with_extension("json.partial");
@@ -230,6 +238,12 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
 }
 
 #[cfg(test)]mod tests{
+    #[test]fn failed_audio_never_publishes_manifest_and_retry_keeps_order(){
+        let root=std::env::temp_dir().join(format!("gigaam-publish-{}",crate::new_id()));std::fs::create_dir_all(root.join("drive-payloads")).unwrap();let a=root.join("a");let b=root.join("b");std::fs::write(&a,b"a").unwrap();std::fs::write(&b,b"b").unwrap();
+        let snapshot=super::SnapshotPayload{revision:"rev".into(),recording_id:"record".into(),manifest:serde_json::json!({"audio":[{"original_filename":"a.ogg"},{"original_filename":"b.ogg"}]}),audio:vec![a,b]};
+        let mut calls=Vec::new();assert!(super::upload_recording_with(&root,&snapshot,"folder",|key,_,_|{calls.push(key.to_owned());if key.ends_with(":1"){Err("network".into())}else{Ok("remote-a".into())}}).is_err());assert_eq!(calls,vec!["record:rev:0","record:rev:1"]);
+        calls.clear();super::upload_recording_with(&root,&snapshot,"folder",|key,_,path|{calls.push(key.to_owned());if key.ends_with("manifest"){let value:serde_json::Value=serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();assert_eq!(value["audio"][0]["file_id"],"remote-a");assert_eq!(value["audio"][1]["file_id"],"remote-b");}Ok(if key.ends_with(":0"){"remote-a"}else{"remote-b"}.into())}).unwrap();assert_eq!(calls,vec!["record:rev:0","record:rev:1","record:rev:manifest"]);std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]fn concurrent_revisions_keep_both_heads_without_timestamp_winner(){
         let versions=vec![serde_json::json!({"revision":"base"}),serde_json::json!({"revision":"left","parent_revision":"base"}),serde_json::json!({"revision":"right","parent_revision":"base"})];
         assert_eq!(super::conflict_heads(&versions),vec!["left","right"]);
