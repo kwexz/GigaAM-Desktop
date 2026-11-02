@@ -228,6 +228,15 @@ pub fn download_file(id:&str, destination:&std::path::Path, max_bytes:u64) -> Re
     if result.is_err(){let _=std::fs::remove_file(staged);}result
 }
 
+pub fn validate_merge_selection(original:&str,parents:&[String],branches:&[SnapshotBranch])->Result<(),String>{
+    let unique:std::collections::HashSet<_>=parents.iter().collect();
+    if parents.len()<2||parents.len()>32||unique.len()!=parents.len(){return Err("Select at least two distinct current revisions".into());}
+    if parents.iter().any(|revision|!branches.iter().any(|branch|branch.original_id==original&&branch.revision==*revision&&branch.concurrent)){
+        return Err("Conflict changed; refresh Drive backups before resolving".into());
+    }
+    Ok(())
+}
+
 pub fn connect(open: impl FnOnce(String) -> Result<(),String>) -> Result<(),String> {
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|_| "Could not open local callback")?;
     listener.set_nonblocking(true).map_err(|_| "Callback setup failed")?;
@@ -288,6 +297,13 @@ pub fn disconnect() -> Result<(),String> {
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn merge_selection_rejects_other_recordings_stale_heads_and_duplicates(){
+        let branches=vec![super::SnapshotBranch{file_id:"a".into(),original_id:"record".into(),revision:"left".into(),concurrent:true},super::SnapshotBranch{file_id:"b".into(),original_id:"record".into(),revision:"right".into(),concurrent:true}];
+        assert!(super::validate_merge_selection("record",&["left".into(),"right".into()],&branches).is_ok());
+        assert!(super::validate_merge_selection("other",&["left".into(),"right".into()],&branches).is_err());
+        assert!(super::validate_merge_selection("record",&["left".into(),"left".into()],&branches).is_err());
+        assert!(super::validate_merge_selection("record",&["left".into(),"stale".into()],&branches).is_err());
+    }
     #[test]fn rejects_self_referencing_and_duplicate_merge_parents(){
         let mut value=serde_json::json!({"version":1,"revision":"merged","merge_parents":["left","right"],"audio":[{"original_filename":"audio.ogg","sha256":"a".repeat(64),"bytes":1,"file_id":"id"}]});
         assert!(super::validate_manifest(&value).is_ok());value["merge_parents"]=serde_json::json!(["merged","left"]);assert!(super::validate_manifest(&value).is_err());value["merge_parents"]=serde_json::json!(["left","left"]);assert!(super::validate_manifest(&value).is_err());
