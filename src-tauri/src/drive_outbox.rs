@@ -28,6 +28,10 @@ impl Outbox {
         Ok(Self{db})
     }
     pub fn enqueue(&self,id:&str,payload:&str)->rusqlite::Result<()> {
+        let exists:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM drive_jobs WHERE id=?1)",[id],|row|row.get(0))?;
+        if exists{return Ok(());}
+        let pending:i64=self.db.query_row("SELECT count(*) FROM drive_jobs WHERE state!='synced'",[],|row|row.get(0))?;
+        if pending>=1000{return Err(rusqlite::Error::InvalidQuery);}
         self.db.execute("INSERT OR IGNORE INTO drive_jobs(id,payload) VALUES(?1,?2)",params![id,payload])?;Ok(())
     }
     pub fn run_one(&mut self,now:i64,mut upload:impl FnMut(&Job)->Result<(),bool>)->rusqlite::Result<bool>{
@@ -238,6 +242,9 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
 }
 
 #[cfg(test)]mod tests{
+    #[test]fn full_queue_rejects_new_work_but_accepts_idempotent_enqueue(){
+        let path=std::env::temp_dir().join(format!("gigaam-full-{}",crate::new_id()));let queue=super::Outbox::open(&path).unwrap();queue.db.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1000) INSERT INTO drive_jobs(id,payload) SELECT CAST(x AS TEXT),'original' FROM n").unwrap();assert!(queue.enqueue("new","{}").is_err());queue.enqueue("1","changed").unwrap();let payload:String=queue.db.query_row("SELECT payload FROM drive_jobs WHERE id='1'",[],|row|row.get(0)).unwrap();assert_eq!(payload,"original");drop(queue);let _=std::fs::remove_file(path);
+    }
     #[test]fn lost_manifest_response_retries_same_bytes_and_revision_after_reopen(){
         let root=std::env::temp_dir().join(format!("gigaam-manifest-retry-{}",crate::new_id()));std::fs::create_dir_all(&root).unwrap();let audio=root.join("audio.ogg");std::fs::write(&audio,b"audio").unwrap();
         super::enqueue_recording(&root,"record",serde_json::json!({"version":1}),&[audio]).unwrap();
