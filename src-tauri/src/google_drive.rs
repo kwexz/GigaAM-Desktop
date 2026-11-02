@@ -130,8 +130,7 @@ pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Pa
     if !response.status().is_success() { return Err(drive_error(response.status(),"Drive rejected upload initialization")); }
     let location = response.headers().get(reqwest::header::LOCATION).and_then(|value| value.to_str().ok()).ok_or("Drive upload URL missing")?;
     let location = validate_upload_destination(location)?;
-    let file = std::fs::File::open(path).map_err(|_| "Backup source unavailable")?;
-    let response = client.put(location).bearer_auth(&token).header(reqwest::header::CONTENT_LENGTH,size).body(file).send().map_err(|_| "Drive upload interrupted; local backup retained")?;
+    let response = put_upload_body(&client,location,&token,path,size)?;
     if !response.status().is_success() { return Err(drive_error(response.status(),"Drive upload failed; local backup retained")); }
     let result: serde_json::Value = serde_json::from_str(&response.text().map_err(|_| "Upload response unavailable")?).map_err(|_| "Invalid upload response")?;
     let id = result["id"].as_str().ok_or("Uploaded file ID missing")?.to_owned();
@@ -145,6 +144,11 @@ pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Pa
     loop { let n=response.read(&mut buffer).map_err(|_| "Remote verification interrupted")?; if n==0 {break;} received+=n as u64; if received>size{return Err("Remote file size mismatch".into());} actual.update(&buffer[..n]); }
     if received!=size || actual.finalize()!=expected.finalize() { return Err("Remote integrity mismatch; local data retained".into()); }
     Ok(id)
+}
+
+fn put_upload_body(client:&reqwest::blocking::Client,location:url::Url,token:&str,path:&std::path::Path,size:u64)->Result<reqwest::blocking::Response,String>{
+    let file=std::fs::File::open(path).map_err(|_|"Backup source unavailable")?;
+    client.put(location).bearer_auth(token).header(reqwest::header::CONTENT_TYPE,"application/octet-stream").header(reqwest::header::CONTENT_LENGTH,size).body(file).send().map_err(|_|"Drive upload interrupted; local backup retained".into())
 }
 
 #[derive(Deserialize, serde::Serialize, Clone)]
@@ -311,6 +315,12 @@ pub fn disconnect() -> Result<(),String> {
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn resumable_body_contract_sends_exact_length_and_bytes_over_http(){
+        use std::io::{Read,Write};
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move||{let(mut socket,_)=listener.accept().unwrap();socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();let mut data=Vec::new();let mut byte=[0u8;1];while !data.ends_with(b"\r\n\r\n"){socket.read_exact(&mut byte).unwrap();data.push(byte[0]);}let headers=String::from_utf8(data).unwrap().to_lowercase();assert!(headers.starts_with("put /upload-session"));assert!(headers.contains("authorization: bearer test-only-token"));assert!(headers.contains("content-length: 5"));let mut body=[0u8;5];socket.read_exact(&mut body).unwrap();assert_eq!(&body,b"audio");socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"id\":\"x\"}").unwrap();});
+        let path=std::env::temp_dir().join(format!("gigaam-put-{}",crate::new_id()));std::fs::write(&path,b"audio").unwrap();let client=reqwest::blocking::Client::new();let response=super::put_upload_body(&client,url::Url::parse(&format!("http://{address}/upload-session")).unwrap(),"test-only-token",&path,5).unwrap();assert!(response.status().is_success());server.join().unwrap();std::fs::remove_file(path).unwrap();
+    }
     #[test]fn upload_session_never_forwards_bearer_to_untrusted_destination(){
         assert!(super::validate_upload_destination("https://www.googleapis.com/upload/drive/v3/files?upload_id=test").is_ok());
         for url in ["http://www.googleapis.com/upload/drive/v3/files","https://evil.example/upload/drive/v3/files","https://www.googleapis.com:8443/upload/drive/v3/files","https://user@www.googleapis.com/upload/drive/v3/files","https://www.googleapis.com/not-upload"]{assert!(super::validate_upload_destination(url).is_err(),"{url}");}
