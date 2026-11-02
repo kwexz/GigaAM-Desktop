@@ -144,6 +144,15 @@ pub struct RemoteFile { pub id: String, pub name: String }
 #[derive(serde::Serialize)]
 pub struct SnapshotBranch { pub file_id:String,pub original_id:String,pub revision:String,pub concurrent:bool }
 
+fn branches_for_group(original:&str,values:Vec<(String,serde_json::Value)>)->Vec<SnapshotBranch>{
+    let manifests:Vec<_>=values.iter().map(|(_,value)|value.clone()).collect();
+    let heads=crate::drive_outbox::conflict_heads(&manifests);let concurrent=heads.len()>1;
+    values.into_iter().filter_map(|(file_id,value)|{
+        let revision=value["revision"].as_str()?;
+        heads.iter().any(|head|head==revision).then(||SnapshotBranch{file_id,original_id:original.into(),revision:revision.into(),concurrent})
+    }).collect()
+}
+
 pub fn discover_branches()->Result<Vec<SnapshotBranch>,String>{
     let files=list_snapshots()?;
     let root=std::env::temp_dir().join(format!("gigaam-drive-discovery-{}",crate::new_id()));
@@ -163,8 +172,7 @@ pub fn discover_branches()->Result<Vec<SnapshotBranch>,String>{
         }
         let mut branches=Vec::new();
         for(original,values)in groups{
-            let manifests:Vec<_>=values.iter().map(|(_,value)|value.clone()).collect();let heads=crate::drive_outbox::conflict_heads(&manifests);let concurrent=heads.len()>1;
-            for(file_id,value)in values{if let Some(revision)=value["revision"].as_str(){if heads.iter().any(|head|head==revision){branches.push(SnapshotBranch{file_id,original_id:original.clone(),revision:revision.into(),concurrent});}}}
+            branches.extend(branches_for_group(&original,values));
         }
         Ok(branches)
     })();
@@ -270,6 +278,10 @@ pub fn disconnect() -> Result<(),String> {
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn discovery_returns_both_conflicting_restore_targets_but_not_ancestor(){
+        let values=vec![("base-file".into(),serde_json::json!({"revision":"base"})),("left-file".into(),serde_json::json!({"revision":"left","parent_revision":"base"})),("right-file".into(),serde_json::json!({"revision":"right","parent_revision":"base"}))];
+        let branches=super::branches_for_group("recording",values);assert_eq!(branches.len(),2);assert!(branches.iter().all(|branch|branch.concurrent&&branch.original_id=="recording"));assert_eq!(branches[0].file_id,"left-file");assert_eq!(branches[1].file_id,"right-file");
+    }
     #[test]fn rejects_malformed_restore_before_downloading_audio(){
         let mut value=serde_json::json!({"version":1,"audio":[{"original_filename":"microphone.ogg","sha256":"a".repeat(64),"bytes":12,"file_id":"safe-id"}],"tracks":[{"file":"microphone.ogg","offset_seconds":0.5}]});
         assert!(super::validate_manifest(&value).is_ok());
