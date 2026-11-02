@@ -61,6 +61,22 @@ function mockBackend(options: { installed?: boolean; items?: Item[] } = {}) {
 }
 
 describe('GigaAM page', () => {
+	it('shows both concurrent Drive branches without overwriting automatically', async () => {
+		mockBackend({ items: [historyItem] });
+		const backend = invoke.getMockImplementation()!;
+		invoke.mockImplementation(async (command: string, ...args: unknown[]) => {
+			if (command === 'google_drive_connected') return true;
+			if (command === 'google_drive_snapshots') return [{ id: 'left-file', name: 'Left snapshot' }, { id: 'right-file', name: 'Right snapshot' }];
+			if (command === 'google_drive_branches') return [{ file_id: 'left-file', original_id: 'original', revision: 'left', concurrent: true }, { file_id: 'right-file', original_id: 'original', revision: 'right', concurrent: true }];
+			return backend(command, ...args);
+		});
+		render(Page);
+		await fireEvent.click(await screen.findByText('meeting.wav'));
+		await fireEvent.click(await screen.findByRole('button', { name: 'Копии в Drive' }));
+		expect(await screen.findAllByText('Конкурирующие версии — обе сохранены')).toHaveLength(2);
+		expect(screen.getAllByRole('button', { name: 'Восстановить эту версию отдельно' })).toHaveLength(2);
+		expect(invoke).not.toHaveBeenCalledWith('google_drive_restore', expect.anything());
+	});
 	beforeEach(() => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });
 		localStorage.clear();
