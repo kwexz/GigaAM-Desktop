@@ -173,6 +173,25 @@ fn branches_for_group(original:&str,values:Vec<(String,serde_json::Value)>)->Vec
     }).collect()
 }
 
+fn validate_revision_graph(values:&[(String,serde_json::Value)])->Result<(),String>{
+    let mut parents:std::collections::HashMap<&str,Vec<&str>>=Default::default();
+    for(_,value)in values{
+        let revision=value["revision"].as_str().ok_or("Snapshot revision missing")?;
+        let edges:Vec<_>=value["parent_revision"].as_str().into_iter().chain(value["merge_parents"].as_array().into_iter().flatten().filter_map(|v|v.as_str())).collect();
+        if let Some(previous)=parents.insert(revision,edges.clone()){if previous!=edges{return Err("Conflicting duplicate snapshot revision".into());}}
+    }
+    for start in parents.keys(){
+        let mut stack=vec![(*start,std::collections::HashSet::new())];
+        let mut visited=0;
+        while let Some((revision,mut path))=stack.pop(){
+            visited+=1;if visited>100000{return Err("Snapshot ancestry exceeds validation budget".into());}
+            if !path.insert(revision){return Err("Cyclic snapshot ancestry".into());}
+            if let Some(edges)=parents.get(revision){for parent in edges{stack.push((*parent,path.clone()));}}
+        }
+    }
+    Ok(())
+}
+
 fn validate_upload_destination(location:&str)->Result<url::Url,String>{
     let url=url::Url::parse(location).map_err(|_|"Invalid upload URL")?;
     if url.scheme()!="https"||url.host_str()!=Some("www.googleapis.com")||!url.username().is_empty()||url.password().is_some()||url.port_or_known_default()!=Some(443)||!url.path().starts_with("/upload/"){
@@ -198,8 +217,9 @@ pub fn discover_branches()->Result<Vec<SnapshotBranch>,String>{
             let original=value["original_recording_id"].as_str().or_else(||value["recording"]["id"].as_str()).ok_or("Snapshot identity missing")?.to_owned();
             groups.entry(original).or_default().push((file.id,value));
         }
-        let mut branches=Vec::new();
+    let mut branches=Vec::new();
         for(original,values)in groups{
+            validate_revision_graph(&values)?;
             branches.extend(branches_for_group(&original,values));
         }
         Ok(branches)
@@ -327,6 +347,10 @@ pub fn disconnect() -> Result<(),String> {
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn cyclic_remote_revision_graph_is_rejected_not_hidden(){
+        let cycle=vec![("one".into(),serde_json::json!({"revision":"a","parent_revision":"b"})),("two".into(),serde_json::json!({"revision":"b","parent_revision":"a"}))];assert!(super::validate_revision_graph(&cycle).is_err());
+        let valid=vec![("one".into(),serde_json::json!({"revision":"a"})),("two".into(),serde_json::json!({"revision":"b","parent_revision":"a"}))];assert!(super::validate_revision_graph(&valid).is_ok());
+    }
     #[test]fn upload_initialization_contract_sends_snapshot_identity_and_size(){
         use std::io::{Read,Write};let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
         let server=std::thread::spawn(move||{let(mut socket,_)=listener.accept().unwrap();socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();let mut headers=Vec::new();let mut byte=[0u8;1];while !headers.ends_with(b"\r\n\r\n"){socket.read_exact(&mut byte).unwrap();headers.push(byte[0]);}let headers=String::from_utf8(headers).unwrap().to_lowercase();assert!(headers.contains("x-upload-content-length: 5"));assert!(headers.contains("content-type: application/json"));let size:usize=headers.lines().find_map(|s|s.strip_prefix("content-length: ")).unwrap().trim().parse().unwrap();let mut body=vec![0;size];socket.read_exact(&mut body).unwrap();let value:serde_json::Value=serde_json::from_slice(&body).unwrap();assert_eq!(value["appProperties"]["gigaamSnapshot"],"record:revision:0");assert_eq!(value["parents"][0],"folder");socket.write_all(b"HTTP/1.1 200 OK\r\nLocation: https://www.googleapis.com/upload/drive/v3/files?upload_id=test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();});
