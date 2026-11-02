@@ -76,7 +76,7 @@ impl Store {
                 }
                 tx.execute("INSERT INTO drive_folder_locations(local_id,parent_id,position) VALUES(?1,?2,?3) ON CONFLICT(local_id) DO UPDATE SET parent_id=excluded.parent_id,position=excluded.position",params![id,parent,position])?;
             }
-            let original=manifest["original_recording_id"].as_str().or_else(||manifest["recording"]["id"].as_str()).unwrap_or("");
+            let original=manifest["organization_recording_id"].as_str().or_else(||manifest["recording"]["id"].as_str()).or_else(||manifest["original_recording_id"].as_str()).unwrap_or("");
             if let Some(recording)=nodes.iter().find(|node|node["kind"]=="recording"&&node["id"].as_str()==Some(original)){
                 let mut parent=recording["parent_id"].as_str();let mut chain=Vec::new();let mut seen=std::collections::HashSet::new();
                 while let Some(id)=parent{
@@ -883,6 +883,12 @@ fn map_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptSegment> {
 
 #[cfg(test)]
 mod tests {
+    #[test]fn drive_reuploaded_copy_keeps_recording_placement(){
+        let mut store=super::Store::memory().unwrap();
+        let manifest=serde_json::json!({"original_recording_id":"original","organization_recording_id":"copy-on-device-b","device_id":"device-b","organization":[{"id":"folder","kind":"folder","parent_id":null,"name":"Folder","position":0},{"id":"copy-on-device-b","kind":"recording","parent_id":"folder","position":4}]});
+        store.restore_snapshot_organized("copy-remote",&transcription("copy-on-device-c",TranscriptionStatus::Completed),&[],&manifest).unwrap();
+        let nodes=store.load_organization().unwrap();let record=nodes.as_array().unwrap().iter().find(|node|node["id"]=="copy-on-device-c").unwrap();assert!(!record["parent_id"].is_null());assert_eq!(record["position"],4);
+    }
     #[test]fn drive_restore_uses_original_local_folder_mapping(){
         let mut store=super::Store::memory().unwrap();
         store.save_organization(serde_json::json!([{"id":"local-folder","kind":"folder","parent_id":null,"name":"Local folder","position":0}])).unwrap();

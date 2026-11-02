@@ -137,6 +137,9 @@ pub fn enqueue_recording(root:&std::path::Path,id:&str,mut manifest:serde_json::
     manifest["audio"]=metadata.into();
     let parent=snapshot_lineage(root,id)?;
     manifest["original_recording_id"]=parent.as_ref().map(|value|value.original_id.as_str()).unwrap_or(id).into();
+    // A restored copy has a new local ID. Its organization snapshot still uses
+    // that ID; keep it separate from the stable cross-device recording ID.
+    manifest["organization_recording_id"]=id.into();
     manifest["parent_revision"]=parent.as_ref().map(|value|value.revision.clone()).into();
     manifest["revision"]=revision.clone().into();
     manifest["device_id"]=device_id(root)?.into();
