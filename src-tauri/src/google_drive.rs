@@ -146,15 +146,18 @@ pub struct SnapshotBranch { pub file_id:String,pub original_id:String,pub revisi
 
 pub fn discover_branches()->Result<Vec<SnapshotBranch>,String>{
     let files=list_snapshots()?;
-    if files.len()>100{return Err("More than 100 snapshots: conflict discovery requires pagination; no partial result was accepted".into());}
     let root=std::env::temp_dir().join(format!("gigaam-drive-discovery-{}",crate::new_id()));
     std::fs::create_dir_all(&root).map_err(|_|"Could not stage snapshot discovery")?;
     let result=(||{
         let mut groups:std::collections::HashMap<String,Vec<(String,serde_json::Value)>>=Default::default();
+        let mut manifest_bytes=0u64;
         for file in files{
             let path=root.join(crate::new_id());download_file(&file.id,&path,8*1024*1024)?;
+            manifest_bytes=manifest_bytes.saturating_add(std::fs::metadata(&path).map_err(|_|"Discovery manifest unavailable")?.len());
+            if manifest_bytes>64*1024*1024{return Err("Snapshot discovery exceeds 64 MiB metadata budget; no partial conflict result was accepted".into());}
             let value:serde_json::Value=serde_json::from_slice(&std::fs::read(&path).map_err(|_|"Discovery manifest unavailable")?).map_err(|_|"Invalid snapshot manifest")?;
             validate_manifest(&value)?;
+            let _=std::fs::remove_file(&path);
             let original=value["original_recording_id"].as_str().or_else(||value["recording"]["id"].as_str()).ok_or("Snapshot identity missing")?.to_owned();
             groups.entry(original).or_default().push((file.id,value));
         }
