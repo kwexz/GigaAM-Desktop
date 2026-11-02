@@ -28,11 +28,15 @@ impl Outbox {
         Ok(Self{db})
     }
     pub fn enqueue(&self,id:&str,payload:&str)->rusqlite::Result<()> {
-        let exists:bool=self.db.query_row("SELECT EXISTS(SELECT 1 FROM drive_jobs WHERE id=?1)",[id],|row|row.get(0))?;
-        if exists{return Ok(());}
-        let pending:i64=self.db.query_row("SELECT count(*) FROM drive_jobs WHERE state!='synced'",[],|row|row.get(0))?;
+        let tx=self.db.unchecked_transaction()?;
+        // Obtain the writer reservation before counting capacity. The dummy
+        // update also prevents deferred read→write upgrade races in WAL mode.
+        tx.execute("UPDATE drive_jobs SET next_ms=next_ms WHERE id=?1",[id])?;
+        let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM drive_jobs WHERE id=?1)",[id],|row|row.get(0))?;
+        if exists{return tx.commit();}
+        let pending:i64=tx.query_row("SELECT count(*) FROM drive_jobs WHERE state!='synced'",[],|row|row.get(0))?;
         if pending>=1000{return Err(rusqlite::Error::InvalidQuery);}
-        self.db.execute("INSERT OR IGNORE INTO drive_jobs(id,payload) VALUES(?1,?2)",params![id,payload])?;Ok(())
+        tx.execute("INSERT OR IGNORE INTO drive_jobs(id,payload) VALUES(?1,?2)",params![id,payload])?;tx.commit()
     }
     pub fn run_one(&mut self,now:i64,mut upload:impl FnMut(&Job)->Result<(),bool>)->rusqlite::Result<bool>{
         use rusqlite::OptionalExtension;
