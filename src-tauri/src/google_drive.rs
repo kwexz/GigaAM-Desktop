@@ -227,7 +227,10 @@ fn store_download(mut response:impl Read,destination:&std::path::Path,max_bytes:
         loop{let n=response.read(&mut buffer).map_err(|_|"Download interrupted")?;if n==0{break;}total+=n as u64;if total>max_bytes{return Err("Download exceeds configured size limit".into());}output.write_all(&buffer[..n]).map_err(|_|"Download write failed")?;}
         output.sync_all().map_err(|_|"Download flush failed")?;
         if destination.exists(){return Err("Restore destination already exists".into());}
-        std::fs::rename(&staged,destination).map_err(|_|"Download publication failed")?;Ok(())
+        // Atomic no-clobber publication even if another restore creates the
+        // destination after exists() above. Rename replaces files on Unix.
+        std::fs::hard_link(&staged,destination).map_err(|_|"Download publication failed or destination exists")?;
+        std::fs::remove_file(&staged).map_err(|_|"Download staging cleanup failed")?;Ok(())
     })();
     if result.is_err(){let _=std::fs::remove_file(staged);}result
 }
