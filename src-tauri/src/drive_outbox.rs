@@ -13,7 +13,9 @@ fn requires_auth(error:&str)->bool {
 pub struct SnapshotPayload { pub revision:String, pub recording_id:String, pub manifest:serde_json::Value, pub audio:Vec<std::path::PathBuf> }
 
 pub fn conflict_heads(manifests:&[serde_json::Value])->Vec<String>{
-    let parents:std::collections::HashSet<&str>=manifests.iter().filter_map(|value|value["parent_revision"].as_str()).collect();
+    let parents:std::collections::HashSet<&str>=manifests.iter().flat_map(|value|{
+        value["parent_revision"].as_str().into_iter().chain(value["merge_parents"].as_array().into_iter().flatten().filter_map(|parent|parent.as_str()))
+    }).collect();
     let mut heads:Vec<String>=manifests.iter().filter_map(|value|value["revision"].as_str()).filter(|revision|!parents.contains(revision)).map(str::to_owned).collect();
     heads.sort();heads.dedup();heads
 }
@@ -229,6 +231,10 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
         let versions=vec![serde_json::json!({"revision":"base"}),serde_json::json!({"revision":"left","parent_revision":"base"}),serde_json::json!({"revision":"right","parent_revision":"base"})];
         assert_eq!(super::conflict_heads(&versions),vec!["left","right"]);
         let mut merged=versions;merged.push(serde_json::json!({"revision":"next","parent_revision":"left"}));assert_eq!(super::conflict_heads(&merged),vec!["next","right"]);
+    }
+    #[test]fn explicit_merge_retires_only_selected_parent_heads(){
+        let values=vec![serde_json::json!({"revision":"left"}),serde_json::json!({"revision":"right"}),serde_json::json!({"revision":"unrelated"}),serde_json::json!({"revision":"merged","merge_parents":["left","right"]})];
+        assert_eq!(super::conflict_heads(&values),vec!["merged","unrelated"]);
     }
     #[test]fn acknowledged_local_lineage_takes_precedence_over_imported_parent(){
         let root=std::env::temp_dir().join(format!("gigaam-parent-{}",crate::new_id()));std::fs::create_dir_all(root.join("drive-lineage")).unwrap();
