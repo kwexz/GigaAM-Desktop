@@ -883,7 +883,7 @@ fn map_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptSegment> {
 
 #[cfg(test)]
 mod tests {
-    #[test]fn conflicting_drive_versions_remain_independent_after_edit_and_delete(){
+    #[test]fn conflicting_drive_versions_remain_independent_after_edit_clear_and_delete(){
         let mut store=super::Store::memory().unwrap();
         let left=transcription("conflict-left",TranscriptionStatus::Completed);let right=transcription("conflict-right",TranscriptionStatus::Completed);
         let left_segment=TranscriptSegment::new(&left.id,0,0.0,1.0,"left text".into(),SourceTrack::File,SegmentState::Final).unwrap();
@@ -896,6 +896,9 @@ mod tests {
         assert_eq!(store.restored_snapshot("remote-left").unwrap(),Some(left.id.clone()));
         assert_eq!(store.restored_snapshot("remote-right").unwrap(),Some(right.id.clone()));
         store.clear_transcript(&left.id).unwrap();assert_eq!(store.segments(&right.id).unwrap().len(),1);assert!(store.get(&right.id).unwrap().is_some());
+        store.delete_history(&left.id).unwrap();
+        assert!(store.get(&left.id).unwrap().is_none());assert!(store.restored_snapshot("remote-left").unwrap().is_none());
+        assert_eq!(store.segments(&right.id).unwrap()[0].text,"right text");assert_eq!(store.restored_snapshot("remote-right").unwrap(),Some(right.id));
     }
     #[test]fn drive_reuploaded_copy_keeps_recording_placement(){
         let mut store=super::Store::memory().unwrap();
