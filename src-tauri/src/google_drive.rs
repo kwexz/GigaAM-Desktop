@@ -129,8 +129,7 @@ pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Pa
         .bearer_auth(&token).header("Content-Type","application/json").header("X-Upload-Content-Length",size).body(metadata.to_string()).send().map_err(|_| "Drive upload initialization failed")?;
     if !response.status().is_success() { return Err(drive_error(response.status(),"Drive rejected upload initialization")); }
     let location = response.headers().get(reqwest::header::LOCATION).and_then(|value| value.to_str().ok()).ok_or("Drive upload URL missing")?;
-    let location = url::Url::parse(location).map_err(|_| "Invalid upload URL")?;
-    if location.scheme() != "https" || location.host_str() != Some("www.googleapis.com") { return Err("Untrusted Drive upload URL".into()); }
+    let location = validate_upload_destination(location)?;
     let file = std::fs::File::open(path).map_err(|_| "Backup source unavailable")?;
     let response = client.put(location).bearer_auth(&token).header(reqwest::header::CONTENT_LENGTH,size).body(file).send().map_err(|_| "Drive upload interrupted; local backup retained")?;
     if !response.status().is_success() { return Err(drive_error(response.status(),"Drive upload failed; local backup retained")); }
@@ -161,6 +160,14 @@ fn branches_for_group(original:&str,values:Vec<(String,serde_json::Value)>)->Vec
         let revision=value["revision"].as_str()?;
         heads.iter().any(|head|head==revision).then(||SnapshotBranch{file_id,original_id:original.into(),revision:revision.into(),concurrent})
     }).collect()
+}
+
+fn validate_upload_destination(location:&str)->Result<url::Url,String>{
+    let url=url::Url::parse(location).map_err(|_|"Invalid upload URL")?;
+    if url.scheme()!="https"||url.host_str()!=Some("www.googleapis.com")||!url.username().is_empty()||url.password().is_some()||url.port_or_known_default()!=Some(443)||!url.path().starts_with("/upload/"){
+        return Err("Untrusted Drive upload URL".into());
+    }
+    Ok(url)
 }
 
 pub fn discover_branches()->Result<Vec<SnapshotBranch>,String>{
@@ -304,6 +311,10 @@ pub fn disconnect() -> Result<(),String> {
 }
 
 #[cfg(test)] mod tests {
+    #[test]fn upload_session_never_forwards_bearer_to_untrusted_destination(){
+        assert!(super::validate_upload_destination("https://www.googleapis.com/upload/drive/v3/files?upload_id=test").is_ok());
+        for url in ["http://www.googleapis.com/upload/drive/v3/files","https://evil.example/upload/drive/v3/files","https://www.googleapis.com:8443/upload/drive/v3/files","https://user@www.googleapis.com/upload/drive/v3/files","https://www.googleapis.com/not-upload"]{assert!(super::validate_upload_destination(url).is_err(),"{url}");}
+    }
     #[test]fn all_drive_operations_pause_on_unauthorized_not_on_rate_limit(){
         for operation in ["Snapshot retry discovery failed","Remote verification failed","Drive discovery rejected","Drive download rejected"]{
             let unauthorized=super::drive_error(reqwest::StatusCode::UNAUTHORIZED,operation);assert!(unauthorized.contains("revoked"));assert!(!unauthorized.contains("token="));
