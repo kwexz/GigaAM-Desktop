@@ -66,6 +66,10 @@ async fn google_drive_prepare_folder() -> Result<String,String> {
 
 #[tauri::command]
 async fn google_drive_upload(id: String, app: tauri::AppHandle, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(),String> {
+    // Prepare the same timeline-aligned mix used by Desktop playback.
+    if lock_store(&state)?.get(&id).map_err(|e|e.to_string())?.is_some_and(|record|matches!(record.kind,TranscriptionKind::Live)) {
+        mixed_session_audio(id.clone(),app.clone())?;
+    }
     queue_drive_snapshot(id,None,app,state).await
 }
 
@@ -86,7 +90,7 @@ async fn queue_drive_snapshot(id:String,merge_parents:Option<Vec<String>>,app:ta
     tauri::async_runtime::spawn_blocking(move || -> Result<(),String> {
         let mut paths=Vec::new();
         if let Ok(entries)=std::fs::read_dir(root.join("live").join(&id)) {
-            for entry in entries.flatten(){let path=entry.path();if matches!(path.extension().and_then(|s|s.to_str()),Some("ogg"|"wav"|"flac"|"mp3"))&&!path.file_stem().is_some_and(|s|s=="mixed"){paths.push(path);}}
+            for entry in entries.flatten(){let path=entry.path();if matches!(path.extension().and_then(|s|s.to_str()),Some("ogg"|"wav"|"flac"|"mp3")){paths.push(path);}}
         }
         paths.sort();
         if paths.is_empty(){let path=PathBuf::from(record.audio_path.as_ref().unwrap_or(&record.source_path));if path.is_file(){paths.push(path);}}

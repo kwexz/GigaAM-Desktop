@@ -60,6 +60,7 @@
 	let driveSnapshots = $state<Array<{ id: string; name: string }>>([]);
 	let driveBranches = $state<Array<{ file_id: string; original_id: string; revision: string; concurrent: boolean }>>([]);
 	let driveLoading = $state(false);
+	let driveDiscoveryError = $state('');
 	let pendingMerge = $state<{ original: string; localId: string; parents: string[] } | null>(null);
 	let confirmMerge = $state(false);
 	async function restoreConflictVersion(branch: { file_id: string; original_id: string }) {
@@ -74,9 +75,9 @@
 		finally { googleUploading = false; }
 	}
 	async function openDriveBackups() {
-		driveBrowserOpen = true; driveLoading = true;
+		driveBrowserOpen = true; driveLoading = true; driveDiscoveryError = '';
 		try { driveSnapshots = await invoke('google_drive_snapshots'); driveBranches = await invoke('google_drive_branches'); }
-		catch (cause) { error = String(cause); }
+		catch (cause) { driveDiscoveryError = String(cause); error = String(cause); }
 		finally { driveLoading = false; }
 	}
 	async function restoreDriveBackup(id: string) {
@@ -257,6 +258,12 @@
 	let notificationTimer: ReturnType<typeof setTimeout> | undefined;
 	function notify(text: string) { notification = text; clearTimeout(notificationTimer); notificationTimer = setTimeout(() => notification = '', 3500); }
 	let organizationInitialized = false;
+	function tooltipFallback(event: MouseEvent) {
+		const target = event.target instanceof Element ? event.target.closest('button,a,summary,input,select,textarea,[draggable="true"]') : null;
+		if (!target || target.hasAttribute('title')) return;
+		const label = target.getAttribute('aria-label') || target.textContent?.trim() || (target instanceof HTMLInputElement ? target.placeholder : '');
+		if (label) target.setAttribute('title', label);
+	}
 	async function clearCurrentTranscript() {
 		if (!selected || recording || busy) return;
 		try { if (browserMode) await clearBrowserTranscript(selected.id); else await invoke('clear_transcript', { id: selected.id }); segments = []; confirmClear = false; notify(locale === 'ru' ? 'Текст очищен. Аудио сохранено.' : 'Transcript cleared. Audio preserved.'); }
@@ -809,7 +816,7 @@
 </script>
 
 <svelte:head><title>GigaAM</title></svelte:head>
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onmouseover={tooltipFallback} />
 
 
 
@@ -819,7 +826,7 @@
 	<header>
 		{#if browserMode}<span class="header-web-status" data-testid="web-mode-banner">{locale === 'ru' ? 'Web · аудио локально · ASR на сервере' : 'Web · local audio · server ASR'}</span>{/if}
 		<div class="brand"><span class="mark">G</span><strong>GigaAM</strong><span>Desktop</span><button class="version-link" title="GitHub" onclick={() => { if (browserMode) window.open('https://github.com/kwexz/GigaAM-Desktop', '_blank', 'noopener,noreferrer'); else void openUrl('https://github.com/kwexz/GigaAM-Desktop'); }}>{locale === 'ru' ? 'Версия' : 'Version'} {__APP_VERSION__} b{__BUILD_ID__}</button></div>
-		<div class="header-actions">{#if !browserMode}<button class="ghost drive-toggle" disabled={googleBusy} aria-label={googleConnected ? 'Disconnect Google Drive' : 'Connect Google Drive'} title={googleBusy ? 'Google…' : googleConnected ? 'Disconnect Google Drive' : 'Connect Google Drive'} onclick={() => void toggleGoogleDrive()}><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="#0F9D58" d="M8 2h8L8 16H0z"/><path fill="#F4B400" d="m16 2 8 14h-8L8 2z"/><path fill="#4285F4" d="m0 16 4 7h16l4-7z"/></svg></button>{/if}<button class="ghost theme-toggle" title={theme === 'system' ? (locale === 'ru' ? 'Тема: системная' : 'Theme: system') : theme === 'light' ? (locale === 'ru' ? 'Тема: светлая' : 'Theme: light') : (locale === 'ru' ? 'Тема: тёмная' : 'Theme: dark')} onclick={nextTheme}>{theme === 'system' ? '◐' : theme === 'light' ? '☀' : '☾'}</button><button class="ghost" onclick={() => locale = locale === 'ru' ? 'en' : 'ru'}>{locale.toUpperCase()}</button></div>
+		<div class="header-actions"><button class="ghost theme-toggle" title={theme === 'system' ? (locale === 'ru' ? 'Тема: системная' : 'Theme: system') : theme === 'light' ? (locale === 'ru' ? 'Тема: светлая' : 'Theme: light') : (locale === 'ru' ? 'Тема: тёмная' : 'Theme: dark')} onclick={nextTheme}>{theme === 'system' ? '◐' : theme === 'light' ? '☀' : '☾'}</button><button class="ghost" onclick={() => locale = locale === 'ru' ? 'en' : 'ru'}>{locale.toUpperCase()}</button></div>
 	</header>
 
 	<aside>
@@ -869,12 +876,12 @@
 				{/each}
 				{#if !segments.length}{#if selected.status === 'completed'}<div class="empty-transcript"><p>{locale === 'ru' ? 'В записи не найдена речь: сегментов нет. Если аудио не пустое, нажмите «Повторить» для перезапуска распознавания.' : 'No speech found in this recording. If the audio is not empty, press Retry to re-run recognition.'}</p></div>{:else}<div class="processing"><span></span><p>{statuses[locale][selected.status]}</p></div>{/if}{/if}
 			</section>
-			<footer><div class="export">{#if !browserMode && googleConnected}<button onclick={() => void openDriveBackups()}>{locale === 'ru' ? 'Копии в Drive' : 'Drive backups'}</button><span class="hint" role="status">Drive: {driveQueue.auth_required ? (locale === 'ru' ? 'нужен повторный вход' : 'sign in again') : driveQueue.uploading ? (locale === 'ru' ? 'отправка и проверка' : 'uploading and verifying') : driveQueue.pending ? (locale === 'ru' ? `в очереди: ${driveQueue.pending}` : `queued: ${driveQueue.pending}`) : (locale === 'ru' ? `проверено: ${driveQueue.synced}` : `verified: ${driveQueue.synced}`)}</span>{/if}{#if !browserMode && googleConnected}<button disabled={googleUploading || recording || busy} onclick={() => void uploadSelectedToDrive()}>{googleUploading ? (locale === 'ru' ? 'Подготовка копии…' : 'Preparing snapshot…') : (locale === 'ru' ? 'На Google Drive' : 'Back up to Google Drive')}</button>{/if}<div class="tools">{#if ['queued', 'failed', 'cancelled', 'interrupted', 'completed'].includes(selected.status)}<button class="primary" onclick={() => void action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', selected.id)}>{t.start}</button>{/if}{#if ['preparing', 'transcribing'].includes(selected.status)}<button class="primary" onclick={() => void action('cancel_transcription', selected.id)}>{locale === 'ru' ? 'Остановить' : 'Stop'}</button>{/if}</div><button onclick={() => void exportResult()}>{t.export}</button><button onclick={() => void copyTranscript()}>{t.copy}</button></div><div class="danger">{#if !['queued', 'preparing', 'transcribing'].includes(selected.status)}<button disabled={recording || busy || !segments.length} onclick={() => confirmClear = true}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button>{/if}</div></footer>
+			<footer><div class="export">{#if !browserMode}<details class="drive-menu"><summary title="Google Drive"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="#0F9D58" d="M8 2h8L8 16H0z"/><path fill="#F4B400" d="m16 2 8 14h-8L8 2z"/><path fill="#4285F4" d="m0 16 4 7h16l4-7z"/></svg><span class="sr-only">Google Drive</span></summary><div class="drive-menu-content">{#if !browserMode}<button class="ghost drive-toggle" disabled={googleBusy} aria-label={googleConnected ? 'Disconnect Google Drive' : 'Connect Google Drive'} title={googleBusy ? 'Google…' : googleConnected ? 'Disconnect Google Drive' : 'Connect Google Drive'} onclick={() => void toggleGoogleDrive()}><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="#0F9D58" d="M8 2h8L8 16H0z"/><path fill="#F4B400" d="m16 2 8 14h-8L8 2z"/><path fill="#4285F4" d="m0 16 4 7h16l4-7z"/></svg></button>{/if}{#if !browserMode && googleConnected}<button onclick={() => void openDriveBackups()}>{locale === 'ru' ? 'Копии в Drive' : 'Drive backups'}</button><span class="hint" role="status">Drive: {driveQueue.auth_required ? (locale === 'ru' ? 'нужен повторный вход' : 'sign in again') : driveQueue.uploading ? (locale === 'ru' ? 'отправка и проверка' : 'uploading and verifying') : driveQueue.pending ? (locale === 'ru' ? `в очереди: ${driveQueue.pending}` : `queued: ${driveQueue.pending}`) : (locale === 'ru' ? `проверено: ${driveQueue.synced}` : `verified: ${driveQueue.synced}`)}</span>{/if}{#if !browserMode && googleConnected}<button disabled={googleUploading || recording || busy} onclick={() => void uploadSelectedToDrive()}>{googleUploading ? (locale === 'ru' ? 'Подготовка копии…' : 'Preparing snapshot…') : (locale === 'ru' ? 'На Google Drive' : 'Back up to Google Drive')}</button>{/if}</div></details>{/if}<div class="tools">{#if ['queued', 'failed', 'cancelled', 'interrupted', 'completed'].includes(selected.status)}<button class="primary" onclick={() => void action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', selected.id)}>{t.start}</button>{/if}{#if ['preparing', 'transcribing'].includes(selected.status)}<button class="primary" onclick={() => void action('cancel_transcription', selected.id)}>{locale === 'ru' ? 'Остановить' : 'Stop'}</button>{/if}</div><button onclick={() => void exportResult()}>{t.export}</button><button onclick={() => void copyTranscript()}>{t.copy}</button></div><div class="danger">{#if !['queued', 'preparing', 'transcribing'].includes(selected.status)}<button disabled={recording || busy || !segments.length} onclick={() => confirmClear = true}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button>{/if}</div></footer>
 		{:else}
 			<div class="welcome"><div class="wave">∿</div><h1>{t.waiting}</h1><p>{t.empty}</p><button class="add-large" disabled={!model.installed && !browserMode} onclick={pickFiles}>＋ {t.add}</button></div>
 		{/if}
 		{#if captureHealth}<div class="toast" role="status">{captureHealth}</div>{/if}
-		{#if error}<div class="toast" role="alert">{error}</div>{/if}
+		{#if error}<div class="toast" role="alert"><span>{error}</span><button title="Закрыть / Dismiss" aria-label="Закрыть ошибку / Dismiss error" onclick={() => error = ''}>×</button></div>{/if}
 		{#if confirmDelete}{#if selected}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={() => confirmDelete = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex={-1} aria-label={t.remove}><h2>{t.remove}?</h2><p>{selected.source_filename}</p><div class="modal-actions"><button class="danger-solid" onclick={() => { const id = selected.id; confirmDelete = false; void action('delete_history', id); }}>{t.remove}</button><button class="ghost" onclick={() => confirmDelete = false}>{t.cancel}</button></div></div></div>{/if}{/if}
 	</main>
 </div>
@@ -894,6 +901,7 @@
 			<h2>Google Drive</h2>
 			<p>{locale === 'ru' ? 'Восстановление создаёт отдельную локальную копию, не заменяя текущие правки. Удаление локальной записи не удаляет её копии в Drive.' : 'Restore creates a separate local copy without replacing current edits. Deleting a local recording does not delete its Drive backups.'}</p>
 			{#if driveLoading}<p role="status">{locale === 'ru' ? 'Загрузка и проверка…' : 'Loading and verifying…'}</p>
+			{:else if driveDiscoveryError}<p role="alert">{driveDiscoveryError}</p>
 			{:else}
 				<div class="drive-snapshots">
 					{#each driveBranches.filter((branch) => branch.concurrent) as branch}
@@ -913,6 +921,7 @@
 {#if confirmClear}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={() => confirmClear = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label={locale === 'ru' ? 'Очистить текст' : 'Clear transcript'}><h2>{locale === 'ru' ? 'Очистить весь текст?' : 'Clear the entire transcript?'}</h2><p>{locale === 'ru' ? 'Аудиозапись останется. Удалённый текст нельзя восстановить отменой.' : 'Audio will remain. Deleted text cannot be undone.'}</p><div class="modal-actions"><button class="ghost" onclick={() => confirmClear = false}>{t.cancel}</button><button class="danger-solid" onclick={() => void clearCurrentTranscript()}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button></div></div></div>{/if}
 
 <style>
+	footer button,footer summary{min-height:34px;height:34px;padding:7px 12px!important;border:1px solid #d5d7d0;border-radius:8px;font-size:13px;line-height:18px;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box}.drive-menu{position:relative}.drive-menu summary{cursor:pointer;background:white;list-style:none;width:40px}.drive-menu summary::-webkit-details-marker{display:none}.drive-menu-content{position:absolute;bottom:44px;left:0;z-index:40;min-width:260px;display:flex;flex-direction:column;gap:10px;padding:14px;background:#fff;border:1px solid #d5d7d0;border-radius:10px;box-shadow:0 8px 28px #0002}.drive-menu-content button{width:100%;height:auto;min-height:34px}.toast{display:flex;align-items:center;gap:12px}.toast>button{border:0;background:transparent;color:inherit;font-size:22px;cursor:pointer;padding:0 4px}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 	.merge-prompt{position:fixed;bottom:80px;right:20px;z-index:25;max-width:480px;padding:16px;background:#eef4ed;border:1px solid #9aaf9e;border-radius:10px;display:flex;flex-wrap:wrap;gap:10px;font-size:13px}
 	.drive-snapshots{display:flex;flex-direction:column;gap:8px;max-height:40vh;overflow:auto}.drive-snapshots button{text-align:left;overflow-wrap:anywhere}
 	.header-actions{align-items:center}.header-actions>button.ghost{display:inline-flex;align-items:center;justify-content:center;flex:0 0 36px;width:36px;min-width:36px;height:34px;min-height:34px;padding:0!important;border-radius:8px;line-height:1;box-sizing:border-box}.header-actions>button.drive-toggle svg{display:block;flex:none}.header-actions>button:not(.theme-toggle){font-size:12px;font-weight:600}

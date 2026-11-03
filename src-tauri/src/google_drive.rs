@@ -246,7 +246,7 @@ fn list_snapshot_pages(client:&reqwest::blocking::Client,token:&str,folder:&str,
     let mut seen=std::collections::HashSet::new();
     loop {
         let mut endpoint=url::Url::parse(base).map_err(|_|"Invalid discovery endpoint")?;
-        endpoint.query_pairs_mut().append_pair("q",&format!("'{folder}' in parents and trashed = false and appProperties has {{ key='gigaamSnapshot' }}"))
+        endpoint.query_pairs_mut().append_pair("q",&format!("'{folder}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'"))
             .append_pair("fields","nextPageToken,files(id,name)").append_pair("pageSize","100");
         if !next.is_empty(){endpoint.query_pairs_mut().append_pair("pageToken",&next);}
         let response=client.get(endpoint).bearer_auth(&token).send().map_err(|_|"Drive discovery unavailable")?;
