@@ -39,6 +39,13 @@ use tauri::Manager;
 static ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[tauri::command]
+async fn summarize_ollama(id:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
+    let text=lock_store(&state)?.segments(&id).map_err(|_|"Не удалось прочитать расшифровку")?
+        .into_iter().map(|segment|segment.text).collect::<Vec<_>>().join("\n");
+    tauri::async_runtime::spawn_blocking(move||summarization::summarize_with_ollama(&text)).await.map_err(|_|"Ошибка задачи суммаризации")?
+}
+
+#[tauri::command]
 async fn google_drive_connect(app: tauri::AppHandle) -> Result<(),String> {
     let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;
     tauri::async_runtime::spawn_blocking(move || { google_drive::connect(|url| {
@@ -1456,6 +1463,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            summarize_ollama,
             google_drive_connect,
             google_drive_disconnect,
             google_drive_connected,

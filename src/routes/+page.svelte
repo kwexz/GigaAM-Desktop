@@ -56,6 +56,16 @@
 	let googleConnected = $state(false);
 	let googleBusy = $state(false);
 	let googleUploading = $state(false);
+	let summaryText = $state('');
+	let summaryBusy = $state(false);
+	let summaryFor = $state('');
+	async function summarizeLocal() {
+		if (!selected || summaryBusy) return;
+		const id = selected.id; summaryFor = id; summaryText = ''; summaryBusy = true;
+		try { summaryText = await invoke<string>('summarize_ollama', { id }); }
+		catch (cause) { error = String(cause); }
+		finally { summaryBusy = false; }
+	}
 	let driveBrowserOpen = $state(false);
 	let driveSnapshots = $state<Array<{ id: string; name: string }>>([]);
 	let driveBranches = $state<Array<{ file_id: string; original_id: string; revision: string; concurrent: boolean }>>([]);
@@ -866,6 +876,8 @@
 		{#if selected}
 			<div class="document-head"><div class="document-title">{#if editingNameId === selected.id && editingNamePlace === 'header'}<input class="title-rename rename-input" data-place="header" bind:value={editingName} onkeydown={(event) => { if (event.key === 'Enter') void commitRename(); if (event.key === 'Escape') { editingNameId = ''; editingNamePlace = ''; } }} onblur={() => void commitRename()} />{:else}<h1><button class="title-button" onclick={() => beginRename(selected, 'header')} title={locale === 'ru' ? 'Переименовать' : 'Rename'}>{selected.source_filename}</button></h1>{/if}</div><div class="document-meta"><p><span>{selected.status === 'completed' ? duration(selected.duration_seconds) : `${statuses[locale][selected.status]}${selected.total_chunks ? ` · ${selected.completed_chunks} / ${selected.total_chunks}` : ''}`}{friendlyError(selected) ? ` · ${friendlyError(selected)}` : ''}</span>{#if selectedPath}<button class="path-link" title={locale === 'ru' ? 'Показать файл' : 'Show file'} onclick={() => void reveal(selectedPath)}>{selectedPath}</button>{/if}</p></div>{#if selected.status !== 'completed' && selected.total_chunks}<progress class="transcribe-progress" max={selected.total_chunks} value={selected.completed_chunks}></progress>{:else if audioSrc}<div class="player-row">{#key audioSrc}<audio bind:this={audio} src={browserMode ? audioSrc : convertFileSrc(audioSrc)} ontimeupdate={() => playhead = audio?.currentTime ?? 0} onloadedmetadata={updatePlaybackDuration} ondurationchange={updatePlaybackDuration} onplay={() => audioPaused = false} onpause={() => audioPaused = true} onerror={audioFailed} controls></audio>{/key}{#if mixing}<span class="mix-hint">{locale === 'ru' ? 'Готовим общий звук…' : 'Preparing mixed audio…'}</span>{/if}</div>{/if}</div>
 			<section class="transcript">
+				{#if !browserMode}<button class="ghost" title="Локальное саммари через Ollama · qwen3.5:4b" disabled={summaryBusy || !segments.length || recording} onclick={() => void summarizeLocal()}>{summaryBusy ? 'Суммаризация…' : 'Саммари · Ollama'}</button>{/if}
+				{#if summaryFor === selected.id && summaryText}<section class="local-summary"><h2>Саммари · qwen3.5:4b</h2><small>Сгенерировано локально. Проверьте факты. Результат пока не сохраняется.</small><div>{summaryText}</div></section>{/if}
 				{#if recognitionStage}<div class="recognition-status" role="status"><progress aria-label={locale === 'ru' ? 'Распознавание' : 'Recognition'}></progress><span>{recognitionStage}</span></div>{/if}
 				{#if browserMode && browserTracks.length > 1}<label>{locale === 'ru' ? 'Аудиодорожка' : 'Audio track'}<select onchange={(event) => void chooseBrowserTrack(event.currentTarget.value)}><option value="mix">{locale === 'ru' ? 'Все дорожки вместе' : 'All tracks mixed'}</option>{#each [...browserTracks].sort((a,b) => Number(b.track === 'system') - Number(a.track === 'system')) as track}<option value={track.path}>{track.track === 'system' ? (locale === 'ru' ? 'Система' : 'System') : (locale === 'ru' ? 'Микрофон' : 'Microphone')}</option>{/each}</select></label>{/if}
 				{#if browserMode}<button onclick={() => void resumeRemoteUpload(selected.id)}>{locale === 'ru' ? 'Повторить отправку из архива' : 'Resume archive upload'}</button>{/if}
@@ -921,6 +933,7 @@
 {#if confirmClear}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={() => confirmClear = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label={locale === 'ru' ? 'Очистить текст' : 'Clear transcript'}><h2>{locale === 'ru' ? 'Очистить весь текст?' : 'Clear the entire transcript?'}</h2><p>{locale === 'ru' ? 'Аудиозапись останется. Удалённый текст нельзя восстановить отменой.' : 'Audio will remain. Deleted text cannot be undone.'}</p><div class="modal-actions"><button class="ghost" onclick={() => confirmClear = false}>{t.cancel}</button><button class="danger-solid" onclick={() => void clearCurrentTranscript()}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button></div></div></div>{/if}
 
 <style>
+	.local-summary{margin:16px 0 24px;padding:18px;border:1px solid #c9d5ca;border-radius:8px;background:#edf3ed}.local-summary h2{margin:0 0 8px;font-size:18px}.local-summary small{color:#68766b}.local-summary>div{white-space:pre-wrap;line-height:1.6;margin-top:12px}
 	footer button,footer summary{min-height:34px;height:34px;padding:7px 12px!important;border:1px solid #d5d7d0;border-radius:8px;font-size:13px;line-height:18px;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box}.drive-menu{position:relative}.drive-menu summary{cursor:pointer;background:white;list-style:none;width:40px}.drive-menu summary::-webkit-details-marker{display:none}.drive-menu-content{position:absolute;bottom:44px;left:0;z-index:40;min-width:260px;display:flex;flex-direction:column;gap:10px;padding:14px;background:#fff;border:1px solid #d5d7d0;border-radius:10px;box-shadow:0 8px 28px #0002}.drive-menu-content button{width:100%;height:auto;min-height:34px}.toast{display:flex;align-items:center;gap:12px}.toast>button{border:0;background:transparent;color:inherit;font-size:22px;cursor:pointer;padding:0 4px}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 	.merge-prompt{position:fixed;bottom:80px;right:20px;z-index:25;max-width:480px;padding:16px;background:#eef4ed;border:1px solid #9aaf9e;border-radius:10px;display:flex;flex-wrap:wrap;gap:10px;font-size:13px}
 	.drive-snapshots{display:flex;flex-direction:column;gap:8px;max-height:40vh;overflow:auto}.drive-snapshots button{text-align:left;overflow-wrap:anywhere}
