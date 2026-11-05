@@ -51,7 +51,7 @@ async fn install_summary_runtime(app:tauri::AppHandle)->Result<(),String>{let ro
 
 #[tauri::command]
 fn set_summary_api_key(key:String,endpoint:String)->Result<(),String>{
-    let url=url::Url::parse(&endpoint).map_err(|_|"Некорректный API URL")?;
+    let url=summarization::api_url(&endpoint)?;
     let account=format!("summary-api:{}",url.origin().ascii_serialization());
     let entry=keyring::Entry::new("GigaAM Desktop",&account).map_err(|_|"Хранилище ключей недоступно")?;
     if key.is_empty(){match entry.delete_credential(){Ok(())|Err(keyring::Error::NoEntry)=>Ok(()),Err(_)=>Err("Не удалось удалить ключ".into())}}else{entry.set_password(&key).map_err(|_|"Не удалось сохранить ключ".into())}
