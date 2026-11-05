@@ -42,3 +42,15 @@ pub fn summarize(root:&Path,model:&Path,text:&str)->Result<String,String>{
 fn find_cli(root:&Path)->Option<std::path::PathBuf>{
     for entry in std::fs::read_dir(root).ok()?.flatten(){let path=entry.path();if path.file_name().and_then(|s|s.to_str())==Some("llama-cli.exe"){return Some(path);}if path.is_dir(){if let Some(found)=find_cli(&path){return Some(found);}}}None
 }
+
+#[cfg(test)]mod tests{
+    #[test]
+    #[ignore="explicit consented runtime download (~25MB), existing GGUF required"]
+    fn real_managed_runtime_summary(){
+        let root=std::path::PathBuf::from(std::env::var("GIGAAM_GGUF_TEST_ROOT").expect("test root"));
+        let model=std::path::PathBuf::from(std::env::var("GIGAAM_GGUF_TEST_MODEL").expect("existing model"));
+        super::install(&root).unwrap();
+        let result=super::summarize(&root,&model,"На встрече решили исправить экспорт. Анна проверит результат в пятницу. Новые задачи: тестирование синхронизации.").unwrap();
+        assert!(!result.trim().is_empty());println!("GGUF result: {} characters",result.chars().count());
+    }
+}
