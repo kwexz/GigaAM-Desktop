@@ -1,6 +1,22 @@
 //! Explicit, checksum-pinned Windows CPU runtime installation.
 use std::{io::{Read,Write},path::Path};
 use sha2::{Digest,Sha256};
+pub fn download_model(root:&Path)->Result<String,String>{
+    let directory=root.join("summary-models");std::fs::create_dir_all(&directory).map_err(|_|"Каталог весов недоступен")?;
+    let target=directory.join("Qwen3-4B-Q4_K_M.gguf");
+    if target.exists(){return Err("Файл весов уже существует. Выберите его через «Выбрать GGUF».".into());}
+    let staged=directory.join(format!("model-{}.partial",crate::new_id()));
+    let result=(||{
+        let client=reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(3600)).build().map_err(|_|"HTTP недоступен")?;
+        let mut response=client.get("https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/bc640142c66e1fdd12af0bd68f40445458f3869b/Qwen3-4B-Q4_K_M.gguf").send().map_err(|_|"Не удалось скачать веса")?;
+        if !response.status().is_success(){return Err("Сервер весов вернул ошибку".into());}
+        let mut file=std::fs::File::create(&staged).map_err(|_|"Не удалось создать файл весов")?;let mut hash=Sha256::new();let mut size=0u64;let mut buffer=[0u8;65536];
+        loop{let n=response.read(&mut buffer).map_err(|_|"Загрузка весов прервана")?;if n==0{break;}size+=n as u64;if size>2497280256{return Err("Превышен ожидаемый размер весов".into());}hash.update(&buffer[..n]);file.write_all(&buffer[..n]).map_err(|_|"Ошибка записи весов")?;}
+        file.sync_all().map_err(|_|"Ошибка сохранения весов")?;drop(file);
+        if size!=2497280256||format!("{:x}",hash.finalize())!="7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5"{return Err("Размер/SHA256 весов не совпадает".into());}
+        std::fs::hard_link(&staged,&target).map_err(|_|"Не удалось установить веса без перезаписи")?;Ok(target.to_string_lossy().into_owned())
+    })();let _=std::fs::remove_file(staged);result
+}
 pub fn install(root:&Path)->Result<(),String>{
     if !cfg!(all(windows,target_arch="x86_64")){return Err("Автоустановка runtime пока только Windows x64".into());}
     let installed=root.join("summary-runtime");
@@ -21,11 +37,17 @@ pub fn install(root:&Path)->Result<(),String>{
     if find_cli(&directory).is_none(){return Err("Архив runtime не содержит llama-cli".into());}
     let _=std::fs::remove_file(archive);
     std::fs::write(directory.join("verified-b12131"),b"179599ab3243100ba919a929ea673a11ec0ccdc898d22f21f0a205bf56dcdf68").map_err(|_|"Маркер runtime недоступен")?;
-    if installed.exists(){
+    let backup=root.join(format!("summary-runtime-backup-{}",crate::new_id()));
+    let had_previous=installed.exists();
+    if had_previous{
         // Preserve legacy installation rather than unpack over executable DLLs.
-        std::fs::rename(&installed,root.join(format!("summary-runtime-backup-{}",crate::new_id()))).map_err(|_|"Закройте GGUF inference перед обновлением runtime")?;
+        std::fs::rename(&installed,&backup).map_err(|_|"Закройте GGUF inference перед обновлением runtime")?;
     }
-    std::fs::rename(&directory,&installed).map_err(|_|"Не удалось опубликовать runtime")?;Ok(())
+    if std::fs::rename(&directory,&installed).is_err(){
+        if had_previous{std::fs::rename(&backup,&installed).map_err(|_|"Публикация и откат не удались; предыдущий runtime сохранён в backup")?;}
+        return Err("Не удалось опубликовать runtime; предыдущая версия сохранена".into());
+    }
+    Ok(())
 }
 
 pub fn summarize(root:&Path,model:&Path,text:&str)->Result<String,String>{
