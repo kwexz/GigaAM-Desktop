@@ -30,12 +30,14 @@ pub fn summarize(root:&Path,model:&Path,text:&str)->Result<String,String>{
     let output=runtime.join(format!("result-{}.txt",crate::new_id()));
     let stdout=std::fs::File::create(&output).map_err(|_|"Runtime output unavailable")?;
     let mut command=std::process::Command::new(executable);
-    command.arg("-m").arg(model).arg("-f").arg(&prompt).args(["-n","1200","-c","8192","--temp","0.2","--no-display-prompt","--simple-io"]).stdin(std::process::Stdio::null()).stdout(stdout).stderr(std::process::Stdio::null());
+    command.arg("-m").arg(model).arg("-f").arg(&prompt).args(["-n","1200","-c","8192","--temp","0.2","--no-display-prompt","--simple-io","--single-turn","--reasoning","off"]).stdin(std::process::Stdio::null()).stdout(stdout).stderr(std::process::Stdio::null());
     #[cfg(windows)]{use std::os::windows::process::CommandExt;command.creation_flags(0x08000000);}
     let result=(||{
         let mut child=command.spawn().map_err(|_|"Не удалось запустить llama-cli")?;let start=std::time::Instant::now();
         loop{if let Some(status)=child.try_wait().map_err(|_|"Runtime wait failed")?{if !status.success(){return Err("GGUF runtime завершился с ошибкой".into());}break;}if start.elapsed().as_secs()>600{let _=child.kill();let _=child.wait();return Err("GGUF: время ожидания превышено".into());}std::thread::sleep(std::time::Duration::from_millis(100));}
-        std::fs::read_to_string(&output).map_err(|_|"Ответ runtime недоступен".into())
+        let text=std::fs::read_to_string(&output).map_err(|_|"Ответ runtime недоступен")?;
+        if text.trim().is_empty(){return Err("GGUF вернул пустое саммари".into());}
+        Ok(text.trim().to_owned())
     })();let _=std::fs::remove_file(prompt);let _=std::fs::remove_file(output);result
 }
 fn find_cli(root:&Path)->Option<std::path::PathBuf>{
