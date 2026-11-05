@@ -58,6 +58,10 @@
 	let googleBusy = $state(false);
 	let googleUploading = $state(false);
 	let summaryText = $state('');
+	let summarySource = $state('ollama');
+	let summaryEndpoint = $state('https://api.openai.com/v1');
+	let summaryModel = $state('');
+	let summaryApiKey = $state('');
 	let summaryBusy = $state(false);
 	let summaryFor = $state('');
 	let summaryMode = $state(false);
@@ -87,7 +91,11 @@
 	async function summarizeLocal() {
 		if (!selected || summaryBusy) return;
 		const id = selected.id; summaryFor = id; summaryBusy = true; summaryStarted = Date.now(); summaryElapsed = null; summaryEditing = false;
-		try { const text = await invoke<string>('summarize_ollama', { id }); await persistSummary(id, text); if (selectedId === id) summaryText = text; }
+		try {
+			if (summarySource === 'api' && !window.confirm(`Расшифровка будет отправлена на ${summaryEndpoint}. Продолжить?`)) return;
+			if (summarySource === 'api' && summaryApiKey) { await invoke('set_summary_api_key', { key: summaryApiKey, endpoint: summaryEndpoint }); summaryApiKey = ''; }
+			const text = summarySource === 'api' ? await invoke<string>('summarize_api', { id, endpoint: summaryEndpoint, model: summaryModel }) : await invoke<string>('summarize_ollama', { id }); await persistSummary(id, text); if (selectedId === id) summaryText = text;
+		}
 		catch (cause) { error = String(cause); }
 		finally { summaryElapsed = (Date.now() - summaryStarted) / 1000; summaryBusy = false; }
 	}
@@ -908,6 +916,7 @@
 			<div class="document-head"><div class="document-title">{#if editingNameId === selected.id && editingNamePlace === 'header'}<input class="title-rename rename-input" data-place="header" bind:value={editingName} onkeydown={(event) => { if (event.key === 'Enter') void commitRename(); if (event.key === 'Escape') { editingNameId = ''; editingNamePlace = ''; } }} onblur={() => void commitRename()} />{:else}<h1><button class="title-button" onclick={() => beginRename(selected, 'header')} title={locale === 'ru' ? 'Переименовать' : 'Rename'}>{selected.source_filename}</button></h1>{/if}</div><div class="document-meta"><p><span>{selected.status === 'completed' ? duration(selected.duration_seconds) : `${statuses[locale][selected.status]}${selected.total_chunks ? ` · ${selected.completed_chunks} / ${selected.total_chunks}` : ''}`}{friendlyError(selected) ? ` · ${friendlyError(selected)}` : ''}</span>{#if selectedPath}<button class="path-link" title={locale === 'ru' ? 'Показать файл' : 'Show file'} onclick={() => void reveal(selectedPath)}>{selectedPath}</button>{/if}</p></div>{#if selected.status !== 'completed' && selected.total_chunks}<progress class="transcribe-progress" max={selected.total_chunks} value={selected.completed_chunks}></progress>{:else if audioSrc}<div class="player-row">{#key audioSrc}<audio bind:this={audio} src={browserMode ? audioSrc : convertFileSrc(audioSrc)} ontimeupdate={() => playhead = audio?.currentTime ?? 0} onloadedmetadata={updatePlaybackDuration} ondurationchange={updatePlaybackDuration} onplay={() => audioPaused = false} onpause={() => audioPaused = true} onerror={audioFailed} controls></audio>{/key}{#if mixing}<span class="mix-hint">{locale === 'ru' ? 'Готовим общий звук…' : 'Preparing mixed audio…'}</span>{/if}</div>{/if}</div>
 			<section class="transcript">
 				{#if summaryMode}
+					<div class="summary-settings"><label>Источник <select bind:value={summarySource}><option value="ollama">Ollama · локально</option><option value="api">OpenAI-совместимый API</option></select></label>{#if summarySource === 'api'}<label>API URL<input bind:value={summaryEndpoint} /></label><label>Модель<input bind:value={summaryModel} /></label><label>API key<input type="password" autocomplete="off" bind:value={summaryApiKey} placeholder="Сохранённый ключ не отображается" /></label><small>Текст будет отправлен на указанный сервер. Ключ сохраняется в системном хранилище.</small>{/if}</div>
 					{#if summaryBusy}<p role="status"><progress></progress> Суммаризация · Ollama…</p>{:else if summaryFor === selected.id && summaryElapsed !== null}<p class="hint">Время суммаризации: {summaryElapsed.toFixed(1)} с</p>{/if}
 					{#if summaryFor === selected.id && summaryText}
 						<small>Сгенерировано локально · qwen3.5:4b · проверьте факты</small>
@@ -973,6 +982,7 @@
 {#if confirmClear}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={() => confirmClear = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label={locale === 'ru' ? 'Очистить текст' : 'Clear transcript'}><h2>{locale === 'ru' ? 'Очистить весь текст?' : 'Clear the entire transcript?'}</h2><p>{locale === 'ru' ? 'Аудиозапись останется. Удалённый текст нельзя восстановить отменой.' : 'Audio will remain. Deleted text cannot be undone.'}</p><div class="modal-actions"><button class="ghost" onclick={() => confirmClear = false}>{t.cancel}</button><button class="danger-solid" onclick={() => void clearCurrentTranscript()}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button></div></div></div>{/if}
 
 <style>
+	footer .drive-menu>summary{font-weight:600!important}.summary-settings{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:18px}.summary-settings label{display:grid;gap:5px;font-size:12px}.summary-settings input,.summary-settings select{padding:8px;border:1px solid #c9cdc2;border-radius:8px;background:transparent;color:inherit;font:inherit}
 	footer .drive-menu>summary{font:inherit;font-size:13px;font-weight:400;width:auto;min-width:62px;gap:7px;flex-shrink:0}footer .drive-menu>summary svg{flex-shrink:0;display:block}.drive-menu-content .drive-toggle{gap:10px}
 	footer summary{font-family:inherit;font-weight:400;gap:7px}.drive-menu-content>button{justify-content:flex-start;text-align:left;font-family:inherit}.menu-chevron{flex:none;display:block}.summary-edit-target{display:block;width:100%;text-align:left;border:0;background:transparent;color:inherit;padding:0;cursor:text}.summary-edit-target:hover{filter:none}
 	.summary-editor{display:block;width:100%;min-height:55vh;margin:16px 0;padding:12px;font:17px/1.6 Georgia,serif;border:1px solid #9aaf9e;border-radius:8px;background:transparent;color:inherit;resize:vertical}.export-menu summary{width:auto!important;min-width:90px}

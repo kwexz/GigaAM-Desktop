@@ -12,6 +12,7 @@ pub mod server;
 pub mod storage;
 pub mod streaming;
 pub mod summarization;
+pub mod gguf_runtime;
 
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
@@ -37,6 +38,22 @@ use storage::Store;
 use tauri::Manager;
 
 static ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[tauri::command]
+async fn install_summary_runtime(app:tauri::AppHandle)->Result<(),String>{let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;tauri::async_runtime::spawn_blocking(move||gguf_runtime::install(&root)).await.map_err(|_|"Runtime install task failed")?}
+
+#[tauri::command]
+fn set_summary_api_key(key:String,endpoint:String)->Result<(),String>{
+    let url=url::Url::parse(&endpoint).map_err(|_|"Некорректный API URL")?;
+    let account=format!("summary-api:{}",url.origin().ascii_serialization());
+    let entry=keyring::Entry::new("GigaAM Desktop",&account).map_err(|_|"Хранилище ключей недоступно")?;
+    if key.is_empty(){match entry.delete_credential(){Ok(())|Err(keyring::Error::NoEntry)=>Ok(()),Err(_)=>Err("Не удалось удалить ключ".into())}}else{entry.set_password(&key).map_err(|_|"Не удалось сохранить ключ".into())}
+}
+#[tauri::command]
+async fn summarize_api(id:String,endpoint:String,model:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
+    let text=lock_store(&state)?.segments(&id).map_err(|_|"Расшифровка недоступна")?.into_iter().map(|s|s.text).collect::<Vec<_>>().join("\n");
+    tauri::async_runtime::spawn_blocking(move||summarization::summarize_openai(&text,&endpoint,&model)).await.map_err(|_|"Ошибка API задачи")?
+}
 
 #[tauri::command]
 fn load_summary(id:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{lock_store(&state)?.load_summary(&id).map_err(|e|e.to_string())}
@@ -1471,6 +1488,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             summarize_ollama,
+            install_summary_runtime,
+            summarize_api,
+            set_summary_api_key,
             load_summary,
             save_summary,
             save_summary_export,
