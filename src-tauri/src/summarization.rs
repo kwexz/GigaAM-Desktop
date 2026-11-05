@@ -20,14 +20,28 @@ mod ollama_smoke {
     #[test]
     fn rejects_empty_or_oversized_text_without_network() {
         assert!(super::summarize_with_ollama("").is_err());
-        assert!(super::summarize_with_ollama(&"a".repeat(24001)).is_err());
     }
 }
 
 /// Temporary local-runtime smoke adapter. No remote URL or implicit model pull.
 pub fn summarize_with_ollama(text: &str) -> Result<String, String> {
     if text.trim().is_empty() { return Err("Нет текста для суммаризации".into()); }
-    if text.chars().count() > 24000 { return Err("Для проверки Ollama выберите текст короче 24 000 символов".into()); }
+    if text.chars().count() > 24000 {
+        if text.chars().count()>1_000_000 {return Err("Расшифровка превышает лимит 1 000 000 символов".into());}
+        let mut notes=Vec::new();
+        let mut chunk=String::new();let mut count=0;
+        for line in text.lines(){
+            for character in line.chars().chain(std::iter::once('\n')){
+                chunk.push(character);count+=1;
+                if count>=18000{notes.push(summarize_with_ollama(&chunk)?);chunk.clear();count=0;}
+            }
+        }
+        if !chunk.trim().is_empty(){notes.push(summarize_with_ollama(&chunk)?);}
+        // Bounded final pass. If intermediate notes exceed a single context,
+        // retain complete per-part summaries rather than silently truncate.
+        let combined=notes.join("\n\n");
+        return if combined.chars().count()<=24000{summarize_with_ollama(&combined)}else{Ok(notes.iter().enumerate().map(|(index,note)|format!("## Часть {}\n\n{}",index+1,note)).collect::<Vec<_>>().join("\n\n"))};
+    }
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
         .redirect(reqwest::redirect::Policy::none())
