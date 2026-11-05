@@ -11,6 +11,14 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn load_summary(&self,id:&str)->rusqlite::Result<String>{
+        self.connection.execute_batch("CREATE TABLE IF NOT EXISTS summaries(recording_id TEXT PRIMARY KEY REFERENCES transcriptions(id) ON DELETE CASCADE,text TEXT NOT NULL)")?;
+        Ok(self.connection.query_row("SELECT text FROM summaries WHERE recording_id=?1",[id],|row|row.get(0)).optional()?.unwrap_or_default())
+    }
+    pub fn save_summary(&self,id:&str,text:&str)->rusqlite::Result<()>{
+        self.load_summary(id)?;
+        self.connection.execute("INSERT INTO summaries(recording_id,text) VALUES(?1,?2) ON CONFLICT(recording_id) DO UPDATE SET text=excluded.text",params![id,text])?;Ok(())
+    }
     pub fn restored_snapshot(&self, remote_id:&str)->rusqlite::Result<Option<String>> {
         self.connection.execute_batch("CREATE TABLE IF NOT EXISTS drive_restores(remote_id TEXT PRIMARY KEY,local_id TEXT NOT NULL REFERENCES transcriptions(id) ON DELETE CASCADE)")?;
         self.connection.query_row("SELECT local_id FROM drive_restores WHERE remote_id=?1",[remote_id],|row|row.get(0)).optional()

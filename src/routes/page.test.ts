@@ -183,7 +183,8 @@ describe('GigaAM page', () => {
 
 		await fireEvent.click(await screen.findByText('meeting.wav'));
 		await screen.findByText('Проверочный текст');
-		await fireEvent.click(screen.getByRole('button', { name: 'Экспорт' }));
+		await fireEvent.click(screen.getByText('Экспорт ⌃'));
+        await fireEvent.click(screen.getByRole('button', { name: 'В файл' }));
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('save_export', {
 			id: 'tx-1',
 			format: 'srt',

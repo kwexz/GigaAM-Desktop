@@ -39,6 +39,13 @@ use tauri::Manager;
 static ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[tauri::command]
+fn load_summary(id:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{lock_store(&state)?.load_summary(&id).map_err(|e|e.to_string())}
+#[tauri::command]
+fn save_summary(id:String,text:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<(),String>{lock_store(&state)?.save_summary(&id,&text).map_err(|e|e.to_string())}
+#[tauri::command]
+fn save_summary_export(id:String,path:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<(),String>{let text=lock_store(&state)?.load_summary(&id).map_err(|e|e.to_string())?;std::fs::write(path,text).map_err(|e|e.to_string())}
+
+#[tauri::command]
 async fn summarize_ollama(id:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
     let text=lock_store(&state)?.segments(&id).map_err(|_|"Не удалось прочитать расшифровку")?
         .into_iter().map(|segment|segment.text).collect::<Vec<_>>().join("\n");
@@ -1464,6 +1471,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             summarize_ollama,
+            load_summary,
+            save_summary,
+            save_summary_export,
             google_drive_connect,
             google_drive_disconnect,
             google_drive_connected,

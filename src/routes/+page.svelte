@@ -14,6 +14,7 @@
 	import { archivedBlocks } from '#lib/browser-storage.ts';
 	import { prepareAsrUpload } from '#lib/asr-upload.ts';
 	import { clearBrowserTranscript } from '#lib/browser-storage.ts';
+	import SummaryView from '#lib/SummaryView.svelte';
 	import { savedRecordingFormat, saveRecordingFormat, DEFAULT_RECORDING_FORMAT } from '#lib/recording-format.ts';
 	import { mergeBrowserOrganization } from '#lib/browser-storage.ts';
 	import { renameBrowserRecording, editBrowserSegment } from '#lib/browser-storage.ts';
@@ -59,10 +60,26 @@
 	let summaryText = $state('');
 	let summaryBusy = $state(false);
 	let summaryFor = $state('');
+	let summaryMode = $state(false);
+	let summaryEditing = $state(false);
+	let summaryStarted = $state(0);
+	let summarySaving = $state(false);
+	let summarySaveTimer: ReturnType<typeof setTimeout> | undefined;
+	function saveSummaryEdit() {
+		const id = summaryFor, text = summaryText;
+		clearTimeout(summarySaveTimer);
+		summarySaveTimer = setTimeout(() => { void persistSummary(id, text); }, 500);
+	}
+	async function persistSummary(id: string, text: string) {
+		if (!id) return; summarySaving = true;
+		try { await invoke('save_summary', { id, text }); }
+		catch { error = locale === 'ru' ? 'Не удалось сохранить саммари' : 'Could not save summary'; }
+		finally { summarySaving = false; }
+	}
 	async function summarizeLocal() {
 		if (!selected || summaryBusy) return;
-		const id = selected.id; summaryFor = id; summaryText = ''; summaryBusy = true;
-		try { summaryText = await invoke<string>('summarize_ollama', { id }); }
+		const id = selected.id; summaryFor = id; summaryBusy = true; summaryStarted = Date.now(); summaryEditing = false;
+		try { const text = await invoke<string>('summarize_ollama', { id }); await persistSummary(id, text); if (selectedId === id) summaryText = text; }
 		catch (cause) { error = String(cause); }
 		finally { summaryBusy = false; }
 	}
@@ -345,6 +362,8 @@
 	}
 
 	async function selectItem(id: string) {
+		summaryEditing = false;
+		if (!browserMode) void invoke<string>('load_summary', { id }).then((text) => { if (selectedId === id) { summaryFor = id; summaryText = text; } }).catch(() => {});
 		if (pendingMerge && pendingMerge.localId !== id) { pendingMerge = null; confirmMerge = false; }
 		if (editingNameId === id) return;
 		selectedId = id;
@@ -532,6 +551,10 @@
 	async function exportResult() {
 		if (!selected) return;
 		try {
+			if (summaryMode) {
+				const path = await save({ defaultPath: `${selected.source_filename}-summary.md`, filters: [{ name: 'Markdown', extensions: ['md'] }] });
+				if (path) { await invoke('save_summary_export', { id: selected.id, path }); await revealItemInDir(path); } return;
+			}
 			if (browserMode) {
 				const url = URL.createObjectURL(new Blob([segments.map((segment) => `[${time(segment.start_seconds)}] ${segment.text}`).join('\n')], { type: 'text/plain;charset=utf-8' }));
 				const link = document.createElement('a'); link.href = url; link.download = `${selected.source_filename}.txt`; link.click();
@@ -876,8 +899,15 @@
 		{#if selected}
 			<div class="document-head"><div class="document-title">{#if editingNameId === selected.id && editingNamePlace === 'header'}<input class="title-rename rename-input" data-place="header" bind:value={editingName} onkeydown={(event) => { if (event.key === 'Enter') void commitRename(); if (event.key === 'Escape') { editingNameId = ''; editingNamePlace = ''; } }} onblur={() => void commitRename()} />{:else}<h1><button class="title-button" onclick={() => beginRename(selected, 'header')} title={locale === 'ru' ? 'Переименовать' : 'Rename'}>{selected.source_filename}</button></h1>{/if}</div><div class="document-meta"><p><span>{selected.status === 'completed' ? duration(selected.duration_seconds) : `${statuses[locale][selected.status]}${selected.total_chunks ? ` · ${selected.completed_chunks} / ${selected.total_chunks}` : ''}`}{friendlyError(selected) ? ` · ${friendlyError(selected)}` : ''}</span>{#if selectedPath}<button class="path-link" title={locale === 'ru' ? 'Показать файл' : 'Show file'} onclick={() => void reveal(selectedPath)}>{selectedPath}</button>{/if}</p></div>{#if selected.status !== 'completed' && selected.total_chunks}<progress class="transcribe-progress" max={selected.total_chunks} value={selected.completed_chunks}></progress>{:else if audioSrc}<div class="player-row">{#key audioSrc}<audio bind:this={audio} src={browserMode ? audioSrc : convertFileSrc(audioSrc)} ontimeupdate={() => playhead = audio?.currentTime ?? 0} onloadedmetadata={updatePlaybackDuration} ondurationchange={updatePlaybackDuration} onplay={() => audioPaused = false} onpause={() => audioPaused = true} onerror={audioFailed} controls></audio>{/key}{#if mixing}<span class="mix-hint">{locale === 'ru' ? 'Готовим общий звук…' : 'Preparing mixed audio…'}</span>{/if}</div>{/if}</div>
 			<section class="transcript">
-				{#if !browserMode}<button class="ghost" title="Локальное саммари через Ollama · qwen3.5:4b" disabled={summaryBusy || !segments.length || recording} onclick={() => void summarizeLocal()}>{summaryBusy ? 'Суммаризация…' : 'Саммари · Ollama'}</button>{/if}
-				{#if summaryFor === selected.id && summaryText}<section class="local-summary"><h2>Саммари · qwen3.5:4b</h2><small>Сгенерировано локально. Проверьте факты. Результат пока не сохраняется.</small><div>{summaryText}</div></section>{/if}
+				{#if summaryMode}
+					{#if summaryBusy}<p role="status"><progress></progress> Суммаризация · Ollama · {Math.max(0,Math.floor((uiNow-summaryStarted)/1000))} с. Процент готовности недоступен.</p>{/if}
+					{#if summaryFor === selected.id && summaryText}
+						<small>Сгенерировано локально · qwen3.5:4b · проверьте факты</small>
+						<button class="ghost" title="Редактировать саммари" onclick={() => summaryEditing = !summaryEditing}>{summaryEditing ? 'Готово' : 'Редактировать'}</button>
+						{#if summaryEditing}<textarea class="summary-editor" aria-label="Текст саммари" bind:value={summaryText} oninput={saveSummaryEdit} onblur={() => { clearTimeout(summarySaveTimer); void persistSummary(summaryFor,summaryText); }}></textarea><small>{summarySaving ? 'Сохранение…' : 'Изменения сохраняются автоматически'}</small>{:else}<SummaryView text={summaryText} />{/if}
+					{:else if !summaryBusy}<p>Нажмите «Суммаризовать», чтобы создать саммари.</p>{/if}
+				{/if}
+				<div hidden={summaryMode}>
 				{#if recognitionStage}<div class="recognition-status" role="status"><progress aria-label={locale === 'ru' ? 'Распознавание' : 'Recognition'}></progress><span>{recognitionStage}</span></div>{/if}
 				{#if browserMode && browserTracks.length > 1}<label>{locale === 'ru' ? 'Аудиодорожка' : 'Audio track'}<select onchange={(event) => void chooseBrowserTrack(event.currentTarget.value)}><option value="mix">{locale === 'ru' ? 'Все дорожки вместе' : 'All tracks mixed'}</option>{#each [...browserTracks].sort((a,b) => Number(b.track === 'system') - Number(a.track === 'system')) as track}<option value={track.path}>{track.track === 'system' ? (locale === 'ru' ? 'Система' : 'System') : (locale === 'ru' ? 'Микрофон' : 'Microphone')}</option>{/each}</select></label>{/if}
 				{#if browserMode}<button onclick={() => void resumeRemoteUpload(selected.id)}>{locale === 'ru' ? 'Повторить отправку из архива' : 'Resume archive upload'}</button>{/if}
@@ -887,8 +917,8 @@
 					<div class="segment" class:playing={playhead >= segment.start_seconds && playhead < segment.end_seconds}><button class="seg-play" title={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} aria-label={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} onclick={() => togglePlay(segment)}>{#if !audioPaused && playhead >= segment.start_seconds && playhead < segment.end_seconds}<span class="pause-bars" aria-hidden="true"><i></i><i></i></span>{:else}<span class="play-triangle" aria-hidden="true">▶</span>{/if}</button><time>{time(segment.start_seconds)}</time><div class="seg-body">{#if segment.source_track !== 'file'}<b>{segment.speaker_id ?? (segment.source_track === 'microphone' ? (locale === 'ru' ? 'Я' : 'Me') : (locale === 'ru' ? 'Система' : 'System'))}</b>{/if}{#if editingId === segment.id}<textarea bind:value={editText} rows={3} onkeydown={(event) => editKeys(event, segment)}></textarea><div class="edit-actions"><button class="primary" onclick={() => void saveEdit(segment)}>{locale === 'ru' ? 'Сохранить' : 'Save'}</button><button class="ghost" onclick={() => editingId = null}>{t.cancel}</button></div>{:else}<button class="seg-text" title={locale === 'ru' ? 'Нажмите, чтобы редактировать' : 'Click to edit'} onclick={() => startEdit(segment)} onkeydown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); startEdit(segment); } }}>{segment.text}</button>{/if}</div></div>
 				{/each}
 				{#if !segments.length}{#if selected.status === 'completed'}<div class="empty-transcript"><p>{locale === 'ru' ? 'В записи не найдена речь: сегментов нет. Если аудио не пустое, нажмите «Повторить» для перезапуска распознавания.' : 'No speech found in this recording. If the audio is not empty, press Retry to re-run recognition.'}</p></div>{:else}<div class="processing"><span></span><p>{statuses[locale][selected.status]}</p></div>{/if}{/if}
-			</section>
-			<footer><div class="export">{#if !browserMode}<details class="drive-menu"><summary title="Google Drive"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="#0F9D58" d="M8 2h8L8 16H0z"/><path fill="#F4B400" d="m16 2 8 14h-8L8 2z"/><path fill="#4285F4" d="m0 16 4 7h16l4-7z"/></svg><span class="sr-only">Google Drive</span></summary><div class="drive-menu-content">{#if !browserMode}<button class="ghost drive-toggle" disabled={googleBusy} aria-label={googleConnected ? 'Disconnect Google Drive' : 'Connect Google Drive'} title={googleBusy ? 'Google…' : googleConnected ? 'Disconnect Google Drive' : 'Connect Google Drive'} onclick={() => void toggleGoogleDrive()}><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="#0F9D58" d="M8 2h8L8 16H0z"/><path fill="#F4B400" d="m16 2 8 14h-8L8 2z"/><path fill="#4285F4" d="m0 16 4 7h16l4-7z"/></svg></button>{/if}{#if !browserMode && googleConnected}<button onclick={() => void openDriveBackups()}>{locale === 'ru' ? 'Копии в Drive' : 'Drive backups'}</button><span class="hint" role="status">Drive: {driveQueue.auth_required ? (locale === 'ru' ? 'нужен повторный вход' : 'sign in again') : driveQueue.uploading ? (locale === 'ru' ? 'отправка и проверка' : 'uploading and verifying') : driveQueue.pending ? (locale === 'ru' ? `в очереди: ${driveQueue.pending}` : `queued: ${driveQueue.pending}`) : (locale === 'ru' ? `проверено: ${driveQueue.synced}` : `verified: ${driveQueue.synced}`)}</span>{/if}{#if !browserMode && googleConnected}<button disabled={googleUploading || recording || busy} onclick={() => void uploadSelectedToDrive()}>{googleUploading ? (locale === 'ru' ? 'Подготовка копии…' : 'Preparing snapshot…') : (locale === 'ru' ? 'На Google Drive' : 'Back up to Google Drive')}</button>{/if}</div></details>{/if}<div class="tools">{#if ['queued', 'failed', 'cancelled', 'interrupted', 'completed'].includes(selected.status)}<button class="primary" onclick={() => void action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', selected.id)}>{t.start}</button>{/if}{#if ['preparing', 'transcribing'].includes(selected.status)}<button class="primary" onclick={() => void action('cancel_transcription', selected.id)}>{locale === 'ru' ? 'Остановить' : 'Stop'}</button>{/if}</div><button onclick={() => void exportResult()}>{t.export}</button><button onclick={() => void copyTranscript()}>{t.copy}</button></div><div class="danger">{#if !['queued', 'preparing', 'transcribing'].includes(selected.status)}<button disabled={recording || busy || !segments.length} onclick={() => confirmClear = true}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button>{/if}</div></footer>
+			</div></section>
+			<footer><div class="export">{#if !browserMode}<details class="drive-menu"><summary title="Google Drive"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="#0F9D58" d="M8 2h8L8 16H0z"/><path fill="#F4B400" d="m16 2 8 14h-8L8 2z"/><path fill="#4285F4" d="m0 16 4 7h16l4-7z"/></svg><span aria-hidden="true">⌃</span><span class="sr-only">Google Drive</span></summary><div class="drive-menu-content">{#if !browserMode}<button class="ghost drive-toggle" disabled={googleBusy} aria-label={googleConnected ? 'Disconnect Google Drive' : 'Connect Google Drive'} title={googleBusy ? 'Google…' : googleConnected ? 'Disconnect Google Drive' : 'Connect Google Drive'} onclick={() => void toggleGoogleDrive()}><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="#0F9D58" d="M8 2h8L8 16H0z"/><path fill="#F4B400" d="m16 2 8 14h-8L8 2z"/><path fill="#4285F4" d="m0 16 4 7h16l4-7z"/></svg></button>{/if}{#if !browserMode && googleConnected}<button onclick={() => void openDriveBackups()}>{locale === 'ru' ? 'Копии в Drive' : 'Drive backups'}</button><span class="hint" role="status">Drive: {driveQueue.auth_required ? (locale === 'ru' ? 'нужен повторный вход' : 'sign in again') : driveQueue.uploading ? (locale === 'ru' ? 'отправка и проверка' : 'uploading and verifying') : driveQueue.pending ? (locale === 'ru' ? `в очереди: ${driveQueue.pending}` : `queued: ${driveQueue.pending}`) : (locale === 'ru' ? `проверено: ${driveQueue.synced}` : `verified: ${driveQueue.synced}`)}</span>{/if}{#if !browserMode && googleConnected}<button disabled={googleUploading || recording || busy} onclick={() => void uploadSelectedToDrive()}>{googleUploading ? (locale === 'ru' ? 'Подготовка копии…' : 'Preparing snapshot…') : (locale === 'ru' ? 'На Google Drive' : 'Back up to Google Drive')}</button>{/if}</div></details>{/if}{#if !browserMode}<button title="Переключить расшифровку и саммари" onclick={() => summaryMode = !summaryMode}>{summaryMode ? 'Расшифровка' : 'Саммари'}</button>{/if}<div class="tools">{#if summaryMode}<button disabled={summaryBusy || !segments.length || recording} onclick={() => void summarizeLocal()}>Суммаризовать</button>{:else if ['queued', 'failed', 'cancelled', 'interrupted', 'completed'].includes(selected.status)}<button class="primary" onclick={() => void action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', selected.id)}>{t.start}</button>{/if}{#if ['preparing', 'transcribing'].includes(selected.status)}<button class="primary" onclick={() => void action('cancel_transcription', selected.id)}>{locale === 'ru' ? 'Остановить' : 'Stop'}</button>{/if}</div><details class="drive-menu export-menu"><summary title="Экспорт или копирование">{t.export} ⌃</summary><div class="drive-menu-content"><button onclick={() => void exportResult()}>В файл</button><button onclick={() => summaryMode ? void copyTranscriptText(summaryText) : void copyTranscript()}>Копировать</button></div></details></div><div class="danger">{#if !['queued', 'preparing', 'transcribing'].includes(selected.status)}<button disabled={recording || busy || !segments.length} onclick={() => confirmClear = true}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button>{/if}</div></footer>
 		{:else}
 			<div class="welcome"><div class="wave">∿</div><h1>{t.waiting}</h1><p>{t.empty}</p><button class="add-large" disabled={!model.installed && !browserMode} onclick={pickFiles}>＋ {t.add}</button></div>
 		{/if}
@@ -933,11 +963,12 @@
 {#if confirmClear}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={() => confirmClear = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label={locale === 'ru' ? 'Очистить текст' : 'Clear transcript'}><h2>{locale === 'ru' ? 'Очистить весь текст?' : 'Clear the entire transcript?'}</h2><p>{locale === 'ru' ? 'Аудиозапись останется. Удалённый текст нельзя восстановить отменой.' : 'Audio will remain. Deleted text cannot be undone.'}</p><div class="modal-actions"><button class="ghost" onclick={() => confirmClear = false}>{t.cancel}</button><button class="danger-solid" onclick={() => void clearCurrentTranscript()}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button></div></div></div>{/if}
 
 <style>
-	.local-summary{margin:16px 0 24px;padding:18px;border:1px solid #c9d5ca;border-radius:8px;background:#edf3ed}.local-summary h2{margin:0 0 8px;font-size:18px}.local-summary small{color:#68766b}.local-summary>div{white-space:pre-wrap;line-height:1.6;margin-top:12px}
+	.summary-editor{display:block;width:100%;min-height:55vh;margin:16px 0;padding:12px;font:17px/1.6 Georgia,serif;border:1px solid #9aaf9e;border-radius:8px;background:transparent;color:inherit;resize:vertical}.export-menu summary{width:auto!important;min-width:90px}
+	
 	footer button,footer summary{min-height:34px;height:34px;padding:7px 12px!important;border:1px solid #d5d7d0;border-radius:8px;font-size:13px;line-height:18px;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box}.drive-menu{position:relative}.drive-menu summary{cursor:pointer;background:white;list-style:none;width:40px}.drive-menu summary::-webkit-details-marker{display:none}.drive-menu-content{position:absolute;bottom:44px;left:0;z-index:40;min-width:260px;display:flex;flex-direction:column;gap:10px;padding:14px;background:#fff;border:1px solid #d5d7d0;border-radius:10px;box-shadow:0 8px 28px #0002}.drive-menu-content button{width:100%;height:auto;min-height:34px}.toast{display:flex;align-items:center;gap:12px}.toast>button{border:0;background:transparent;color:inherit;font-size:22px;cursor:pointer;padding:0 4px}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 	.merge-prompt{position:fixed;bottom:80px;right:20px;z-index:25;max-width:480px;padding:16px;background:#eef4ed;border:1px solid #9aaf9e;border-radius:10px;display:flex;flex-wrap:wrap;gap:10px;font-size:13px}
 	.drive-snapshots{display:flex;flex-direction:column;gap:8px;max-height:40vh;overflow:auto}.drive-snapshots button{text-align:left;overflow-wrap:anywhere}
-	.header-actions{align-items:center}.header-actions>button.ghost{display:inline-flex;align-items:center;justify-content:center;flex:0 0 36px;width:36px;min-width:36px;height:34px;min-height:34px;padding:0!important;border-radius:8px;line-height:1;box-sizing:border-box}.header-actions>button.drive-toggle svg{display:block;flex:none}.header-actions>button:not(.theme-toggle){font-size:12px;font-weight:600}
+	.header-actions{align-items:center}.header-actions>button.ghost{display:inline-flex;align-items:center;justify-content:center;flex:0 0 36px;width:36px;min-width:36px;height:34px;min-height:34px;padding:0!important;border-radius:8px;line-height:1;box-sizing:border-box}.header-actions>button:not(.theme-toggle){font-size:12px;font-weight:600}
 	.notification-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:100;background:#173f35;color:white;border-radius:8px;padding:12px 18px;max-width:90vw;font-size:13px;box-shadow:0 4px 18px #0002}
 	.recognition-status{display:flex;align-items:center;gap:12px;padding:12px 0;color:#315746;font-size:13px}.recognition-status progress{width:120px;accent-color:#28705a}
 	.modal{display:flex;flex-direction:column;gap:16px}.modal h2{margin:0!important}.modal p{margin:0!important;white-space:normal!important;line-height:1.5}.modal>input{width:100%;min-width:0;padding:10px 12px;border:1px solid #c9cdc2;border-radius:8px;font:inherit}.modal .modal-actions{margin-top:4px;gap:10px}.modal-actions>button{min-height:36px;padding:8px 14px}
