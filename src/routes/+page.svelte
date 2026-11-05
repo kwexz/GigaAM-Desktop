@@ -62,6 +62,14 @@
 	let summaryEndpoint = $state('https://api.openai.com/v1');
 	let summaryModel = $state('');
 	let summaryApiKey = $state('');
+	let ggufPath = $state('');
+	let runtimeInstalling = $state(false);
+	async function pickGguf() { const path = await open({ multiple: false, filters: [{ name: 'GGUF', extensions: ['gguf'] }] }); if (typeof path === 'string') ggufPath = path; }
+	async function installGgufRuntime() {
+		if (!window.confirm('Скачать llama.cpp CPU runtime (~25 МБ) с GitHub? Веса модели не скачиваются.')) return;
+		runtimeInstalling = true;
+		try { await invoke('install_summary_runtime'); notify('GGUF runtime установлен'); } catch (cause) { error = String(cause); } finally { runtimeInstalling = false; }
+	}
 	let summaryBusy = $state(false);
 	let summaryFor = $state('');
 	let summaryMode = $state(false);
@@ -94,7 +102,7 @@
 		try {
 			if (summarySource === 'api' && !window.confirm(`Расшифровка будет отправлена на ${summaryEndpoint}. Продолжить?`)) return;
 			if (summarySource === 'api' && summaryApiKey) { await invoke('set_summary_api_key', { key: summaryApiKey, endpoint: summaryEndpoint }); summaryApiKey = ''; }
-			const text = summarySource === 'api' ? await invoke<string>('summarize_api', { id, endpoint: summaryEndpoint, model: summaryModel }) : await invoke<string>('summarize_ollama', { id }); await persistSummary(id, text); if (selectedId === id) summaryText = text;
+			const text = summarySource === 'api' ? await invoke<string>('summarize_api', { id, endpoint: summaryEndpoint, model: summaryModel }) : summarySource === 'gguf' ? await invoke<string>('summarize_gguf', { id, modelPath: ggufPath }) : await invoke<string>('summarize_ollama', { id }); await persistSummary(id, text); if (selectedId === id) summaryText = text;
 		}
 		catch (cause) { error = String(cause); }
 		finally { summaryElapsed = (Date.now() - summaryStarted) / 1000; summaryBusy = false; }
@@ -916,7 +924,7 @@
 			<div class="document-head"><div class="document-title">{#if editingNameId === selected.id && editingNamePlace === 'header'}<input class="title-rename rename-input" data-place="header" bind:value={editingName} onkeydown={(event) => { if (event.key === 'Enter') void commitRename(); if (event.key === 'Escape') { editingNameId = ''; editingNamePlace = ''; } }} onblur={() => void commitRename()} />{:else}<h1><button class="title-button" onclick={() => beginRename(selected, 'header')} title={locale === 'ru' ? 'Переименовать' : 'Rename'}>{selected.source_filename}</button></h1>{/if}</div><div class="document-meta"><p><span>{selected.status === 'completed' ? duration(selected.duration_seconds) : `${statuses[locale][selected.status]}${selected.total_chunks ? ` · ${selected.completed_chunks} / ${selected.total_chunks}` : ''}`}{friendlyError(selected) ? ` · ${friendlyError(selected)}` : ''}</span>{#if selectedPath}<button class="path-link" title={locale === 'ru' ? 'Показать файл' : 'Show file'} onclick={() => void reveal(selectedPath)}>{selectedPath}</button>{/if}</p></div>{#if selected.status !== 'completed' && selected.total_chunks}<progress class="transcribe-progress" max={selected.total_chunks} value={selected.completed_chunks}></progress>{:else if audioSrc}<div class="player-row">{#key audioSrc}<audio bind:this={audio} src={browserMode ? audioSrc : convertFileSrc(audioSrc)} ontimeupdate={() => playhead = audio?.currentTime ?? 0} onloadedmetadata={updatePlaybackDuration} ondurationchange={updatePlaybackDuration} onplay={() => audioPaused = false} onpause={() => audioPaused = true} onerror={audioFailed} controls></audio>{/key}{#if mixing}<span class="mix-hint">{locale === 'ru' ? 'Готовим общий звук…' : 'Preparing mixed audio…'}</span>{/if}</div>{/if}</div>
 			<section class="transcript">
 				{#if summaryMode}
-					<div class="summary-settings"><label>Источник <select bind:value={summarySource}><option value="ollama">Ollama · локально</option><option value="api">OpenAI-совместимый API</option></select></label>{#if summarySource === 'api'}<label>API URL<input bind:value={summaryEndpoint} /></label><label>Модель<input bind:value={summaryModel} /></label><label>API key<input type="password" autocomplete="off" bind:value={summaryApiKey} placeholder="Сохранённый ключ не отображается" /></label><small>Текст будет отправлен на указанный сервер. Ключ сохраняется в системном хранилище.</small>{/if}</div>
+					<div class="summary-settings"><label>Источник <select bind:value={summarySource}><option value="ollama">Ollama · локально</option><option value="gguf">GGUF · локально без Ollama</option><option value="api">OpenAI-совместимый API</option></select></label>{#if summarySource === 'gguf'}<button class="ghost" disabled={runtimeInstalling} onclick={() => void installGgufRuntime()}>{runtimeInstalling ? 'Загрузка runtime…' : 'Установить runtime'}</button><button class="ghost" onclick={() => void pickGguf()}>Выбрать GGUF</button><small>{ggufPath || 'Выберите локальный файл весов .gguf'}</small>{/if}{#if summarySource === 'api'}<label>API URL<input bind:value={summaryEndpoint} /></label><label>Модель<input bind:value={summaryModel} /></label><label>API key<input type="password" autocomplete="off" bind:value={summaryApiKey} placeholder="Сохранённый ключ не отображается" /></label><small>Текст будет отправлен на указанный сервер. Ключ сохраняется в системном хранилище.</small>{/if}</div>
 					{#if summaryBusy}<p role="status"><progress></progress> Суммаризация · Ollama…</p>{:else if summaryFor === selected.id && summaryElapsed !== null}<p class="hint">Время суммаризации: {summaryElapsed.toFixed(1)} с</p>{/if}
 					{#if summaryFor === selected.id && summaryText}
 						<small>Сгенерировано локально · qwen3.5:4b · проверьте факты</small>

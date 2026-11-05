@@ -40,6 +40,13 @@ use tauri::Manager;
 static ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[tauri::command]
+async fn summarize_gguf(id:String,model_path:String,app:tauri::AppHandle,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
+    let text=lock_store(&state)?.segments(&id).map_err(|_|"Расшифровка недоступна")?.into_iter().map(|s|s.text).collect::<Vec<_>>().join("\n");
+    let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;
+    tauri::async_runtime::spawn_blocking(move||gguf_runtime::summarize(&root,std::path::Path::new(&model_path),&text)).await.map_err(|_|"GGUF task failed")?
+}
+
+#[tauri::command]
 async fn install_summary_runtime(app:tauri::AppHandle)->Result<(),String>{let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;tauri::async_runtime::spawn_blocking(move||gguf_runtime::install(&root)).await.map_err(|_|"Runtime install task failed")?}
 
 #[tauri::command]
@@ -1489,6 +1496,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             summarize_ollama,
             install_summary_runtime,
+            summarize_gguf,
             summarize_api,
             set_summary_api_key,
             load_summary,
