@@ -432,6 +432,9 @@ fn load_pcm_wav(path: &Path) -> Result<(Vec<f32>, Duration)> {
 }
 
 fn load_media(path: &Path) -> Result<(Vec<f32>, Duration)> {
+    if path.extension().and_then(|value| value.to_str()).is_some_and(|value| value.eq_ignore_ascii_case("webm")) {
+        return load_webm_with_ffmpeg(path);
+    }
     let file = Box::new(fs::File::open(path)?);
     let stream = MediaSourceStream::new(file, Default::default());
     let mut hint = Hint::new();
@@ -483,6 +486,23 @@ fn load_media(path: &Path) -> Result<(Vec<f32>, Duration)> {
     let sample_rate = sample_rate.context("media contained no decodable audio")? as usize;
     let duration = Duration::from_secs_f64(mono.len() as f64 / sample_rate as f64);
     Ok((resample(mono, sample_rate)?, duration))
+}
+
+fn load_webm_with_ffmpeg(path: &Path) -> Result<(Vec<f32>, Duration)> {
+    let output = std::env::temp_dir().join(format!("gigaam-webm-{}.wav", crate::new_id()));
+    let result = (|| {
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(path)
+            .args(["-vn", "-ac", "1", "-ar", "16000", "-f", "wav"])
+            .arg(&output)
+            .status()
+            .map_err(|_| anyhow::anyhow!("WebM/Opus requires ffmpeg to be installed"))?;
+        if !status.success() { anyhow::bail!("ffmpeg could not decode the WebM audio track"); }
+        load_wav(&output)
+    })();
+    let _ = std::fs::remove_file(&output);
+    result
 }
 
 fn resample(audio: Vec<f32>, source_rate: usize) -> Result<Vec<f32>> {
