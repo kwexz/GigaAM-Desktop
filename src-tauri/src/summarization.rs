@@ -13,15 +13,38 @@ pub fn api_url(endpoint:&str)->Result<url::Url,String>{
     if (url.scheme()!="https"&&!(local&&url.scheme()=="http"))||!url.username().is_empty()||url.password().is_some()||url.query().is_some()||url.fragment().is_some(){return Err("API требует HTTPS (HTTP разрешён только на localhost), без пароля или query в URL".into());}
     Ok(url)
 }
+pub(crate) fn summarize_long<F>(text: &str, mut summarize: F) -> Result<String,String>
+where F: FnMut(&str) -> Result<String,String> {
+    if text.trim().is_empty(){return Err("Нет текста для суммаризации".into());}
+    if text.chars().count()>1_000_000{return Err("Расшифровка превышает лимит 1 000 000 символов".into());}
+    let mut chunks=Vec::new();let mut current=String::new();let mut count=0;
+    for ch in text.chars(){current.push(ch);count+=1;if count==12000{chunks.push(std::mem::take(&mut current));count=0;}}
+    if !current.is_empty(){chunks.push(current);}
+    if chunks.len()==1{return summarize(&chunks[0]);}
+    let mut notes=Vec::new();for chunk in chunks{notes.push(summarize(&chunk)?);}
+    let combined=notes.join("\n\n");
+    if combined.chars().count()<=12000{summarize(&combined)}else{Ok(notes.iter().enumerate().map(|(i,n)|format!("## Часть {}\n\n{}",i+1,n)).collect::<Vec<_>>().join("\n\n"))}
+}
 pub fn summarize_openai(text:&str,endpoint:&str,model:&str)->Result<String,String>{
     let mut url=api_url(endpoint)?;
     if model.trim().is_empty()||text.trim().is_empty(){return Err("Укажите модель и расшифровку".into());}
-    if text.chars().count()>24000{return Err("Для API пока поддерживаются расшифровки до 24 000 символов".into());}
     let path=format!("{}/chat/completions",url.path().trim_end_matches('/'));url.set_path(&path);
     let account=format!("summary-api:{}",url.origin().ascii_serialization());
     let entry=keyring::Entry::new("GigaAM Desktop",&account).map_err(|_|"Хранилище ключей недоступно")?;
     let key=entry.get_password().unwrap_or_default();
-    openai_request(text,url,model,&key)
+    summarize_long(text,|chunk|openai_request(chunk,url.clone(),model,&key))
+}
+pub fn list_api_models(endpoint:&str,key_override:&str)->Result<Vec<String>,String>{
+    let mut url=api_url(endpoint)?;let account=format!("summary-api:{}",url.origin().ascii_serialization());
+    let key=if key_override.is_empty(){keyring::Entry::new("GigaAM Desktop",&account).map_err(|_|"Хранилище ключей недоступно")?.get_password().unwrap_or_default()}else{key_override.to_owned()};
+    url.set_path(&format!("{}/models",url.path().trim_end_matches('/')));
+    let client=reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(20)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"HTTP недоступен")?;
+    let mut request=client.get(url);if !key.is_empty(){request=request.bearer_auth(key);}
+    let response=request.send().map_err(|_|"API недоступен или истекло время ожидания")?;
+    if !response.status().is_success(){return Err(format!("API: HTTP {}",response.status().as_u16()));}
+    let value:serde_json::Value=serde_json::from_str(&response.text().map_err(|_|"Ответ недоступен")?).map_err(|_|"Некорректный список моделей")?;
+    let rows=value["data"].as_array().ok_or("Некорректный список моделей")?;
+    let mut models=rows.iter().filter_map(|row|row["id"].as_str()).filter(|id|!id.is_empty()).map(str::to_owned).collect::<Vec<_>>();models.sort();models.dedup();Ok(models)
 }
 fn openai_request(text:&str,url:url::Url,model:&str,key:&str)->Result<String,String>{
     let client=reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(300)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"HTTP недоступен")?;
@@ -180,6 +203,15 @@ impl SummarizationEngine for ExtractiveFallback {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn long_summary_preserves_all_input_and_combines_parts() {
+        let text = format!("{}{}", "а".repeat(12000), "б".repeat(12001));
+        let mut seen = Vec::new();
+        let result = super::summarize_long(&text, |chunk| { seen.push(chunk.to_owned()); Ok(format!("part{}", seen.len())) }).unwrap();
+        assert_eq!(seen.len(), 4);
+        assert_eq!(seen[..3].concat(), text);
+        assert_eq!(result, "part4");
+    }
     #[test]
     fn ollama_model_list_is_sorted_and_deduplicated() {
         let body = serde_json::json!({"models":[{"name":"llama3"},{"name":"qwen3.5:4b"},{"name":"llama3"}]});

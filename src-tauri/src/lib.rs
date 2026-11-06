@@ -36,11 +36,15 @@ use pipeline::{LiveScanner, NativeFileProcessor};
 use queue::process_next;
 use storage::Store;
 use tauri::Manager;
+use tauri::Emitter;
 
 static ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[tauri::command]
-async fn download_summary_model(app:tauri::AppHandle)->Result<String,String>{let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;tauri::async_runtime::spawn_blocking(move||gguf_runtime::download_model(&root)).await.map_err(|_|"Model download failed")?}
+async fn download_summary_model(app:tauri::AppHandle)->Result<String,String>{let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;tauri::async_runtime::spawn_blocking(move||gguf_runtime::download_model(&root,|downloaded,total|{let _=app.emit("summary-model-progress",serde_json::json!({"downloaded":downloaded,"total":total}));})).await.map_err(|_|"Model download failed")?}
+
+#[tauri::command]
+async fn installed_summary_model(app:tauri::AppHandle)->Result<Option<String>,String>{let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;tauri::async_runtime::spawn_blocking(move||gguf_runtime::managed_model(&root)).await.map_err(|_|"Model check failed".into())}
 
 #[tauri::command]
 async fn summarize_gguf(id:String,model_path:String,app:tauri::AppHandle,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
@@ -63,6 +67,11 @@ fn set_summary_api_key(key:String,endpoint:String)->Result<(),String>{
 async fn summarize_api(id:String,endpoint:String,model:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
     let text=lock_store(&state)?.segments(&id).map_err(|_|"Расшифровка недоступна")?.into_iter().map(|s|s.text).collect::<Vec<_>>().join("\n");
     tauri::async_runtime::spawn_blocking(move||summarization::summarize_openai(&text,&endpoint,&model)).await.map_err(|_|"Ошибка API задачи")?
+}
+
+#[tauri::command]
+async fn list_summary_api_models(endpoint:String,key:String)->Result<Vec<String>,String>{
+    tauri::async_runtime::spawn_blocking(move||summarization::list_api_models(&endpoint,&key)).await.map_err(|_|"Ошибка проверки API")?
 }
 
 #[tauri::command]
@@ -1506,8 +1515,10 @@ pub fn run() {
             list_summary_models,
             install_summary_runtime,
             download_summary_model,
+            installed_summary_model,
             summarize_gguf,
             summarize_api,
+            list_summary_api_models,
             set_summary_api_key,
             load_summary,
             save_summary,
