@@ -76,6 +76,11 @@ fn find_cli(root:&Path)->Option<std::path::PathBuf>{
 }
 
 #[cfg(test)]mod tests{
+    #[test]fn invalid_model_is_rejected_before_process_launch(){
+        let root=std::env::temp_dir().join(format!("gigaam-invalid-gguf-{}",crate::new_id()));std::fs::create_dir_all(&root).unwrap();let model=root.join("bad.gguf");std::fs::write(&model,b"not a model").unwrap();
+        assert!(super::summarize(&root,&model,"text").unwrap_err().contains("не GGUF"));
+        assert!(super::summarize(&root,&model,"").is_err());assert!(super::summarize(&root,&model,&"a".repeat(24001)).is_err());std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     #[ignore="explicit consented runtime download (~25MB), existing GGUF required"]
     fn real_managed_runtime_summary(){
