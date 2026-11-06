@@ -1,6 +1,6 @@
 # Summary backends
-- [x] Managed GGUF runtime installation and model selection with explicit consent.
-- [x] Managed local inference lifecycle and UI wiring.
+- [ ] Managed GGUF runtime installation and model selection with explicit consent.
+- [ ] Managed local inference lifecycle and UI wiring.
 - [x] OpenAI compatible adapter contract tests and safe credentials.
 - [ ] Checks, tests and working Windows executable.
 - [x] Real GGUF inference smoke; real API only if configured, otherwise explicitly not-run.
@@ -22,3 +22,5 @@ Repeat managed GGUF smoke passed:1404characters in25.02s, real llama.cpp/existin
 7745c03: invalid-model regression passes (wrong magic,empty/oversize input rejected before process). Full matrix notification check0/0,frontend53passed,native144passed4ignored. Build still pending notification; test-only source added afterward does not change runtime behavior. Model download hash/corruption failure oracle and managed child timeout/cleanup test remain outstanding before closing install/lifecycle.
 
 2026-11-06 follow-up: Ollama is no longer limited to qwen3.5:4b. Added localhost-only `/api/tags` discovery, sorted/deduplicated model names, explicit selected model passed to inference, and a refreshable summary settings menu. GGUF remains user-selected or explicitly downloaded after consent; no implicit model download. Added WebM/m4a to Desktop file discovery and WebM to the chooser; Symphonia `all` remains the decoder path. Esc with no editing/confirmation closes playback and clears the current document view. Verified `npm run check`, `npm test` (53/53), `npm run build`, Rust summarization model-list test, and full Rust lib tests (147 passed, 4 ignored). The current no-bundle EXE build was verified before these follow-up edits; rebuild after this commit remains required before checking the Windows-artifact item.
+
+2026-11-06 build notification: `npm run tauri -- build --no-bundle` succeeded after 38fadbf (release compilation 1m59s). Artifact verified present: `src-tauri/target/release/gigaam-desktop.exe`, 42,733,056 bytes. Log: `C:/Users/User/.local/share/opencode/shell/ba44855877a378744aa5c352b6e82ea7585d565a/sh_1b0434277001GVtB1QMJkMdlmn.out`. Build includes pre-existing dirty files, including gguf_runtime.rs; it is not a clean-commit artifact. GUI launch/interaction acceptance not-run, so the working-executable checkbox remains open. Installation/lifecycle checkboxes reopened: previous evidence still explicitly lists untested download failure publication/cleanup and managed-child timeout/cleanup gates. Build success does not close those gates. Real Telemost WebM decode and new drag/drop/Esc/settings GUI E2E also remain not-run; decoder feature configuration alone is not decode acceptance.
