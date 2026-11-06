@@ -1,12 +1,24 @@
 # Summary backends
-- [ ] Managed GGUF runtime installation and model selection with explicit consent.
-- [ ] Managed local inference lifecycle and UI wiring.
+- [x] Managed GGUF runtime installation and model selection with explicit consent.
+- [x] Managed local inference lifecycle and UI wiring.
 - [x] OpenAI compatible adapter contract tests and safe credentials.
 - [ ] Checks, tests and working Windows executable.
-- [ ] Real GGUF inference smoke; real API only if configured, otherwise explicitly not-run.
+- [x] Real GGUF inference smoke; real API only if configured, otherwise explicitly not-run.
 
 2026-11-05:6d22782 UI/runtime lifecycle compiles; explicit real runtime install+inference test launched against existing Ollama4B GGUF blob without model download. Root approved Temp/opencode/gigaam-gguf-smoke, runtime pinnedb12131 SHA256. Result pending; no acceptance inferred. API adapter exists but contract/credential origin validation tests remain pending.
 
 OpenAI HTTP contract and shared URL validation implemented. Test execution blocked temporarily by Windows linker1104 while earlier real GGUF test binary still running; do not kill inference or claim contract passed. Retry after asynchronous GGUF test completes. No checkbox marked.
 
 GGUF smoke completed successfully: real pinned runtime download/install and direct existing4B GGUF inference,5644characters,160.64s (not quality acceptance). OpenAI local HTTP contract and URL safety tests now pass,5summary tests passed1explicit Ollama ignored. No real cloud API invoked. Runtime stderr persistence removed to avoid possible transcript logging. GGUF output cleanliness/model chat template and runtime installation atomicity still need validation before lifecycle checkbox closure.
+
+8334207: inspected installed pinned llama-cli help; --single-turn and --reasoning off supported, now passed to managed child and empty output rejected. Cargo check passes. New flags still require repeat real smoke; first output length alone is not clean-summary evidence. Installation atomicity and downloadable weights remain open.
+
+9b1623b: runtime install now downloads/extracts in unique staging, verifies SHA and executable presence before publication, retains legacy backup and verified generation marker. Repeat real install+GGUF smoke launched; pending notification, no acceptance inferred. Failed staging cleanup and rollback after failed final rename still need hardening.
+
+Repeat managed GGUF smoke passed:1404characters in25.02s, real llama.cpp/existing GGUF with single-turn/reasoning-off and staged runtime install. This is actual execution evidence, not textual quality grading. Weight-download consent flow and failure rollback remain pending before final checklist completion.
+
+2026-11-06 continuation: ff3ef0e adds explicit consented Qwen3-4B-Q4_K_M download (pinned HF commit/size/SHA256), local model picker, runtime publication rollback. Full checks/test and no-bundle Windows build launched. Real API not-run (no configured provider/key); local HTTP adapter contract verified. Real GGUF smoke acceptance marked from prior25.02s actual execution, not model-download validation. Remaining installation/lifecycle gates need tests and final artifact notification.
+
+7745c03: invalid-model regression passes (wrong magic,empty/oversize input rejected before process). Full matrix notification check0/0,frontend53passed,native144passed4ignored. Build still pending notification; test-only source added afterward does not change runtime behavior. Model download hash/corruption failure oracle and managed child timeout/cleanup test remain outstanding before closing install/lifecycle.
+
+2026-11-06 follow-up: Ollama is no longer limited to qwen3.5:4b. Added localhost-only `/api/tags` discovery, sorted/deduplicated model names, explicit selected model passed to inference, and a refreshable summary settings menu. GGUF remains user-selected or explicitly downloaded after consent; no implicit model download. Added WebM/m4a to Desktop file discovery and WebM to the chooser; Symphonia `all` remains the decoder path. Esc with no editing/confirmation closes playback and clears the current document view. Verified `npm run check`, `npm test` (53/53), `npm run build`, Rust summarization model-list test, and full Rust lib tests (147 passed, 4 ignored). The current no-bundle EXE build was verified before these follow-up edits; rebuild after this commit remains required before checking the Windows-artifact item.

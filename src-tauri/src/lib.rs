@@ -73,10 +73,15 @@ fn save_summary(id:String,text:String,state:tauri::State<'_,Arc<Mutex<Store>>>)-
 fn save_summary_export(id:String,path:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<(),String>{let text=lock_store(&state)?.load_summary(&id).map_err(|e|e.to_string())?;std::fs::write(path,text).map_err(|e|e.to_string())}
 
 #[tauri::command]
-async fn summarize_ollama(id:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
+async fn summarize_ollama(id:String,model:Option<String>,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
     let text=lock_store(&state)?.segments(&id).map_err(|_|"Не удалось прочитать расшифровку")?
         .into_iter().map(|segment|segment.text).collect::<Vec<_>>().join("\n");
-    tauri::async_runtime::spawn_blocking(move||summarization::summarize_with_ollama(&text)).await.map_err(|_|"Ошибка задачи суммаризации")?
+    tauri::async_runtime::spawn_blocking(move||summarization::summarize_with_ollama_model(&text,model.as_deref().unwrap_or("qwen3.5:4b"))).await.map_err(|_|"Ошибка задачи суммаризации")?
+}
+
+#[tauri::command]
+async fn list_summary_models()->Result<Vec<String>,String>{
+    tauri::async_runtime::spawn_blocking(summarization::local_ollama_models).await.map_err(|_|"Ошибка списка моделей")?
 }
 
 #[tauri::command]
@@ -131,7 +136,7 @@ async fn queue_drive_snapshot(id:String,merge_parents:Option<Vec<String>>,app:ta
     tauri::async_runtime::spawn_blocking(move || -> Result<(),String> {
         let mut paths=Vec::new();
         if let Ok(entries)=std::fs::read_dir(root.join("live").join(&id)) {
-            for entry in entries.flatten(){let path=entry.path();if matches!(path.extension().and_then(|s|s.to_str()),Some("ogg"|"wav"|"flac"|"mp3")){paths.push(path);}}
+            for entry in entries.flatten(){let path=entry.path();if matches!(path.extension().and_then(|s|s.to_str()),Some("ogg"|"wav"|"flac"|"mp3"|"webm"|"m4a")){paths.push(path);}}
         }
         paths.sort();
         if paths.is_empty(){let path=PathBuf::from(record.audio_path.as_ref().unwrap_or(&record.source_path));if path.is_file(){paths.push(path);}}
@@ -1498,6 +1503,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             summarize_ollama,
+            list_summary_models,
             install_summary_runtime,
             download_summary_model,
             summarize_gguf,

@@ -62,6 +62,12 @@
 	let summaryEndpoint = $state('https://api.openai.com/v1');
 	let summaryModel = $state('');
 	let summaryApiKey = $state('');
+	let ollamaModels = $state<string[]>([]);
+	async function refreshOllamaModels() {
+		try { ollamaModels = await invoke<string[]>('list_summary_models'); if (!ollamaModels.includes(ollamaModel)) ollamaModel = ollamaModels[0] ?? ''; }
+		catch (cause) { error = String(cause); }
+	}
+	let ollamaModel = $state('qwen3.5:4b');
 	let ggufPath = $state('');
 	let runtimeInstalling = $state(false);
 	async function downloadGgufModel() {
@@ -107,7 +113,7 @@
 		try {
 			if (summarySource === 'api' && !window.confirm(`Расшифровка будет отправлена на ${summaryEndpoint}. Продолжить?`)) return;
 			if (summarySource === 'api' && summaryApiKey) { await invoke('set_summary_api_key', { key: summaryApiKey, endpoint: summaryEndpoint }); summaryApiKey = ''; }
-			const text = summarySource === 'api' ? await invoke<string>('summarize_api', { id, endpoint: summaryEndpoint, model: summaryModel }) : summarySource === 'gguf' ? await invoke<string>('summarize_gguf', { id, modelPath: ggufPath }) : await invoke<string>('summarize_ollama', { id }); await persistSummary(id, text); if (selectedId === id) summaryText = text;
+			const text = summarySource === 'api' ? await invoke<string>('summarize_api', { id, endpoint: summaryEndpoint, model: summaryModel }) : summarySource === 'gguf' ? await invoke<string>('summarize_gguf', { id, modelPath: ggufPath }) : await invoke<string>('summarize_ollama', { id, model: ollamaModel }); await persistSummary(id, text); if (selectedId === id) summaryText = text;
 		}
 		catch (cause) { error = String(cause); }
 		finally { summaryElapsed = (Date.now() - summaryStarted) / 1000; summaryBusy = false; }
@@ -459,11 +465,23 @@
 				})().catch(() => { error = locale === 'ru' ? 'Не удалось импортировать аудио.' : 'Audio import failed.'; }); };
 				input.click(); return;
 			}
-			const selected = await open({ multiple: true, directory: false, filters: [{ name: 'Media', extensions: ['wav', 'mp3', 'flac', 'ogg', 'm4a', 'mp4', 'mkv', 'avi', 'mov'] }] });
+			const selected = await open({ multiple: true, directory: false, filters: [{ name: 'Media', extensions: ['wav', 'mp3', 'flac', 'ogg', 'webm', 'm4a', 'mp4', 'mkv', 'avi', 'mov'] }] });
 			await enqueue(selected ? (Array.isArray(selected) ? selected : [selected]) : []);
 		} catch {
 			error = locale === 'ru' ? 'Не удалось открыть диалог выбора файлов.' : 'Could not open the file dialog.';
 		}
+	}
+	async function dropBrowserFiles(event: DragEvent) {
+		if (!browserMode || !event.dataTransfer?.files.length) return;
+		event.preventDefault();
+		try {
+			for (const file of Array.from(event.dataTransfer.files)) {
+				if (!file.type.startsWith('audio/') && !/\.(wav|mp3|flac|ogg|webm|m4a)$/i.test(file.name)) continue;
+				const id = crypto.randomUUID(); const extension = file.name.split('.').at(-1)?.replace(/[^a-zA-Z0-9]/g, '') || 'audio'; const path = `sessions/${id}/file.${extension}`;
+				await appendOpfsChunk(path, file); await putArchiveMeta({ session_id: id, track_id: 'file', path, mime_type: file.type || 'application/octet-stream', bytes: file.size, block_count: 1, created_ms: Date.now() }); await putBrowserRecording({ id, name: file.name, created_ms: Date.now(), duration_seconds: 0 });
+			}
+			await refreshBrowser();
+		} catch { error = locale === 'ru' ? 'Не удалось импортировать аудио.' : 'Audio import failed.'; }
 	}
 
 	async function action(command: string, id: string) {
@@ -557,6 +575,7 @@
 		const el = document.activeElement as HTMLElement | null;
 		const typing = !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
 		if (event.key === 'Escape') {
+			if (!typing && !confirmDelete && !editingId) { selectedId = ''; segments = []; audioFiles = []; browserTracks = []; mixedSrc = ''; audioSrc = ''; summaryText = ''; summaryFor = ''; if (browserAudioUrl) { URL.revokeObjectURL(browserAudioUrl); browserAudioUrl = ''; } if (audio) { audio.pause(); audio.removeAttribute('src'); audio.load(); } return; }
 			if (confirmDelete) confirmDelete = false;
 			else if (editingId) editingId = null;
 			return;
@@ -923,16 +942,16 @@
 	</aside>
 	<div class="sidebar-resizer" role="separator" aria-label={locale === 'ru' ? 'Изменить ширину списка' : 'Resize list'} onpointerdown={beginSidebarResize} onpointermove={resizeSidebar} onpointerup={endSidebarResize} onpointercancel={endSidebarResize}></div>
 
-	<main>
+	<main ondragover={(event) => { if (browserMode) event.preventDefault(); }} ondrop={(event) => void dropBrowserFiles(event)}>
 		{#if recording}<div class="live-strip"><strong>REC</strong><span>{new Date(Math.max(0, paused ? pausedElapsed : uiNow - liveStarted)).toISOString().slice(11,19)}</span>{#if paused}<span class="pause-blink">{locale === 'ru' ? 'Пауза' : 'Paused'}</span>{/if}{#if !modelReady}<span>{locale === 'ru' ? 'Загрузка модели…' : 'Loading model…'}</span>{:else}<span>MIC <i style={`--level:${Math.min(1,micLevel*4)}`}></i></span><span>SYS <i style={`--level:${Math.min(1,systemLevel*4)}`}></i></span>{/if}</div>{/if}
 		{#if selected}
 			<div class="document-head"><div class="document-title">{#if editingNameId === selected.id && editingNamePlace === 'header'}<input class="title-rename rename-input" data-place="header" bind:value={editingName} onkeydown={(event) => { if (event.key === 'Enter') void commitRename(); if (event.key === 'Escape') { editingNameId = ''; editingNamePlace = ''; } }} onblur={() => void commitRename()} />{:else}<h1><button class="title-button" onclick={() => beginRename(selected, 'header')} title={locale === 'ru' ? 'Переименовать' : 'Rename'}>{selected.source_filename}</button></h1>{/if}</div><div class="document-meta"><p><span>{selected.status === 'completed' ? duration(selected.duration_seconds) : `${statuses[locale][selected.status]}${selected.total_chunks ? ` · ${selected.completed_chunks} / ${selected.total_chunks}` : ''}`}{friendlyError(selected) ? ` · ${friendlyError(selected)}` : ''}</span>{#if selectedPath}<button class="path-link" title={locale === 'ru' ? 'Показать файл' : 'Show file'} onclick={() => void reveal(selectedPath)}>{selectedPath}</button>{/if}</p></div>{#if selected.status !== 'completed' && selected.total_chunks}<progress class="transcribe-progress" max={selected.total_chunks} value={selected.completed_chunks}></progress>{:else if audioSrc}<div class="player-row">{#key audioSrc}<audio bind:this={audio} src={browserMode ? audioSrc : convertFileSrc(audioSrc)} ontimeupdate={() => playhead = audio?.currentTime ?? 0} onloadedmetadata={updatePlaybackDuration} ondurationchange={updatePlaybackDuration} onplay={() => audioPaused = false} onpause={() => audioPaused = true} onerror={audioFailed} controls></audio>{/key}{#if mixing}<span class="mix-hint">{locale === 'ru' ? 'Готовим общий звук…' : 'Preparing mixed audio…'}</span>{/if}</div>{/if}</div>
 			<section class="transcript">
 				{#if summaryMode}
-					<div class="summary-settings"><label>Источник <select bind:value={summarySource}><option value="ollama">Ollama · локально</option><option value="gguf">GGUF · локально без Ollama</option><option value="api">OpenAI-совместимый API</option></select></label>{#if summarySource === 'gguf'}<button class="ghost" disabled={runtimeInstalling} onclick={() => void installGgufRuntime()}>{runtimeInstalling ? 'Загрузка runtime…' : 'Установить runtime'}</button><button class="ghost" onclick={() => void pickGguf()}>Выбрать GGUF</button><button class="ghost" disabled={runtimeInstalling} onclick={() => void downloadGgufModel()}>Скачать Qwen3-4B · 2,5 ГБ</button><small>{ggufPath || 'Выберите локальный файл весов .gguf'}</small>{/if}{#if summarySource === 'api'}<label>API URL<input bind:value={summaryEndpoint} /></label><label>Модель<input bind:value={summaryModel} /></label><label>API key<input type="password" autocomplete="off" bind:value={summaryApiKey} placeholder="Сохранённый ключ не отображается" /></label><small>Текст будет отправлен на указанный сервер. Ключ сохраняется в системном хранилище.</small>{/if}</div>
+					<details class="summary-settings-menu" open><summary>Настройки суммаризации</summary><div class="summary-settings"><label>Источник <select bind:value={summarySource} onchange={() => { if (summarySource === 'ollama') void refreshOllamaModels(); }}><option value="ollama">Ollama · локально</option><option value="gguf">GGUF · локально без Ollama</option><option value="api">OpenAI-совместимый API</option></select></label>{#if summarySource === 'ollama'}<label>Модель Ollama<select bind:value={ollamaModel}>{#if !ollamaModels.length}<option value="qwen3.5:4b">qwen3.5:4b (по умолчанию)</option>{/if}{#each ollamaModels as model}<option value={model}>{model}</option>{/each}</select></label><button class="ghost" onclick={() => void refreshOllamaModels()}>Обновить список моделей</button>{/if}{#if summarySource === 'gguf'}<button class="ghost" disabled={runtimeInstalling} onclick={() => void installGgufRuntime()}>{runtimeInstalling ? 'Загрузка runtime…' : 'Установить runtime'}</button><button class="ghost" onclick={() => void pickGguf()}>Выбрать GGUF</button><button class="ghost" disabled={runtimeInstalling} onclick={() => void downloadGgufModel()}>Скачать Qwen3-4B · 2,5 ГБ</button><small>{ggufPath || 'Выберите локальный файл весов .gguf'}</small>{/if}{#if summarySource === 'api'}<label>API URL<input bind:value={summaryEndpoint} /></label><label>Модель<input bind:value={summaryModel} /></label><label>API key<input type="password" autocomplete="off" bind:value={summaryApiKey} placeholder="Сохранённый ключ не отображается" /></label><small>Текст будет отправлен на указанный сервер. Ключ сохраняется в системном хранилище.</small>{/if}</div></details>
 					{#if summaryBusy}<p role="status"><progress></progress> Суммаризация · Ollama…</p>{:else if summaryFor === selected.id && summaryElapsed !== null}<p class="hint">Время суммаризации: {summaryElapsed.toFixed(1)} с</p>{/if}
 					{#if summaryFor === selected.id && summaryText}
-						<small>Сгенерировано локально · qwen3.5:4b · проверьте факты</small>
+						<small>Сгенерировано локально · {summarySource === 'ollama' ? ollamaModel : summarySource === 'gguf' ? 'выбранная GGUF-модель' : 'совместимый API'} · проверьте факты</small>
 						{#if summaryEditing}
 							<textarea class="summary-editor" aria-label="Текст саммари" bind:value={summaryDraft}></textarea>
 							<div class="edit-actions"><button class="primary" disabled={summarySaving} onclick={async () => { summaryText = summaryDraft; await persistSummary(summaryFor,summaryText); summaryEditing = false; }}>{locale === 'ru' ? 'Сохранить' : 'Save'}</button><button class="ghost" onclick={() => summaryEditing = false}>{t.cancel}</button></div>
