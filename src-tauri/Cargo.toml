@@ -64,6 +64,7 @@ tauri-plugin-fs = "2.4.5"
 tauri-plugin-opener = "2.5.2"
 tauri-plugin-single-instance = "2.3.4"
 opus-pure = "0.2.2"
+webm-iterable = "0.7.1"
 
 [target."cfg(windows)".dependencies]
 wasapi = { path = "../vendor/wasapi" }

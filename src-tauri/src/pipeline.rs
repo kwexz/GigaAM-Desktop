@@ -5,6 +5,8 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+use std::convert::TryInto;
+use webm_iterable::{matroska_spec::{EbmlTag, Master, MatroskaSpec, SimpleBlock}, WebmIterator};
 
 use crate::{
     domain::{SegmentState, SourceTrack, TranscriptSegment, Transcription},
@@ -392,6 +394,15 @@ mod baseline_fixture_tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/corrupt.wav");
         assert!(load_wav(&path).is_err());
     }
+
+    #[test]
+    #[ignore = "requires a local Yandex Telemost WebM fixture"]
+    fn production_decoder_reads_telemost_webm_without_ffmpeg() {
+        let path = std::env::var_os("GIGAAM_TELEMOST_WEBM").expect("GIGAAM_TELEMOST_WEBM");
+        let (mono, duration) = load_media(Path::new(&path)).expect("native WebM/Opus decode");
+        assert!(!mono.is_empty());
+        assert!(duration > Duration::from_secs(1));
+    }
 }
 
 fn load_pcm_wav(path: &Path) -> Result<(Vec<f32>, Duration)> {
@@ -433,7 +444,7 @@ fn load_pcm_wav(path: &Path) -> Result<(Vec<f32>, Duration)> {
 
 fn load_media(path: &Path) -> Result<(Vec<f32>, Duration)> {
     if path.extension().and_then(|value| value.to_str()).is_some_and(|value| value.eq_ignore_ascii_case("webm")) {
-        return load_webm_with_ffmpeg(path);
+        return load_webm_opus_for_stream(path);
     }
     let file = Box::new(fs::File::open(path)?);
     let stream = MediaSourceStream::new(file, Default::default());
@@ -488,21 +499,41 @@ fn load_media(path: &Path) -> Result<(Vec<f32>, Duration)> {
     Ok((resample(mono, sample_rate)?, duration))
 }
 
-fn load_webm_with_ffmpeg(path: &Path) -> Result<(Vec<f32>, Duration)> {
-    let output = std::env::temp_dir().join(format!("gigaam-webm-{}.wav", crate::new_id()));
-    let result = (|| {
-        let status = std::process::Command::new("ffmpeg")
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
-            .arg(path)
-            .args(["-vn", "-ac", "1", "-ar", "16000", "-f", "wav"])
-            .arg(&output)
-            .status()
-            .map_err(|_| anyhow::anyhow!("WebM/Opus requires ffmpeg to be installed"))?;
-        if !status.success() { anyhow::bail!("ffmpeg could not decode the WebM audio track"); }
-        load_wav(&output)
-    })();
-    let _ = std::fs::remove_file(&output);
-    result
+pub(crate) fn load_webm_opus_for_stream(path: &Path) -> Result<(Vec<f32>, Duration)> {
+    let file = std::fs::File::open(path)?;
+    let mut iterator = WebmIterator::new(file, &[MatroskaSpec::TrackEntry(Master::Full(Vec::new()))]);
+    let mut audio_track = None;
+    let mut channels = 2usize;
+    let mut decoder = None;
+    let mut mono = Vec::new();
+    while let Some(tag) = iterator.next() {
+        let tag = tag.map_err(|error| anyhow::anyhow!("WebM parse error: {error}"))?;
+        match tag {
+            MatroskaSpec::TrackEntry(Master::Full(children)) => {
+                let codec = children.iter().find(|item| item.get_id() == 0x86).and_then(EbmlTag::as_utf8);
+                let track = children.iter().find(|item| item.get_id() == 0xD7).and_then(EbmlTag::as_unsigned_int).copied();
+                let kind = children.iter().find(|item| item.get_id() == 0x83).and_then(EbmlTag::as_unsigned_int).copied();
+                if codec == Some("A_OPUS") && kind == Some(2) {
+                    audio_track = track;
+                    channels = children.iter().find(|item| item.get_id() == 0xE1).and_then(EbmlTag::as_master).and_then(|master| match master { Master::Full(audio) => audio.iter().find(|item| item.get_id() == 0x9F).and_then(EbmlTag::as_unsigned_int).copied(), _ => None }).unwrap_or(2) as usize;
+                    decoder = Some(opus_pure::OpusDecoder::new(48_000, channels)?);
+                }
+            }
+            MatroskaSpec::SimpleBlock(data) => {
+                let block: SimpleBlock<'_> = data.as_slice().try_into().map_err(|error| anyhow::anyhow!("WebM block error: {error}"))?;
+                if Some(block.track) != audio_track { continue; }
+                for frame in block.read_frame_data().map_err(|error| anyhow::anyhow!("WebM lacing error: {error}"))? {
+                    let mut decoded = vec![0.0; opus_pure::MAX_PACKET_SAMPLES * channels];
+                    let count = decoder.as_mut().context("WebM Opus decoder is not initialized")?.decode(frame.data, opus_pure::MAX_PACKET_SAMPLES, &mut decoded)?;
+                    mono.extend(decoded[..count * channels].chunks_exact(channels).map(|samples| samples.iter().sum::<f32>() / channels as f32));
+                }
+            }
+            _ => {}
+        }
+    }
+    if audio_track.is_none() || mono.is_empty() { anyhow::bail!("WebM contains no decodable Opus audio track"); }
+    let duration = Duration::from_secs_f64(mono.len() as f64 / 48_000.0);
+    Ok((resample(mono, 48_000)?, duration))
 }
 
 fn resample(audio: Vec<f32>, source_rate: usize) -> Result<Vec<f32>> {

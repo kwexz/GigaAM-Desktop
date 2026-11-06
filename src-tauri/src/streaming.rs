@@ -9,7 +9,7 @@
 //! It is deliberately platform independent: Windows WASAPI and macOS
 //! ScreenCaptureKit adapters stay in `live::platform`.
 
-use std::{fs, path::Path};
+use std::{convert::TryInto, fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 use rubato::{FftFixedIn, Resampler};
@@ -21,6 +21,7 @@ use symphonia::core::{
     io::MediaSourceStream,
     meta::MetadataOptions,
 };
+use webm_iterable::{matroska_spec::{EbmlTag, Master, MatroskaSpec, SimpleBlock}, WebmIterator};
 
 /// Frames requested per block. 16 384 frames is ~0.37 s at 44.1 kHz and keeps
 /// the downstream 16 kHz window small without adding per-block overhead.
@@ -76,6 +77,9 @@ pub(crate) trait AudioBlockSource {
 }
 
 pub(crate) fn open_audio_blocks(path: &Path) -> Result<Box<dyn AudioBlockSource>> {
+    if path.extension().and_then(|value| value.to_str()).is_some_and(|value| value.eq_ignore_ascii_case("webm")) {
+        return Ok(Box::new(WebmOpusBlockSource::open(path)?));
+    }
     {
         use std::io::Read;
         let mut magic = [0u8; 4];
@@ -92,6 +96,90 @@ pub(crate) fn open_audio_blocks(path: &Path) -> Result<Box<dyn AudioBlockSource>
         return Ok(Box::new(WavBlockSource::open(path)?));
     }
     Ok(Box::new(SymphoniaBlockSource::open(path)?))
+}
+
+struct WebmOpusBlockSource {
+    iterator: WebmIterator<fs::File>,
+    audio_track: Option<u64>,
+    channels: usize,
+    decoder: Option<opus_pure::OpusDecoder>,
+    pre_skip: usize,
+    decoded: u64,
+}
+
+#[cfg(test)]
+mod webm_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a local Yandex Telemost WebM fixture"]
+    fn streams_real_telemost_webm_without_ffmpeg() {
+        let path = std::env::var_os("GIGAAM_TELEMOST_WEBM").expect("GIGAAM_TELEMOST_WEBM");
+        let mut source = open_audio_blocks(Path::new(&path)).unwrap();
+        let mut frames = 0usize;
+        while let Some(block) = source.next_block().unwrap() {
+            assert!(block.len() <= SOURCE_BLOCK_FRAMES + opus_pure::MAX_PACKET_SAMPLES);
+            frames += block.len();
+        }
+        assert!(frames > 48_000);
+    }
+}
+impl WebmOpusBlockSource {
+    fn open(path: &Path) -> Result<Self> {
+        Ok(Self {
+            iterator: WebmIterator::new(fs::File::open(path)?, &[MatroskaSpec::TrackEntry(Master::Full(Vec::new()))]),
+            audio_track: None,
+            channels: 2,
+            decoder: None,
+            pre_skip: 0,
+            decoded: 0,
+        })
+    }
+}
+impl AudioBlockSource for WebmOpusBlockSource {
+    fn sample_rate(&self) -> usize { 48_000 }
+    fn total_frames_hint(&self) -> Option<u64> { None }
+    fn next_block(&mut self) -> Result<Option<Vec<f32>>> {
+        let mut output = Vec::with_capacity(SOURCE_BLOCK_FRAMES);
+        while output.len() < SOURCE_BLOCK_FRAMES {
+            let Some(tag) = self.iterator.next() else { break; };
+            let tag = tag.map_err(|error| anyhow::anyhow!("WebM parse error: {error}"))?;
+            match tag {
+                MatroskaSpec::TrackEntry(Master::Full(children)) => {
+                    let codec = children.iter().find(|item| item.get_id() == 0x86).and_then(EbmlTag::as_utf8);
+                    let track = children.iter().find(|item| item.get_id() == 0xD7).and_then(EbmlTag::as_unsigned_int).copied();
+                    let kind = children.iter().find(|item| item.get_id() == 0x83).and_then(EbmlTag::as_unsigned_int).copied();
+                    if codec == Some("A_OPUS") && kind == Some(2) {
+                        self.audio_track = track;
+                        self.channels = children.iter().find(|item| item.get_id() == 0xE1).and_then(EbmlTag::as_master).and_then(|master| match master { Master::Full(audio) => audio.iter().find(|item| item.get_id() == 0x9F).and_then(EbmlTag::as_unsigned_int).copied(), _ => None }).unwrap_or(2) as usize;
+                        let delay = children.iter().find(|item| item.get_id() == 0x56AA).and_then(EbmlTag::as_unsigned_int).copied().unwrap_or(0);
+                        self.pre_skip = (delay as usize * 48_000 / 1_000_000_000).min(48_000);
+                        self.decoder = Some(opus_pure::OpusDecoder::new(48_000, self.channels)?);
+                    }
+                }
+                MatroskaSpec::SimpleBlock(data) => {
+                    let block: SimpleBlock<'_> = data.as_slice().try_into().map_err(|error| anyhow::anyhow!("WebM block error: {error}"))?;
+                    if Some(block.track) != self.audio_track { continue; }
+                    let frames = block.read_frame_data().map_err(|error| anyhow::anyhow!("WebM lacing error: {error}"))?;
+                    if frames.len() != 1 { bail!("WebM Opus lacing is not yet supported"); }
+                    for frame in frames {
+                        let mut decoded = vec![0.0; opus_pure::MAX_PACKET_SAMPLES * self.channels];
+                        let count = self.decoder.as_mut().context("WebM Opus decoder is not initialized")?.decode(frame.data, opus_pure::MAX_PACKET_SAMPLES, &mut decoded)?;
+                        let frames = decoded[..count * self.channels].chunks_exact(self.channels).map(|samples| samples.iter().sum::<f32>() / self.channels as f32);
+                        for sample in frames {
+                            if self.pre_skip > 0 { self.pre_skip -= 1; continue; }
+                            output.push(sample); self.decoded += 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if output.is_empty() {
+            if self.decoded == 0 { bail!("WebM contains no decodable Opus audio track"); }
+            Ok(None)
+        } else { Ok(Some(output)) }
+    }
 }
 
 struct OpusBlockSource {
