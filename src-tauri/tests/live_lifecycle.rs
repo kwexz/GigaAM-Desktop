@@ -58,8 +58,7 @@ fn repeated_live_sessions_preserve_archives_edits_and_exports() {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let directory =
-            std::env::temp_dir().join(format!("gigaam-lifecycle-{round}-{nonce}"));
+        let directory = std::env::temp_dir().join(format!("gigaam-lifecycle-{round}-{nonce}"));
         std::fs::create_dir(&directory).unwrap();
         guards.push(TestDirectory(directory.clone()));
 
@@ -88,27 +87,36 @@ fn repeated_live_sessions_preserve_archives_edits_and_exports() {
         assert_eq!(files.len(), 2, "both tracks must produce an archive");
         for file in &files {
             let reader = hound::WavReader::open(file).unwrap();
-            assert_eq!(reader.duration(), 9_600, "paused gap must not duplicate samples");
+            assert_eq!(
+                reader.duration(),
+                9_600,
+                "paused gap must not duplicate samples"
+            );
             assert!(reader.duration() as f64 / 48_000.0 < 5.0);
         }
 
-        store.insert_live_session(&session(&id, started_ms)).unwrap();
+        store
+            .insert_live_session(&session(&id, started_ms))
+            .unwrap();
         let before = store.get(&id).unwrap().unwrap();
         assert_eq!(before.status, TranscriptionStatus::Transcribing);
-        assert!(before.audio_path.is_none(), "playback must wait for a valid archive");
+        assert!(
+            before.audio_path.is_none(),
+            "playback must wait for a valid archive"
+        );
 
         store.begin_live_finalization(&id, started_ms + 1).unwrap();
         store
-            .complete_live_archive(
-                &id,
-                4.0,
-                Some(files[0].to_str().unwrap()),
-                started_ms + 2,
-            )
+            .complete_live_archive(&id, 4.0, Some(files[0].to_str().unwrap()), started_ms + 2)
             .unwrap();
         let completed = store.get(&id).unwrap().unwrap();
         assert_eq!(completed.status, TranscriptionStatus::Completed);
-        assert!(completed.audio_path.as_deref().is_some_and(|path| std::path::Path::new(path).is_file()));
+        assert!(
+            completed
+                .audio_path
+                .as_deref()
+                .is_some_and(|path| std::path::Path::new(path).is_file())
+        );
         assert_eq!(completed.duration_seconds, Some(4.0));
 
         let first_segment = TranscriptSegment::new(
@@ -136,7 +144,9 @@ fn repeated_live_sessions_preserve_archives_edits_and_exports() {
                 .unwrap(),
             )
             .unwrap();
-        store.update_segment_text(&id, 0, "исправленная реплика").unwrap();
+        store
+            .update_segment_text(&id, 0, "исправленная реплика")
+            .unwrap();
         store.rename(&id, &format!("Renamed {round}")).unwrap();
 
         let segments = store.segments(&id).unwrap();
@@ -170,6 +180,11 @@ fn repeated_live_sessions_preserve_archives_edits_and_exports() {
         assert_eq!(record.status, TranscriptionStatus::Completed);
         let segments = store.segments(id).unwrap();
         assert_eq!(segments[0].text, "исправленная реплика");
-        assert!(record.audio_path.as_deref().is_some_and(|path| std::path::Path::new(path).is_file()));
+        assert!(
+            record
+                .audio_path
+                .as_deref()
+                .is_some_and(|path| std::path::Path::new(path).is_file())
+        );
     }
 }

@@ -11,18 +11,29 @@ pub enum RecoveryAction {
 
 pub fn is_device_invalidation(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
-    message.contains("88890004") || message.contains("88890026")
+    message.contains("88890004")
+        || message.contains("88890026")
         || message.contains("device_invalidated")
 }
 
 pub fn reset_after_healthy_capture(attempts: &mut usize, healthy_audio_samples: usize) {
-    if healthy_audio_samples >= 48_000 * 2 { *attempts = 0; }
+    if healthy_audio_samples >= 48_000 * 2 {
+        *attempts = 0;
+    }
 }
 
-pub fn device_recovery_action(invalidated: bool, attempts: usize, explicitly_selected: bool) -> RecoveryAction {
-    if !invalidated { return RecoveryAction::KeepCurrent; }
+pub fn device_recovery_action(
+    invalidated: bool,
+    attempts: usize,
+    explicitly_selected: bool,
+) -> RecoveryAction {
+    if !invalidated {
+        return RecoveryAction::KeepCurrent;
+    }
     // Never replace a user-selected microphone with a different endpoint.
-    if explicitly_selected || attempts >= 3 { return RecoveryAction::Fail; }
+    if explicitly_selected || attempts >= 3 {
+        return RecoveryAction::Fail;
+    }
     RecoveryAction::RetryAfter(Duration::from_millis(100 * (1 << attempts)))
 }
 
@@ -45,9 +56,13 @@ pub enum SupervisorEvent<'a> {
 fn wait_for_retry(stop: &AtomicBool, delay: Duration) -> bool {
     let deadline = Instant::now() + delay;
     loop {
-        if stop.load(Ordering::Relaxed) { return false; }
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
         let now = Instant::now();
-        if now >= deadline { return true; }
+        if now >= deadline {
+            return true;
+        }
         std::thread::sleep((deadline - now).min(Duration::from_millis(10)));
     }
 }
@@ -68,7 +83,9 @@ pub fn supervise_capture(
             emit(SupervisorEvent::Stopped);
             return;
         }
-        emit(SupervisorEvent::AttemptStarted { resumed: failures > 0 });
+        emit(SupervisorEvent::AttemptStarted {
+            resumed: failures > 0,
+        });
         match attempt.run(&mut failures) {
             // Attempts return normally on user stop or a clean end of input.
             Ok(()) => return,
@@ -79,7 +96,10 @@ pub fn supervise_capture(
             ) {
                 RecoveryAction::RetryAfter(delay) => {
                     failures += 1;
-                    emit(SupervisorEvent::Reconnecting { attempt: failures, delay });
+                    emit(SupervisorEvent::Reconnecting {
+                        attempt: failures,
+                        delay,
+                    });
                     if !wait_for_retry(stop, delay) {
                         emit(SupervisorEvent::Stopped);
                         return;
@@ -113,7 +133,11 @@ mod tests {
 
     impl ScriptedAttempt {
         fn new(script: Vec<Step>) -> Self {
-            Self { script: script.into(), starts: 0, frames: Vec::new() }
+            Self {
+                script: script.into(),
+                starts: 0,
+                frames: Vec::new(),
+            }
         }
     }
 
@@ -137,7 +161,9 @@ mod tests {
 
     fn record(events: &mut Vec<String>) -> impl FnMut(SupervisorEvent<'_>) + '_ {
         move |event| match event {
-            SupervisorEvent::AttemptStarted { resumed } => events.push(format!("started:{resumed}")),
+            SupervisorEvent::AttemptStarted { resumed } => {
+                events.push(format!("started:{resumed}"))
+            }
             SupervisorEvent::Reconnecting { attempt, delay } => {
                 events.push(format!("reconnecting:{attempt}:{}", delay.as_millis()))
             }
@@ -150,7 +176,12 @@ mod tests {
     fn added_device_frames_do_not_restart_capture() {
         let mut attempt = ScriptedAttempt::new(vec![Step::Frames(3), Step::Stop]);
         let mut events = Vec::new();
-        supervise_capture(&mut attempt, &AtomicBool::new(false), false, &mut record(&mut events));
+        supervise_capture(
+            &mut attempt,
+            &AtomicBool::new(false),
+            false,
+            &mut record(&mut events),
+        );
         assert_eq!(attempt.starts, 1);
         assert_eq!(attempt.frames.len(), 3);
         assert_eq!(events, ["started:false"]);
@@ -165,10 +196,18 @@ mod tests {
             Step::Stop,
         ]);
         let mut events = Vec::new();
-        supervise_capture(&mut attempt, &AtomicBool::new(false), false, &mut record(&mut events));
+        supervise_capture(
+            &mut attempt,
+            &AtomicBool::new(false),
+            false,
+            &mut record(&mut events),
+        );
         assert_eq!(attempt.starts, 2);
         assert_eq!(attempt.frames.len(), 3);
-        assert_eq!(events, ["started:false", "reconnecting:1:100", "started:true"]);
+        assert_eq!(
+            events,
+            ["started:false", "reconnecting:1:100", "started:true"]
+        );
     }
 
     #[test]
@@ -180,21 +219,34 @@ mod tests {
             Step::Fail("88890004"),
         ]);
         let mut events = Vec::new();
-        supervise_capture(&mut attempt, &AtomicBool::new(false), false, &mut record(&mut events));
+        supervise_capture(
+            &mut attempt,
+            &AtomicBool::new(false),
+            false,
+            &mut record(&mut events),
+        );
         assert_eq!(attempt.starts, 4);
-        assert_eq!(events.iter().filter(|event| event.starts_with("reconnecting")).count(), 3);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.starts_with("reconnecting"))
+                .count(),
+            3
+        );
         assert!(events.last().unwrap().starts_with("failed:"));
     }
 
     #[test]
     fn explicitly_selected_microphone_fails_without_fallback() {
-        let mut attempt = ScriptedAttempt::new(vec![
-            Step::Fail("88890004"),
-            Step::Frames(1),
-            Step::Stop,
-        ]);
+        let mut attempt =
+            ScriptedAttempt::new(vec![Step::Fail("88890004"), Step::Frames(1), Step::Stop]);
         let mut events = Vec::new();
-        supervise_capture(&mut attempt, &AtomicBool::new(false), true, &mut record(&mut events));
+        supervise_capture(
+            &mut attempt,
+            &AtomicBool::new(false),
+            true,
+            &mut record(&mut events),
+        );
         assert_eq!(attempt.starts, 1);
         assert!(attempt.frames.is_empty());
         assert_eq!(events, ["started:false", "failed:88890004"]);
@@ -204,7 +256,12 @@ mod tests {
     fn unrelated_failure_is_terminal_without_reconnect() {
         let mut attempt = ScriptedAttempt::new(vec![Step::Fail("permission denied")]);
         let mut events = Vec::new();
-        supervise_capture(&mut attempt, &AtomicBool::new(false), false, &mut record(&mut events));
+        supervise_capture(
+            &mut attempt,
+            &AtomicBool::new(false),
+            false,
+            &mut record(&mut events),
+        );
         assert_eq!(attempt.starts, 1);
         assert_eq!(events, ["started:false", "failed:permission denied"]);
     }
@@ -238,21 +295,41 @@ mod tests {
         let (healthy_result, broken_result) = std::thread::scope(|scope| {
             let healthy_handle = scope.spawn(|| {
                 let mut events = Vec::new();
-                supervise_capture(&mut healthy, &AtomicBool::new(false), false, &mut record(&mut events));
+                supervise_capture(
+                    &mut healthy,
+                    &AtomicBool::new(false),
+                    false,
+                    &mut record(&mut events),
+                );
                 (healthy.starts, healthy.frames.len(), events)
             });
             let broken_handle = scope.spawn(|| {
                 let mut events = Vec::new();
-                supervise_capture(&mut broken, &AtomicBool::new(false), false, &mut record(&mut events));
+                supervise_capture(
+                    &mut broken,
+                    &AtomicBool::new(false),
+                    false,
+                    &mut record(&mut events),
+                );
                 (broken.starts, broken.frames.len(), events)
             });
-            (healthy_handle.join().unwrap(), broken_handle.join().unwrap())
+            (
+                healthy_handle.join().unwrap(),
+                broken_handle.join().unwrap(),
+            )
         });
         assert_eq!(healthy_result.0, 1);
-        assert_eq!(healthy_result.1, 40, "healthy track must keep capturing during peer recovery");
+        assert_eq!(
+            healthy_result.1, 40,
+            "healthy track must keep capturing during peer recovery"
+        );
         assert_eq!(broken_result.0, 3);
         assert_eq!(
-            broken_result.2.iter().filter(|event| event.starts_with("reconnecting")).count(),
+            broken_result
+                .2
+                .iter()
+                .filter(|event| event.starts_with("reconnecting"))
+                .count(),
             2
         );
         assert_eq!(broken_result.2.last().unwrap(), "started:true");
@@ -261,14 +338,20 @@ mod tests {
     fn separate_healthy_recovery_episodes_do_not_exhaust_lifetime_budget() {
         let mut attempts = 0;
         for _ in 0..4 {
-            assert!(matches!(device_recovery_action(true, attempts, false), RecoveryAction::RetryAfter(_)));
+            assert!(matches!(
+                device_recovery_action(true, attempts, false),
+                RecoveryAction::RetryAfter(_)
+            ));
             attempts += 1;
             reset_after_healthy_capture(&mut attempts, 96_000);
             assert_eq!(attempts, 0);
         }
         attempts = 3;
         reset_after_healthy_capture(&mut attempts, 100);
-        assert_eq!(device_recovery_action(true, attempts, false), RecoveryAction::Fail);
+        assert_eq!(
+            device_recovery_action(true, attempts, false),
+            RecoveryAction::Fail
+        );
     }
     #[test]
     fn invalidation_classification_does_not_retry_unrelated_failures() {
@@ -279,12 +362,21 @@ mod tests {
     }
     #[test]
     fn added_device_does_not_restart_healthy_capture() {
-        assert_eq!(device_recovery_action(false, 0, false), RecoveryAction::KeepCurrent);
+        assert_eq!(
+            device_recovery_action(false, 0, false),
+            RecoveryAction::KeepCurrent
+        );
     }
     #[test]
     fn invalidation_has_bounded_backoff_and_no_selected_device_fallback() {
-        assert_eq!(device_recovery_action(true, 0, false), RecoveryAction::RetryAfter(Duration::from_millis(100)));
-        assert_eq!(device_recovery_action(true, 2, false), RecoveryAction::RetryAfter(Duration::from_millis(400)));
+        assert_eq!(
+            device_recovery_action(true, 0, false),
+            RecoveryAction::RetryAfter(Duration::from_millis(100))
+        );
+        assert_eq!(
+            device_recovery_action(true, 2, false),
+            RecoveryAction::RetryAfter(Duration::from_millis(400))
+        );
         assert_eq!(device_recovery_action(true, 3, false), RecoveryAction::Fail);
         assert_eq!(device_recovery_action(true, 0, true), RecoveryAction::Fail);
     }

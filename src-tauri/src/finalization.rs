@@ -6,12 +6,15 @@ pub struct FinalizationClaim<'a>(&'a AtomicBool);
 impl<'a> FinalizationClaim<'a> {
     pub fn acquire(flag: &'a AtomicBool) -> Option<Self> {
         flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .ok().map(|_| Self(flag))
+            .ok()
+            .map(|_| Self(flag))
     }
 }
 
 impl Drop for FinalizationClaim<'_> {
-    fn drop(&mut self) { self.0.store(false, Ordering::SeqCst); }
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 /// Production ordering seam: acknowledge stopped ingress before slow work.
@@ -37,18 +40,30 @@ mod tests {
         let persisted = Arc::new(AtomicBool::new(false));
         let barrier = Arc::new(Barrier::new(2));
         let worker = {
-            let (token, published, persisted, barrier) = (token.clone(), published.clone(), persisted.clone(), barrier.clone());
+            let (token, published, persisted, barrier) = (
+                token.clone(),
+                published.clone(),
+                persisted.clone(),
+                barrier.clone(),
+            );
             std::thread::spawn(move || {
                 *published.lock().unwrap() = Some(token.clone());
                 barrier.wait();
                 barrier.wait();
-                if persisted.load(Ordering::Acquire) { token.store(true, Ordering::Release); }
+                if persisted.load(Ordering::Acquire) {
+                    token.store(true, Ordering::Release);
+                }
                 assert!(token.load(Ordering::Acquire));
             })
         };
         barrier.wait();
         persisted.store(true, Ordering::Release);
-        published.lock().unwrap().as_ref().unwrap().store(true, Ordering::Release);
+        published
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .store(true, Ordering::Release);
         barrier.wait();
         worker.join().unwrap();
     }
@@ -59,13 +74,19 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            finish_after_acknowledgement(|| ack_tx.send(()).unwrap(), || {
-                release_rx.recv().unwrap();
-                finished_tx.send(()).unwrap();
-                Ok(())
-            }).unwrap();
+            finish_after_acknowledgement(
+                || ack_tx.send(()).unwrap(),
+                || {
+                    release_rx.recv().unwrap();
+                    finished_tx.send(()).unwrap();
+                    Ok(())
+                },
+            )
+            .unwrap();
         });
-        ack_rx.recv_timeout(std::time::Duration::from_millis(500)).unwrap();
+        ack_rx
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .unwrap();
         assert!(finished_rx.try_recv().is_err());
         release_tx.send(()).unwrap();
         worker.join().unwrap();
@@ -76,7 +97,9 @@ mod tests {
     fn production_ordering_converts_post_ack_panic_to_error() {
         let acknowledged = std::cell::Cell::new(false);
         let result: Result<(), String> = finish_after_acknowledgement(
-            || acknowledged.set(true), || panic!("injected archive panic"));
+            || acknowledged.set(true),
+            || panic!("injected archive panic"),
+        );
         assert!(acknowledged.get());
         assert!(result.unwrap_err().contains("panicked"));
     }

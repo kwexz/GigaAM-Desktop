@@ -204,6 +204,18 @@ impl SummarizationEngine for ExtractiveFallback {
 #[cfg(test)]
 mod tests {
     #[test]
+    #[cfg(windows)]
+    #[ignore = "explicit Windows credential-store integration test"]
+    fn windows_keyring_roundtrip_uses_isolated_test_account() {
+        let account = format!("gigaam-test-{}", crate::new_id());
+        let entry = keyring::Entry::new("GigaAM Desktop test", &account).unwrap();
+        entry.set_password("synthetic-test-value").unwrap();
+        let result = entry.get_password();
+        let cleanup = entry.delete_credential();
+        assert_eq!(result.unwrap(), "synthetic-test-value");
+        cleanup.unwrap();
+    }
+    #[test]
     fn long_summary_preserves_all_input_and_combines_parts() {
         let text = format!("{}{}", "а".repeat(12000), "б".repeat(12001));
         let mut seen = Vec::new();

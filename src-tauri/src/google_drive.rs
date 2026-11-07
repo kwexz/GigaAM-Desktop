@@ -105,12 +105,18 @@ pub fn ensure_folder() -> Result<String,String> {
 /// Resumable streaming upload with content verification. Existing snapshots are
 /// immutable: a failed attempt cannot overwrite a previously valid backup.
 pub fn upload_snapshot(folder: &str, key: &str, name: &str, path: &std::path::Path) -> Result<String,String> {
+    upload_snapshot_progress(folder,key,name,path,|_,_,_|{})
+}
+pub fn upload_snapshot_progress(folder: &str, key: &str, name: &str, path: &std::path::Path, progress:impl Fn(&str,u64,u64)+Send+Sync+'static) -> Result<String,String> {
     let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(600)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_| "HTTP setup failed")?;
     let token = access_token(&client)?;
-    upload_snapshot_api(&client,&token,folder,key,name,path,"https://www.googleapis.com")
+    upload_snapshot_api_progress(&client,&token,folder,key,name,path,"https://www.googleapis.com",std::sync::Arc::new(progress))
 }
 
 fn upload_snapshot_api(client:&reqwest::blocking::Client,token:&str,folder:&str,key:&str,name:&str,path:&std::path::Path,base:&str)->Result<String,String>{
+    upload_snapshot_api_progress(client,token,folder,key,name,path,base,std::sync::Arc::new(|_,_,_|{}))
+}
+fn upload_snapshot_api_progress(client:&reqwest::blocking::Client,token:&str,folder:&str,key:&str,name:&str,path:&std::path::Path,base:&str,progress:std::sync::Arc<dyn Fn(&str,u64,u64)+Send+Sync>)->Result<String,String>{
     let size = std::fs::metadata(path).map_err(|_| "Backup source unavailable")?.len();
     // Reconcile a previous successful PUT whose response was lost before the
     // durable local acknowledgement. Never invent a new snapshot identity.
@@ -139,7 +145,7 @@ fn upload_snapshot_api(client:&reqwest::blocking::Client,token:&str,folder:&str,
     if !response.status().is_success() { return Err(drive_error(response.status(),"Drive rejected upload initialization")); }
     let location = response.headers().get(reqwest::header::LOCATION).and_then(|value| value.to_str().ok()).ok_or("Drive upload URL missing")?;
     let location = if cfg!(test)&&base.starts_with("http://127.0.0.1:"){let url=url::Url::parse(location).map_err(|_|"Invalid test session")?;if url.origin()!=url::Url::parse(base).unwrap().origin(){return Err("Untrusted test session".into());}url}else{validate_upload_destination(location)?};
-    let response = put_upload_body(&client,location,&token,path,size)?;
+    let response = put_upload_body_progress(&client,location,&token,path,size,progress.clone())?;
     if !response.status().is_success() { return Err(drive_error(response.status(),"Drive upload failed; local backup retained")); }
     let result: serde_json::Value = serde_json::from_str(&response.text().map_err(|_| "Upload response unavailable")?).map_err(|_| "Invalid upload response")?;
     let id = result["id"].as_str().ok_or("Uploaded file ID missing")?.to_owned();
@@ -150,14 +156,21 @@ fn upload_snapshot_api(client:&reqwest::blocking::Client,token:&str,folder:&str,
     let mut response = client.get(format!("{base}/drive/v3/files/{id}?alt=media")).bearer_auth(token).send().map_err(|_| "Remote verification unavailable")?;
     if !response.status().is_success() { return Err(drive_error(response.status(),"Remote verification failed")); }
     let mut actual=Sha256::new(); let mut received=0u64;
-    loop { let n=response.read(&mut buffer).map_err(|_| "Remote verification interrupted")?; if n==0 {break;} received+=n as u64; if received>size{return Err("Remote file size mismatch".into());} actual.update(&buffer[..n]); }
+    progress("verifying",0,size);let mut last=std::time::Instant::now();
+    loop { let n=response.read(&mut buffer).map_err(|_| "Remote verification interrupted")?; if n==0 {break;} received+=n as u64; if received>size{return Err("Remote file size mismatch".into());} actual.update(&buffer[..n]); if last.elapsed().as_millis()>=200{progress("verifying",received,size);last=std::time::Instant::now();} }
     if received!=size || actual.finalize()!=expected.finalize() { return Err("Remote integrity mismatch; local data retained".into()); }
     Ok(id)
 }
 
 fn put_upload_body(client:&reqwest::blocking::Client,location:url::Url,token:&str,path:&std::path::Path,size:u64)->Result<reqwest::blocking::Response,String>{
+    put_upload_body_progress(client,location,token,path,size,std::sync::Arc::new(|_,_,_|{}))
+}
+struct ProgressReader { file:std::fs::File, read:u64, size:u64, progress:std::sync::Arc<dyn Fn(&str,u64,u64)+Send+Sync>, last:std::time::Instant }
+impl Read for ProgressReader { fn read(&mut self,buf:&mut [u8])->std::io::Result<usize>{let n=self.file.read(buf)?;self.read+=n as u64;if n==0||self.last.elapsed().as_millis()>=200{(self.progress)("uploading",self.read,self.size);self.last=std::time::Instant::now();}Ok(n)} }
+fn put_upload_body_progress(client:&reqwest::blocking::Client,location:url::Url,token:&str,path:&std::path::Path,size:u64,progress:std::sync::Arc<dyn Fn(&str,u64,u64)+Send+Sync>)->Result<reqwest::blocking::Response,String>{
     let file=std::fs::File::open(path).map_err(|_|"Backup source unavailable")?;
-    client.put(location).bearer_auth(token).header(reqwest::header::CONTENT_TYPE,"application/octet-stream").header(reqwest::header::CONTENT_LENGTH,size).body(file).send().map_err(|_|"Drive upload interrupted; local backup retained".into())
+    let reader=ProgressReader{file,read:0,size,progress,last:std::time::Instant::now()};
+    client.put(location).bearer_auth(token).header(reqwest::header::CONTENT_TYPE,"application/octet-stream").header(reqwest::header::CONTENT_LENGTH,size).body(reqwest::blocking::Body::sized(reader,size)).send().map_err(|_|"Drive upload interrupted; local backup retained".into())
 }
 
 fn initialize_upload(client:&reqwest::blocking::Client,endpoint:&str,token:&str,metadata:&serde_json::Value,size:u64)->Result<reqwest::blocking::Response,String>{
@@ -168,21 +181,24 @@ fn initialize_upload(client:&reqwest::blocking::Client,endpoint:&str,token:&str,
 pub struct RemoteFile { pub id: String, pub name: String }
 
 #[derive(serde::Serialize)]
-pub struct SnapshotBranch { pub file_id:String,pub original_id:String,pub revision:String,pub concurrent:bool }
+pub struct SnapshotBranch { pub file_id:String,pub original_id:String,pub revision:String,pub concurrent:bool,pub is_head:bool,pub name:String,pub organization:serde_json::Value,pub organization_recording_id:String }
 
 fn branches_for_group(original:&str,values:Vec<(String,serde_json::Value)>)->Vec<SnapshotBranch>{
     let manifests:Vec<_>=values.iter().map(|(_,value)|value.clone()).collect();
     let heads=crate::drive_outbox::conflict_heads(&manifests);let concurrent=heads.len()>1;
     values.into_iter().filter_map(|(file_id,value)|{
         let revision=value["revision"].as_str()?;
-        heads.iter().any(|head|head==revision).then(||SnapshotBranch{file_id,original_id:original.into(),revision:revision.into(),concurrent})
+        let is_head=heads.iter().any(|head|head==revision);
+        Some(SnapshotBranch{file_id,original_id:original.into(),revision:revision.into(),concurrent:concurrent&&is_head,is_head,name:value["recording"]["source_filename"].as_str().unwrap_or("Recording").to_owned(),organization:value["organization"].clone(),organization_recording_id:value["organization_recording_id"].as_str().or_else(||value["recording"]["id"].as_str()).unwrap_or(original).to_owned()})
     }).collect()
 }
 
 fn validate_revision_graph(values:&[(String,serde_json::Value)])->Result<(),String>{
     let mut parents:std::collections::HashMap<&str,Vec<&str>>=Default::default();
+    let mut snapshots:std::collections::HashMap<&str,&serde_json::Value>=Default::default();
     for(_,value)in values{
-        let revision=value["revision"].as_str().ok_or("Snapshot revision missing")?;
+        let revision=value["revision"].as_str().filter(|revision|!revision.trim().is_empty()).ok_or("Snapshot revision missing")?;
+        if let Some(previous)=snapshots.insert(revision,value){if previous!=value{return Err("Conflicting duplicate snapshot revision".into());}}
         let edges:Vec<_>=value["parent_revision"].as_str().into_iter().chain(value["merge_parents"].as_array().into_iter().flatten().filter_map(|v|v.as_str())).collect();
         if let Some(previous)=parents.insert(revision,edges.clone()){if previous!=edges{return Err("Conflicting duplicate snapshot revision".into());}}
     }
@@ -207,29 +223,43 @@ fn validate_upload_destination(location:&str)->Result<url::Url,String>{
     Ok(url)
 }
 
+fn snapshot_original_id(value:&serde_json::Value)->Result<&str,String>{
+    let valid=|id:&&str| !id.trim().is_empty();
+    value["original_recording_id"].as_str().filter(valid)
+        .or_else(||value["recording"]["id"].as_str().filter(valid))
+        .ok_or_else(||"Snapshot identity missing".into())
+}
+
 pub fn discover_branches()->Result<Vec<SnapshotBranch>,String>{
+    Ok(discover_snapshot_tree()?.branches)
+}
+
+#[derive(serde::Serialize)]
+pub struct SnapshotTree { pub snapshots:Vec<RemoteFile>,pub branches:Vec<SnapshotBranch> }
+
+pub fn discover_snapshot_tree()->Result<SnapshotTree,String>{
     let files=list_snapshots()?;
     let root=std::env::temp_dir().join(format!("gigaam-drive-discovery-{}",crate::new_id()));
     std::fs::create_dir_all(&root).map_err(|_|"Could not stage snapshot discovery")?;
     let result=(||{
         let mut groups:std::collections::HashMap<String,Vec<(String,serde_json::Value)>>=Default::default();
         let mut manifest_bytes=0u64;
-        for file in files{
+        for file in &files{
             let path=root.join(crate::new_id());download_file(&file.id,&path,8*1024*1024)?;
             manifest_bytes=manifest_bytes.saturating_add(std::fs::metadata(&path).map_err(|_|"Discovery manifest unavailable")?.len());
             if manifest_bytes>64*1024*1024{return Err("Snapshot discovery exceeds 64 MiB metadata budget; no partial conflict result was accepted".into());}
             let value:serde_json::Value=serde_json::from_slice(&std::fs::read(&path).map_err(|_|"Discovery manifest unavailable")?).map_err(|_|"Invalid snapshot manifest")?;
             validate_manifest(&value)?;
             let _=std::fs::remove_file(&path);
-            let original=value["original_recording_id"].as_str().or_else(||value["recording"]["id"].as_str()).ok_or("Snapshot identity missing")?.to_owned();
-            groups.entry(original).or_default().push((file.id,value));
+            let original=snapshot_original_id(&value)?.to_owned();
+            groups.entry(original).or_default().push((file.id.clone(),value));
         }
     let mut branches=Vec::new();
         for(original,values)in groups{
             validate_revision_graph(&values)?;
             branches.extend(branches_for_group(&original,values));
         }
-        Ok(branches)
+        Ok(SnapshotTree{snapshots:files,branches})
     })();
     let _=std::fs::remove_dir_all(root);result
 }
@@ -239,6 +269,22 @@ pub fn list_snapshots() -> Result<Vec<RemoteFile>,String> {
     let client = reqwest::blocking::Client::builder().timeout(Duration::from_secs(60)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"HTTP setup failed")?;
     let token = access_token(&client)?;
     list_snapshot_pages(&client,&token,&folder,"https://www.googleapis.com/drive/v3/files")
+}
+
+/// Trash only the selected manifest; audio may be shared and is never deleted here.
+pub fn trash_snapshot(id:&str)->Result<(),String>{
+    if !list_snapshots()?.iter().any(|file|file.id==id){return Err("Snapshot not found in GigaAM Drive folder".into());}
+    let client=reqwest::blocking::Client::builder().timeout(Duration::from_secs(60)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"HTTP setup failed")?;
+    let token=access_token(&client)?;
+    trash_snapshot_api(&client,&token,id,"https://www.googleapis.com/drive/v3/files")
+}
+
+fn trash_snapshot_api(client:&reqwest::blocking::Client,token:&str,id:&str,base:&str)->Result<(),String>{
+    if id.is_empty() || !id.bytes().all(|c|c.is_ascii_alphanumeric() || c==b'_' || c==b'-'){return Err("Invalid snapshot ID".into());}
+    let endpoint=format!("{base}/{id}");
+    let response=client.patch(endpoint).bearer_auth(token).header("Content-Type","application/json").body(r#"{"trashed":true}"#).send().map_err(|_|"Could not move snapshot to Drive trash")?;
+    if !response.status().is_success(){return Err(drive_error(response.status(),"Could not move snapshot to Drive trash"));}
+    Ok(())
 }
 
 fn list_snapshot_pages(client:&reqwest::blocking::Client,token:&str,folder:&str,base:&str)->Result<Vec<RemoteFile>,String>{
@@ -262,20 +308,29 @@ fn list_snapshot_pages(client:&reqwest::blocking::Client,token:&str,folder:&str,
 }
 
 pub fn download_file(id:&str, destination:&std::path::Path, max_bytes:u64) -> Result<(),String> {
+    download_file_with_progress(id,destination,max_bytes,|_,_|{})
+}
+pub fn download_file_with_progress(id:&str, destination:&std::path::Path, max_bytes:u64, progress:impl FnMut(u64,Option<u64>)) -> Result<(),String> {
     if id.is_empty() || !id.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'_'||c==b'-'){return Err("Invalid Drive file ID".into());}
     let client=reqwest::blocking::Client::builder().timeout(Duration::from_secs(600)).redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"HTTP setup failed")?;
     let token=access_token(&client)?;
     let response=client.get(format!("https://www.googleapis.com/drive/v3/files/{id}?alt=media")).bearer_auth(token).send().map_err(|_|"Drive download unavailable")?;
     if !response.status().is_success(){return Err(drive_error(response.status(),"Drive download rejected"));}
-    store_download(response,destination,max_bytes)
+    let total=response.content_length();
+    store_download_with_progress(response,destination,max_bytes,total,progress)
 }
 
 fn store_download(mut response:impl Read,destination:&std::path::Path,max_bytes:u64)->Result<(),String>{
+    store_download_with_progress(&mut response,destination,max_bytes,None,|_,_|{})
+}
+fn store_download_with_progress(mut response:impl Read,destination:&std::path::Path,max_bytes:u64,total_hint:Option<u64>,mut progress:impl FnMut(u64,Option<u64>))->Result<(),String>{
     let staged=destination.with_extension(format!("{}.download.partial",crate::new_id()));
     let result=(||{
         let mut output=std::fs::File::create(&staged).map_err(|_|"Could not create download")?;
         let mut buffer=[0u8;65536];let mut total=0u64;
-        loop{let n=response.read(&mut buffer).map_err(|_|"Download interrupted")?;if n==0{break;}total+=n as u64;if total>max_bytes{return Err("Download exceeds configured size limit".into());}output.write_all(&buffer[..n]).map_err(|_|"Download write failed")?;}
+        let mut last=std::time::Instant::now();progress(0,total_hint);
+        loop{let n=response.read(&mut buffer).map_err(|_|"Download interrupted")?;if n==0{break;}total+=n as u64;if total>max_bytes{return Err("Download exceeds configured size limit".into());}output.write_all(&buffer[..n]).map_err(|_|"Download write failed")?;if last.elapsed().as_millis()>=200{progress(total,total_hint);last=std::time::Instant::now();}}
+        progress(total,total_hint);
         output.sync_all().map_err(|_|"Download flush failed")?;
         if destination.exists(){return Err("Restore destination already exists".into());}
         // Atomic no-clobber publication even if another restore creates the
@@ -355,6 +410,33 @@ pub fn disconnect() -> Result<(),String> {
 }
 
 #[cfg(test)] mod tests {
+    #[test]
+    fn upload_progress_reports_bytes_read_not_remote_acknowledgement() {
+        use std::io::Read;
+        use std::sync::{Arc,Mutex};
+        let path=std::env::temp_dir().join(format!("gigaam-progress-{}",crate::new_id()));
+        std::fs::write(&path,b"test payload").unwrap();
+        let seen=Arc::new(Mutex::new(Vec::new()));let captured=seen.clone();
+        let progress=Arc::new(move|phase:&str,bytes:u64,total:u64|captured.lock().unwrap().push((phase.to_owned(),bytes,total)));
+        let mut reader=super::ProgressReader{file:std::fs::File::open(&path).unwrap(),read:0,size:12,progress,last:std::time::Instant::now()};
+        let mut bytes=Vec::new();reader.read_to_end(&mut bytes).unwrap();drop(reader);
+        assert_eq!(bytes,b"test payload");
+        assert_eq!(seen.lock().unwrap().last().unwrap(),&("uploading".to_owned(),12,12));
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn download_progress_reports_received_bytes_and_keeps_destination() {
+        let path=std::env::temp_dir().join(format!("gigaam-download-progress-{}",crate::new_id()));
+        let mut events=Vec::new();
+        super::store_download_with_progress(std::io::Cursor::new(b"example"),&path,32,Some(7),|bytes,total|events.push((bytes,total))).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(),b"example");
+        assert_eq!(events.first(),Some(&(0,Some(7))));
+        assert_eq!(events.last(),Some(&(7,Some(7))));
+        let mut ignored=Vec::new();
+        assert!(super::store_download_with_progress(std::io::Cursor::new(b"new"),&path,32,Some(3),|bytes,total|ignored.push((bytes,total))).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(),b"example");
+        std::fs::remove_file(path).unwrap();
+    }
     #[test]fn complete_upload_api_reconciles_retry_without_second_creation(){
         use std::io::{Read,Write};let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();let base=format!("http://{address}");let server_base=base.clone();
         let server=std::thread::spawn(move||{for step in 0..6{
@@ -399,6 +481,31 @@ pub fn disconnect() -> Result<(),String> {
     #[test]fn cyclic_remote_revision_graph_is_rejected_not_hidden(){
         let cycle=vec![("one".into(),serde_json::json!({"revision":"a","parent_revision":"b"})),("two".into(),serde_json::json!({"revision":"b","parent_revision":"a"}))];assert!(super::validate_revision_graph(&cycle).is_err());
         let valid=vec![("one".into(),serde_json::json!({"revision":"a"})),("two".into(),serde_json::json!({"revision":"b","parent_revision":"a"}))];assert!(super::validate_revision_graph(&valid).is_ok());
+    }
+    #[test]fn duplicate_revision_requires_identical_snapshot_content(){
+        let first=serde_json::json!({"revision":"same","recording":{"id":"a"},"audio":[{"sha256":"one"}]});
+        let second=serde_json::json!({"revision":"same","recording":{"id":"a"},"audio":[{"sha256":"two"}]});
+        assert!(super::validate_revision_graph(&[("one".into(),first.clone()),("two".into(),second)]).is_err());
+        assert!(super::validate_revision_graph(&[("one".into(),first.clone()),("two".into(),first)]).is_ok());
+        assert!(super::validate_revision_graph(&[("one".into(),serde_json::json!({"revision":""}))]).is_err());
+    }
+    #[test]fn historical_snapshots_keep_identity_without_becoming_conflict_heads(){
+        let values=vec![("base-file".into(),serde_json::json!({"revision":"base"})),("left-file".into(),serde_json::json!({"revision":"left","parent_revision":"base"})),("right-file".into(),serde_json::json!({"revision":"right","parent_revision":"base"}))];
+        let branches=super::branches_for_group("original",values);
+        assert_eq!(branches.len(),3);
+        let base=branches.iter().find(|item|item.file_id=="base-file").unwrap();assert_eq!(base.original_id,"original");assert_eq!(base.revision,"base");assert!(!base.is_head&&!base.concurrent);
+        assert_eq!(branches.iter().filter(|item|item.is_head&&item.concurrent).count(),2);
+    }
+    #[test]fn snapshot_identity_never_uses_empty_original_id(){
+        assert_eq!(super::snapshot_original_id(&serde_json::json!({"original_recording_id":" ","recording":{"id":"recording"}})).unwrap(),"recording");
+        assert!(super::snapshot_original_id(&serde_json::json!({"original_recording_id":"","recording":{"id":" "}})).is_err());
+        assert_eq!(super::snapshot_original_id(&serde_json::json!({"original_recording_id":"original","recording":{"id":"copy"}})).unwrap(),"original");
+    }
+    #[test]fn trash_snapshot_sends_only_selected_manifest_to_trash(){
+        use std::io::{Read,Write};
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move||{let(mut socket,_)=listener.accept().unwrap();socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();let mut data=Vec::new();let mut byte=[0u8;1];while !data.ends_with(b"\r\n\r\n"){socket.read_exact(&mut byte).unwrap();data.push(byte[0]);}let headers=String::from_utf8(data).unwrap();assert!(headers.starts_with("PATCH /files/snapshot-id "));let length=headers.lines().find_map(|line|line.to_lowercase().strip_prefix("content-length: ").and_then(|v|v.parse::<usize>().ok())).unwrap();let mut body=vec![0;length];socket.read_exact(&mut body).unwrap();assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap(),serde_json::json!({"trashed":true}));socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();});
+        let client=reqwest::blocking::Client::new();assert!(super::trash_snapshot_api(&client,"token","../bad",&format!("http://{address}/files")).is_err());super::trash_snapshot_api(&client,"token","snapshot-id",&format!("http://{address}/files")).unwrap();server.join().unwrap();
     }
     #[test]fn upload_initialization_contract_sends_snapshot_identity_and_size(){
         use std::io::{Read,Write};let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
@@ -448,7 +555,7 @@ pub fn disconnect() -> Result<(),String> {
         let actual=std::fs::read(&path).unwrap();assert!(actual==b"left"||actual==b"right");assert_eq!(std::fs::read_dir(&root).unwrap().count(),1);std::fs::remove_dir_all(root).unwrap();
     }
     #[test]fn merge_selection_rejects_other_recordings_stale_heads_and_duplicates(){
-        let branches=vec![super::SnapshotBranch{file_id:"a".into(),original_id:"record".into(),revision:"left".into(),concurrent:true},super::SnapshotBranch{file_id:"b".into(),original_id:"record".into(),revision:"right".into(),concurrent:true}];
+        let branches=vec![super::SnapshotBranch{file_id:"a".into(),original_id:"record".into(),revision:"left".into(),concurrent:true,is_head:true,name:String::new(),organization:serde_json::Value::Null,organization_recording_id:String::new()},super::SnapshotBranch{file_id:"b".into(),original_id:"record".into(),revision:"right".into(),concurrent:true,is_head:true,name:String::new(),organization:serde_json::Value::Null,organization_recording_id:String::new()}];
         assert!(super::validate_merge_selection("record",&["left".into(),"right".into()],&branches).is_ok());
         assert!(super::validate_merge_selection("other",&["left".into(),"right".into()],&branches).is_err());
         assert!(super::validate_merge_selection("record",&["left".into(),"left".into()],&branches).is_err());
@@ -458,9 +565,9 @@ pub fn disconnect() -> Result<(),String> {
         let mut value=serde_json::json!({"version":1,"revision":"merged","merge_parents":["left","right"],"audio":[{"original_filename":"audio.ogg","sha256":"a".repeat(64),"bytes":1,"file_id":"id"}]});
         assert!(super::validate_manifest(&value).is_ok());value["merge_parents"]=serde_json::json!(["merged","left"]);assert!(super::validate_manifest(&value).is_err());value["merge_parents"]=serde_json::json!(["left","left"]);assert!(super::validate_manifest(&value).is_err());
     }
-    #[test]fn discovery_returns_both_conflicting_restore_targets_but_not_ancestor(){
+    #[test]fn discovery_returns_conflicting_heads_and_historical_ancestor(){
         let values=vec![("base-file".into(),serde_json::json!({"revision":"base"})),("left-file".into(),serde_json::json!({"revision":"left","parent_revision":"base"})),("right-file".into(),serde_json::json!({"revision":"right","parent_revision":"base"}))];
-        let branches=super::branches_for_group("recording",values);assert_eq!(branches.len(),2);assert!(branches.iter().all(|branch|branch.concurrent&&branch.original_id=="recording"));assert_eq!(branches[0].file_id,"left-file");assert_eq!(branches[1].file_id,"right-file");
+        let branches=super::branches_for_group("recording",values);assert_eq!(branches.len(),3);assert_eq!(branches.iter().filter(|branch|branch.concurrent&&branch.original_id=="recording").count(),2);assert!(branches.iter().any(|branch|branch.file_id=="base-file"&&!branch.is_head));
     }
     #[test]fn rejects_malformed_restore_before_downloading_audio(){
         let mut value=serde_json::json!({"version":1,"audio":[{"original_filename":"microphone.ogg","sha256":"a".repeat(64),"bytes":12,"file_id":"safe-id"}],"tracks":[{"file":"microphone.ogg","offset_seconds":0.5}]});

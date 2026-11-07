@@ -20,6 +20,28 @@ pub fn conflict_heads(manifests:&[serde_json::Value])->Vec<String>{
     heads.sort();heads.dedup();heads
 }
 impl Outbox {
+    fn enqueue_snapshot(&self, snapshot:&SnapshotPayload)->rusqlite::Result<bool> {
+        let tx=self.db.unchecked_transaction()?;
+        tx.execute("UPDATE drive_jobs SET next_ms=next_ms WHERE 0",[])?;
+        {
+            let mut stmt=tx.prepare("SELECT payload FROM drive_jobs WHERE state!='synced'")?;
+            let rows=stmt.query_map([],|row|row.get::<_,String>(0))?;
+            for row in rows {
+                let existing:SnapshotPayload=serde_json::from_str(&row?).map_err(|_|rusqlite::Error::InvalidQuery)?;
+                if existing.recording_id==snapshot.recording_id {
+                    let mut left=existing.manifest.clone();let mut right=snapshot.manifest.clone();
+                    if let Some(value)=left.as_object_mut(){value.remove("revision");}
+                    if let Some(value)=right.as_object_mut(){value.remove("revision");}
+                    if left==right {return Ok(false);}
+                }
+            }
+        }
+        let pending:i64=tx.query_row("SELECT count(*) FROM drive_jobs WHERE state!='synced'",[],|row|row.get(0))?;
+        if pending>=1000{return Err(rusqlite::Error::InvalidQuery);}
+        let payload=serde_json::to_string(snapshot).map_err(|_|rusqlite::Error::InvalidQuery)?;
+        tx.execute("INSERT INTO drive_jobs(id,payload) VALUES(?1,?2)",params![snapshot.revision,payload])?;
+        tx.commit()?;Ok(true)
+    }
     pub fn open(path: &std::path::Path) -> rusqlite::Result<Self> {
         let db=Connection::open(path)?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -72,7 +94,8 @@ pub struct UploadPayload {
     pub path: std::path::PathBuf,
 }
 
-pub fn start_worker(root: std::path::PathBuf) {
+pub fn start_worker(root: std::path::PathBuf, app:tauri::AppHandle) {
+    use tauri::Emitter;
     static STARTED:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
     if STARTED.swap(true,std::sync::atomic::Ordering::AcqRel){return;}
     std::thread::spawn(move || {
@@ -84,7 +107,10 @@ pub fn start_worker(root: std::path::PathBuf) {
                     let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|v|v.as_millis() as i64).unwrap_or(0);
                     let _=queue.run_one(now,|job| {
                         let result = if let Ok(snapshot)=serde_json::from_str::<SnapshotPayload>(&job.payload) {
-                            upload_recording(&root,&snapshot)
+                            let recording=snapshot.recording_id.clone();let app=app.clone();
+                            let folder=crate::google_drive::ensure_folder().map_err(|error|requires_auth(&error))?;
+                            let upload_folder=folder.clone();
+                            upload_recording_with(&root,&snapshot,&folder,move|key,name,path|{let app=app.clone();let recording=recording.clone();crate::google_drive::upload_snapshot_progress(&upload_folder,key,name,path,move|phase,bytes,total|{let _=app.emit("drive-upload-progress",serde_json::json!({"recording":recording,"phase":phase,"bytes":bytes,"total":total}));})})
                         } else {
                             let payload:UploadPayload=serde_json::from_str(&job.payload).map_err(|_|true)?;
                             crate::google_drive::upload_snapshot(&payload.folder,&payload.key,&payload.name,&payload.path).map(|_|())
@@ -156,7 +182,7 @@ pub fn enqueue_recording(root:&std::path::Path,id:&str,mut manifest:serde_json::
     // A restored copy has a new local ID. Its organization snapshot still uses
     // that ID; keep it separate from the stable cross-device recording ID.
     manifest["organization_recording_id"]=id.into();
-    manifest["parent_revision"]=parent.as_ref().map(|value|value.revision.clone()).into();
+    manifest["parent_revision"]=parent.as_ref().and_then(|value| (!value.revision.is_empty()).then(||value.revision.clone())).into();
     manifest["revision"]=revision.clone().into();
     manifest["device_id"]=device_id(root)?.into();
     if let Some(nodes)=manifest["organization"].as_array_mut(){
@@ -173,7 +199,11 @@ pub fn enqueue_recording(root:&std::path::Path,id:&str,mut manifest:serde_json::
         }
     }
     let payload=SnapshotPayload{revision:revision.clone(),recording_id:id.into(),manifest,audio};
-    Outbox::open(&root.join("drive-outbox.sqlite")).and_then(|queue|queue.enqueue(&revision,&serde_json::to_string(&payload).unwrap())).map_err(|_|"Could not persist snapshot job".into())
+    match Outbox::open(&root.join("drive-outbox.sqlite")).and_then(|queue|queue.enqueue_snapshot(&payload)) {
+        Ok(true)=>Ok(()),
+        Ok(false)=>{std::fs::remove_dir_all(&directory).map_err(|_|"Duplicate snapshot cleanup failed")?;Ok(())},
+        Err(_)=>{let _=std::fs::remove_dir_all(&directory);Err("Could not persist snapshot job".into())}
+    }
 }
 
 fn manifest_folder_mappings(root:&std::path::Path,folders:&std::collections::HashMap<String,String>)->Result<(),String>{
@@ -223,7 +253,7 @@ pub fn snapshot_lineage(root:&std::path::Path,id:&str)->Result<Option<Lineage>,S
     if !path.exists(){return Ok(None);}
     let bytes=std::fs::read(path).map_err(|_|"Original snapshot lineage unavailable")?;
     let value:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|"Invalid original snapshot lineage")?;
-    Ok(Some(Lineage{original_id:value["original_recording_id"].as_str().or_else(||value["recording"]["id"].as_str()).ok_or("Original identity missing")?.into(),device_id:value["device_id"].as_str().unwrap_or("legacy").into(),revision:value["revision"].as_str().unwrap_or("legacy").into()}))
+    Ok(Some(Lineage{original_id:value["original_recording_id"].as_str().or_else(||value["recording"]["id"].as_str()).ok_or("Original identity missing")?.into(),device_id:value["device_id"].as_str().unwrap_or_default().into(),revision:value["revision"].as_str().filter(|revision|!revision.trim().is_empty() && *revision!="legacy").unwrap_or_default().into()}))
 }
 
 pub fn resume(root:&std::path::Path)->Result<(),String>{
@@ -313,6 +343,22 @@ pub fn enqueue_immutable(root:&std::path::Path, folder:&str,key:&str,name:&str,s
         std::fs::write(live.join("manifest.json"),r#"{"original_recording_id":"original","device_id":"other-device","revision":"parent"}"#).unwrap();let path=live.join("microphone.ogg");std::fs::write(&path,b"audio").unwrap();
         super::enqueue_recording(&root,"local-copy",serde_json::json!({"version":1}),&[path]).unwrap();let mut queue=super::Outbox::open(&root.join("drive-outbox.sqlite")).unwrap();
         queue.run_one(0,|job|{let snapshot:super::SnapshotPayload=serde_json::from_str(&job.payload).unwrap();assert_eq!(snapshot.manifest["original_recording_id"],"original");assert_eq!(snapshot.manifest["parent_revision"],"parent");assert_ne!(snapshot.manifest["device_id"],"other-device");Ok(())}).unwrap();drop(queue);std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]fn legacy_restore_keeps_original_without_fabricating_a_parent_revision(){
+        let root=std::env::temp_dir().join(format!("gigaam-legacy-lineage-{}",crate::new_id()));let live=root.join("live").join("local-copy");std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join("manifest.json"),r#"{"original_recording_id":"original"}"#).unwrap();let path=live.join("microphone.ogg");std::fs::write(&path,b"audio").unwrap();
+        super::enqueue_recording(&root,"local-copy",serde_json::json!({"version":1}),&[path]).unwrap();let mut queue=super::Outbox::open(&root.join("drive-outbox.sqlite")).unwrap();
+        queue.run_one(0,|job|{let snapshot:super::SnapshotPayload=serde_json::from_str(&job.payload).unwrap();assert_eq!(snapshot.manifest["original_recording_id"],"original");assert!(snapshot.manifest["parent_revision"].is_null());Ok(())}).unwrap();drop(queue);std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]fn repeated_snapshot_after_restart_deduplicates_but_changed_audio_is_queued(){
+        let root=std::env::temp_dir().join(format!("gigaam-repeat-{}",crate::new_id()));std::fs::create_dir_all(&root).unwrap();let audio=root.join("audio.ogg");std::fs::write(&audio,b"first").unwrap();
+        super::enqueue_recording(&root,"record",serde_json::json!({"version":1,"segments":[]}),&[audio.clone()]).unwrap();
+        {let queue=super::Outbox::open(&root.join("drive-outbox.sqlite")).unwrap();assert_eq!(queue.status().unwrap().pending,1);}
+        super::enqueue_recording(&root,"record",serde_json::json!({"version":1,"segments":[]}),&[audio.clone()]).unwrap();
+        {let queue=super::Outbox::open(&root.join("drive-outbox.sqlite")).unwrap();assert_eq!(queue.status().unwrap().pending,1);}
+        std::fs::write(&audio,b"changed").unwrap();super::enqueue_recording(&root,"record",serde_json::json!({"version":1,"segments":[]}),&[audio]).unwrap();
+        {let queue=super::Outbox::open(&root.join("drive-outbox.sqlite")).unwrap();assert_eq!(queue.status().unwrap().pending,2);}
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]fn distinguishes_auth_failures_from_transient_transport(){
         for error in ["Google access expired or was revoked. Reconnect Drive.","Connect Google Drive first","invalid_client","invalid_grant"]{assert!(super::requires_auth(error));}

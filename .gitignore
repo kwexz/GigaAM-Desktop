@@ -8,6 +8,9 @@ node_modules
 # Scratch inputs (local test audio, task notes)
 /project-input/
 
+# Marketing website is maintained separately; tracked legacy files remain tracked.
+/site/
+
 # Rust build
 /src-tauri/target/
 /src-tauri/gen/

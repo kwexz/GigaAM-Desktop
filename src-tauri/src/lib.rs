@@ -172,6 +172,48 @@ async fn google_drive_branches()->Result<Vec<google_drive::SnapshotBranch>,Strin
 }
 
 #[tauri::command]
+async fn google_drive_tree()->Result<google_drive::SnapshotTree,String>{
+    tauri::async_runtime::spawn_blocking(google_drive::discover_snapshot_tree).await.map_err(|_|"Drive tree discovery failed")?
+}
+
+#[tauri::command]
+fn google_drive_selection(state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<serde_json::Value,String>{
+    let value=lock_store(&state)?.drive_selection().map_err(|_|"Drive selection unavailable")?;
+    serde_json::from_str(&value).map_err(|_|"Drive selection invalid".into())
+}
+
+#[tauri::command]
+fn google_drive_save_selection(local:Vec<String>,remote:Vec<String>,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<(),String>{
+    if local.len()>10000||remote.len()>10000||local.iter().chain(remote.iter()).any(|id|id.is_empty()||id.len()>512){return Err("Invalid Drive selection".into());}
+    let value=serde_json::json!({"local":local,"remote":remote}).to_string();
+    lock_store(&state)?.save_drive_selection(&value).map_err(|_|"Could not save Drive selection".into())
+}
+
+#[tauri::command]
+async fn google_drive_trash_snapshot(file_id:String)->Result<(),String>{
+    tauri::async_runtime::spawn_blocking(move||google_drive::trash_snapshot(&file_id)).await.map_err(|_|"Drive trash worker failed")?
+}
+
+#[tauri::command]
+fn google_drive_restored_ids(file_ids:Vec<String>,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<std::collections::HashMap<String,String>,String>{
+    if file_ids.len()>10000{return Err("Too many snapshots".into());}
+    let store=lock_store(&state)?;let mut result=std::collections::HashMap::new();
+    for file_id in file_ids{if let Some(local_id)=store.restored_snapshot(&file_id).map_err(|_|"Restore lookup failed")?{result.insert(file_id,local_id);}}
+    Ok(result)
+}
+
+#[tauri::command]
+async fn google_drive_local_lineage(ids:Vec<String>,app:tauri::AppHandle)->Result<std::collections::HashMap<String,serde_json::Value>,String>{
+    if ids.len()>10000{return Err("Too many recordings".into());}
+    let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;
+    tauri::async_runtime::spawn_blocking(move||{
+        let mut result=std::collections::HashMap::new();
+        for id in ids{if let Some(lineage)=drive_outbox::snapshot_lineage(&root,&id)?{result.insert(id,serde_json::json!({"original_id":lineage.original_id,"revision":lineage.revision}));}}
+        Ok(result)
+    }).await.map_err(|_|"Lineage lookup failed")?
+}
+
+#[tauri::command]
 async fn google_drive_restore(file_id:String, app:tauri::AppHandle, state:tauri::State<'_,Arc<Mutex<Store>>>) -> Result<String,String> {
     let store=state.inner().clone();
     let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;
@@ -198,12 +240,15 @@ async fn google_drive_restore(file_id:String, app:tauri::AppHandle, state:tauri:
             let extension=Path::new(name).extension().and_then(|s|s.to_str()).ok_or("Track extension missing")?;
             if !["ogg","wav","flac","mp3","webm","m4a"].contains(&extension){return Err("Unsupported backup audio".into());}
             let path=directory.join(format!("restored-{index}.{extension}"));
-            google_drive::download_file(track["file_id"].as_str().ok_or("Track ID missing")?,&path,512*1024*1024)?;
+             google_drive::download_file_with_progress(track["file_id"].as_str().ok_or("Track ID missing")?,&path,512*1024*1024,|downloaded,total|{let _=app.emit("drive-download-progress",serde_json::json!({"snapshot":file_id,"track":index,"tracks":audio.len(),"downloaded":downloaded,"total":total,"phase":"downloading"}));})?;
             use sha2::{Digest,Sha256};use std::io::Read;
             let expected=track["sha256"].as_str().ok_or("Legacy backup has no integrity hash; cannot safely restore")?;
             let mut file=std::fs::File::open(&path).map_err(|_|"Downloaded audio unavailable")?;let mut hash=Sha256::new();let mut buffer=[0u8;65536];let mut size=0u64;
             loop{let n=file.read(&mut buffer).map_err(|_|"Restore checksum failed")?;if n==0{break;}size+=n as u64;hash.update(&buffer[..n]);}
-            if track["bytes"].as_u64()!=Some(size)||format!("{:x}",hash.finalize())!=expected{return Err("Restored audio integrity mismatch".into());}
+             let integrity_ok=track["bytes"].as_u64()==Some(size)&&format!("{:x}",hash.finalize())==expected;
+             let _=app.emit("drive-download-progress",serde_json::json!({"snapshot":file_id,"track":index,"tracks":audio.len(),"downloaded":size,"total":size,"phase":"verifying"}));
+             if !integrity_ok{return Err("Restored audio integrity mismatch".into());}
+             let _=app.emit("drive-download-progress",serde_json::json!({"snapshot":file_id,"track":index,"tracks":audio.len(),"downloaded":size,"total":size,"phase":"verified"}));
             paths.push(path);
         }
         if let Some(tracks)=value["tracks"].as_array(){
@@ -813,6 +858,22 @@ fn mixed_session_audio(id: String, app: tauri::AppHandle) -> Result<String, Stri
 #[tauri::command]
 fn model_status(models: tauri::State<'_, ModelManager>) -> ModelStatus {
     models.status()
+}
+
+#[tauri::command]
+fn model_directory(models:tauri::State<'_,ModelManager>)->String{models.directory().to_string_lossy().into_owned()}
+
+#[tauri::command]
+fn load_summary_settings(state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<Option<serde_json::Value>,String>{
+    lock_store(&state)?.summary_settings().map_err(|_|"Settings unavailable")?.map(|value|serde_json::from_str(&value).map_err(|_|"Settings invalid".to_owned())).transpose()
+}
+
+#[tauri::command]
+fn save_summary_settings(settings:serde_json::Value,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<(),String>{
+    let allowed=["source","endpoint","model","ollama","gguf"];
+    let object=settings.as_object().ok_or("Settings invalid")?;
+    if object.keys().any(|key|!allowed.contains(&key.as_str()))||object.values().any(|value|!value.is_string())||settings.to_string().len()>16384{return Err("Settings invalid".into());}
+    lock_store(&state)?.save_summary_settings(&settings.to_string()).map_err(|_|"Could not save settings".into())
 }
 
 #[tauri::command]
@@ -1487,7 +1548,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            if let Ok(root)=app.path().app_data_dir() { drive_outbox::start_worker(root); }
+            if let Ok(root)=app.path().app_data_dir() { drive_outbox::start_worker(root,app.handle().clone()); }
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let mut store = Store::open(data_dir.join("gigaam.sqlite3"))?;
@@ -1532,6 +1593,12 @@ pub fn run() {
             google_drive_resolve,
             google_drive_snapshots,
             google_drive_branches,
+            google_drive_tree,
+            google_drive_selection,
+            google_drive_save_selection,
+            google_drive_trash_snapshot,
+            google_drive_restored_ids,
+            google_drive_local_lineage,
             google_drive_restore,
             load_organization,
             save_organization,
@@ -1561,6 +1628,9 @@ pub fn run() {
             stop_live,
             live_finalizing,
             model_status,
+            model_directory,
+            load_summary_settings,
+            save_summary_settings,
             download_model,
             cancel_model_download,
         ])

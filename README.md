@@ -19,6 +19,8 @@ Release assets include a Windows x64 installer and portable executable. A signed
 - Play from any transcript timestamp, edit individual segments, copy the full transcript, and re-run recognition.
 - Export TXT, SRT, WebVTT, or JSON while preserving microphone/system track labels.
 - Switch the application UI between Russian and English.
+- Generate summaries with a locally configured Ollama or GGUF backend, or an explicitly configured OpenAI-compatible API. API summarization sends transcript text to the selected endpoint; local transcription does not require it.
+- Optionally queue Google Drive snapshots and restore them as separate local copies. A discovered snapshot is not proof that subsequent local edits are synchronized.
 
 ## 60-second demo
 
@@ -41,6 +43,8 @@ Model locations:
 
 - Windows: `%APPDATA%\ru.gigaam.desktop\models`
 - macOS: `~/Library/Application Support/ru.gigaam.desktop/models`
+
+The recognition settings tab also displays the model directory. Summary backend settings are separate; API credentials are stored in the operating-system credential store, not in the project or browser storage.
 
 See [Model download and offline use](docs/MODEL.md) for hashes, sources, retry behaviour, and manual verification.
 

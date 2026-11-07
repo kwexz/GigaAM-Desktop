@@ -11,6 +11,22 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn summary_settings(&self)->rusqlite::Result<Option<String>> {
+        self.connection.execute_batch("CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)")?;
+        self.connection.query_row("SELECT value FROM app_settings WHERE key='summary'",[],|row|row.get(0)).optional()
+    }
+    pub fn save_summary_settings(&self,value:&str)->rusqlite::Result<()> {
+        self.summary_settings()?;
+        self.connection.execute("INSERT INTO app_settings(key,value) VALUES('summary',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[value])?;Ok(())
+    }
+    pub fn drive_selection(&self)->rusqlite::Result<String>{
+        self.connection.execute_batch("CREATE TABLE IF NOT EXISTS drive_selection(id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)")?;
+        Ok(self.connection.query_row("SELECT value FROM drive_selection WHERE id=1",[],|row|row.get(0)).optional()?.unwrap_or_else(||"{}".into()))
+    }
+    pub fn save_drive_selection(&self,value:&str)->rusqlite::Result<()>{
+        self.drive_selection()?;
+        self.connection.execute("INSERT INTO drive_selection(id,value) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET value=excluded.value",[value])?;Ok(())
+    }
     pub fn load_summary(&self,id:&str)->rusqlite::Result<String>{
         self.connection.execute_batch("CREATE TABLE IF NOT EXISTS summaries(recording_id TEXT PRIMARY KEY REFERENCES transcriptions(id) ON DELETE CASCADE,text TEXT NOT NULL)")?;
         Ok(self.connection.query_row("SELECT text FROM summaries WHERE recording_id=?1",[id],|row|row.get(0)).optional()?.unwrap_or_default())
@@ -145,7 +161,12 @@ impl Store {
         Ok(())
     }
 
-    pub fn finish_live_finalization(&mut self, id: &str, success: bool, now_ms: i64) -> rusqlite::Result<()> {
+    pub fn finish_live_finalization(
+        &mut self,
+        id: &str,
+        success: bool,
+        now_ms: i64,
+    ) -> rusqlite::Result<()> {
         self.connection.execute(
             "UPDATE live_finalizations SET state=?2,updated_ms=?3 WHERE transcription_id=?1",
             params![id, if success { "completed" } else { "failed" }, now_ms],
@@ -262,7 +283,6 @@ impl Store {
                 position INTEGER NOT NULL CHECK(position >= 0)
              );"
         )?;
-
         self.connection.execute_batch(
             "PRAGMA foreign_keys = ON;
              CREATE TABLE IF NOT EXISTS transcriptions (
@@ -1064,7 +1084,6 @@ mod tests {
         assert!(store.save_organization(invalid).is_err());
         assert_eq!(store.load_organization().unwrap(), saved);
     }
-
     use super::*;
     use crate::domain::TranscriptionKind;
 
@@ -1138,14 +1157,27 @@ mod tests {
     #[test]
     fn live_archive_metadata_rolls_back_on_injected_write_failure() {
         let mut store = Store::memory().unwrap();
-        store.enqueue(&transcription("tx", TranscriptionStatus::Queued)).unwrap();
-        store.transition("tx", TranscriptionStatus::Preparing, 1, None).unwrap();
-        store.transition("tx", TranscriptionStatus::Transcribing, 2, None).unwrap();
-        store.connection.execute_batch(
-            "CREATE TRIGGER injected_disk_failure BEFORE UPDATE OF audio_path ON transcriptions
-             BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END;"
-        ).unwrap();
-        assert!(store.complete_live_archive("tx", 12.0, Some("preserved.wav"), 3).is_err());
+        store
+            .enqueue(&transcription("tx", TranscriptionStatus::Queued))
+            .unwrap();
+        store
+            .transition("tx", TranscriptionStatus::Preparing, 1, None)
+            .unwrap();
+        store
+            .transition("tx", TranscriptionStatus::Transcribing, 2, None)
+            .unwrap();
+        store
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER injected_disk_failure BEFORE UPDATE OF audio_path ON transcriptions
+             BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END;",
+            )
+            .unwrap();
+        assert!(
+            store
+                .complete_live_archive("tx", 12.0, Some("preserved.wav"), 3)
+                .is_err()
+        );
         let item = store.get("tx").unwrap().unwrap();
         assert_eq!(item.status, TranscriptionStatus::Transcribing);
         assert!(item.audio_path.is_none());
@@ -1155,11 +1187,21 @@ mod tests {
     #[test]
     fn live_archive_completion_is_atomic_and_honors_cancellation() {
         let mut store = Store::memory().unwrap();
-        store.enqueue(&transcription("tx", TranscriptionStatus::Queued)).unwrap();
-        store.transition("tx", TranscriptionStatus::Preparing, 1, None).unwrap();
-        store.transition("tx", TranscriptionStatus::Transcribing, 2, None).unwrap();
+        store
+            .enqueue(&transcription("tx", TranscriptionStatus::Queued))
+            .unwrap();
+        store
+            .transition("tx", TranscriptionStatus::Preparing, 1, None)
+            .unwrap();
+        store
+            .transition("tx", TranscriptionStatus::Transcribing, 2, None)
+            .unwrap();
         store.request_cancel("tx", 2).unwrap();
-        assert!(store.complete_live_archive("tx", 3.0, Some("audio.wav"), 3).is_err());
+        assert!(
+            store
+                .complete_live_archive("tx", 3.0, Some("audio.wav"), 3)
+                .is_err()
+        );
         let item = store.get("tx").unwrap().unwrap();
         assert_eq!(item.status, TranscriptionStatus::Transcribing);
         assert!(item.audio_path.is_none());
@@ -1168,12 +1210,28 @@ mod tests {
     #[test]
     fn finalization_state_survives_and_is_failed_on_recovery() {
         let mut store = Store::memory().unwrap();
-        store.enqueue(&transcription("tx", TranscriptionStatus::Queued)).unwrap();
+        store
+            .enqueue(&transcription("tx", TranscriptionStatus::Queued))
+            .unwrap();
         store.begin_live_finalization("tx", 1).unwrap();
-        let state: String = store.connection.query_row("SELECT state FROM live_finalizations WHERE transcription_id='tx'", [], |row| row.get(0)).unwrap();
+        let state: String = store
+            .connection
+            .query_row(
+                "SELECT state FROM live_finalizations WHERE transcription_id='tx'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(state, "finalizing");
         store.recover_interrupted(2).unwrap();
-        let state: String = store.connection.query_row("SELECT state FROM live_finalizations WHERE transcription_id='tx'", [], |row| row.get(0)).unwrap();
+        let state: String = store
+            .connection
+            .query_row(
+                "SELECT state FROM live_finalizations WHERE transcription_id='tx'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(state, "failed");
     }
 
