@@ -72,7 +72,7 @@ describe('GigaAM page', () => {
 		] : backend(command, ...args));
 		render(Page);
 		await fireEvent.click(await screen.findByText('meeting.wav'));
-		await fireEvent.click(await screen.findByLabelText('Объединять фрагменты фраз'));
+		await screen.findByRole('button', { name: 'Начало фразы' });
 		const first = screen.getByRole('button', { name: 'Начало фразы' });
 		const second = screen.getByRole('button', { name: 'её окончание.' });
 		expect(first.closest('.segment')).toBe(second.closest('.segment'));
@@ -462,7 +462,8 @@ describe('GigaAM page', () => {
 		render(Page);
 		await screen.findByText('Записи');
 
-		await fireEvent.change(screen.getByRole('combobox', { name: 'Язык' }), { target: { value: 'en' } });
+		await fireEvent.click(screen.getByLabelText('Язык'));
+		await fireEvent.click(screen.getByRole('button', { name: '🇬🇧 English' }));
 		expect(screen.getByText('Recordings')).toBeInTheDocument();
 		expect(screen.getByPlaceholderText('Search')).toBeInTheDocument();
 	});
@@ -591,8 +592,9 @@ describe('GigaAM page', () => {
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('stop_live'));
 		expect(stop).toBeDisabled();
 		// A pending native acknowledgement must not freeze unrelated UI controls.
-		await fireEvent.change(screen.getByRole('combobox', { name: 'Язык' }), { target: { value: 'en' } });
-		expect(screen.getByRole('combobox', { name: 'Language' })).toHaveValue('en');
+		await fireEvent.click(screen.getByLabelText('Язык'));
+		await fireEvent.click(screen.getByRole('button', { name: '🇬🇧 English' }));
+		expect(screen.getByLabelText('Language').textContent).toContain('🇬🇧');
 		resolveStop();
 	});
 });

@@ -37,7 +37,8 @@
 	let items = $state<Item[]>([]);
 	let selectedId = $state('');
 	let segments = $state<Segment[]>([]);
-	let sentenceView = $state(false);
+	let sentenceView = $state(true);
+	let savedSentenceView = true;
 	let sentenceGroups = $derived(groupSentenceSegments(segments));
 	let query = $state('');
 	let error = $state('');
@@ -78,12 +79,14 @@
 	let settingsGeneration = 0;
 	function openSettings() {
 		settingsGeneration++;
+		savedSentenceView = sentenceView;
 		savedSettings = { source: summarySource, endpoint: summaryEndpoint, model: summaryModel, ollama: ollamaModel, gguf: ggufPath };
 		savedApiModels = [...summaryApiModels];
 		summarySettingsOpen = true;
 	}
 	function cancelSettings() {
 		settingsGeneration++;
+		sentenceView = savedSentenceView;
 		({ source: summarySource, endpoint: summaryEndpoint, model: summaryModel, ollama: ollamaModel, gguf: ggufPath } = savedSettings);
 		summaryApiModels = savedApiModels;
 		summaryApiKey = '';
@@ -95,6 +98,7 @@
 			const settings = { source: summarySource, endpoint: summaryEndpoint, model: summaryModel, ollama: ollamaModel, gguf: ggufPath };
 			if (!browserMode) await invoke('save_summary_settings', { settings });
 			localStorage.setItem('gigaam-summary-settings', JSON.stringify(settings));
+			localStorage.setItem('gigaam-sentence-view', String(sentenceView));
 			summaryApiKey = ''; summarySettingsOpen = false;
 		} catch { error = locale === 'ru' ? 'Не удалось сохранить настройки' : 'Could not save settings'; }
 	}
@@ -937,6 +941,7 @@
 	}
 
 	onMount(() => {
+		try { sentenceView = localStorage.getItem('gigaam-sentence-view') !== 'false'; } catch { /* Keep default. */ }
 		archiveFormat = savedRecordingFormat(localStorage) ?? DEFAULT_RECORDING_FORMAT;
 		try { const selected = JSON.parse(localStorage.getItem('gigaam-drive-selection') ?? '[]'); if (Array.isArray(selected)) driveSelected = selected.filter((value): value is string => typeof value === 'string'); } catch { /* Ignore invalid selection. */ }
 		try { const selected = JSON.parse(localStorage.getItem('gigaam-drive-remote-selection') ?? '[]'); if (Array.isArray(selected)) driveSelectedRemote = selected.filter((value): value is string => typeof value === 'string'); } catch { /* Ignore invalid selection. */ }
@@ -1024,7 +1029,7 @@
 	<header>
 		{#if browserMode}<span class="header-web-status" data-testid="web-mode-banner">{locale === 'ru' ? 'Web · аудио локально · ASR на сервере' : 'Web · local audio · server ASR'}</span>{/if}
 		<div class="brand"><span class="mark">G</span><strong>GigaAM</strong><span>Desktop</span><button class="version-link" title="GitHub" onclick={() => { if (browserMode) window.open('https://github.com/kwexz/GigaAM-Desktop', '_blank', 'noopener,noreferrer'); else void openUrl('https://github.com/kwexz/GigaAM-Desktop'); }}>{locale === 'ru' ? 'Версия' : 'Version'} {__APP_VERSION__} b{__BUILD_ID__}</button></div>
-		<div class="header-actions">{#if !browserMode}<button class="ghost drive-icon" title="Google Drive" aria-label="Google Drive" aria-pressed={driveBrowserOpen} onclick={() => void openDriveBackups()}><svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><path fill="#34a853" d="M8.1 3h5.1l-8 14H.1z"/><path fill="#4285f4" d="M13.2 3 21 16.5l-2.5 4.4L10.7 7.4z"/><path fill="#fbbc04" d="M5.2 16.5H21l-2.5 4.4H2.7z"/></svg></button>{/if}<button class="ghost settings-button" aria-label={locale === 'ru' ? 'Настройки' : 'Settings'} title={locale === 'ru' ? 'Настройки' : 'Settings'} onclick={openSettings}>⚙</button><label class="header-select"><span aria-hidden="true">{theme === 'system' ? '◐' : theme === 'light' ? '☀' : '☾'}</span><select aria-label={locale === 'ru' ? 'Тема' : 'Theme'} value={theme} onchange={(event) => setTheme(event.currentTarget.value as 'system' | 'light' | 'dark')}><option value="system">{locale === 'ru' ? '◐ Системная' : '◐ System'}</option><option value="light">{locale === 'ru' ? '☀ Светлая' : '☀ Light'}</option><option value="dark">{locale === 'ru' ? '☾ Тёмная' : '☾ Dark'}</option></select></label><label class="header-select"><span aria-hidden="true">🌐</span><select aria-label={locale === 'ru' ? 'Язык' : 'Language'} bind:value={locale}><option value="ru">🇷🇺 Русский</option><option value="en">🇬🇧 English</option></select></label></div>
+		<div class="header-actions">{#if !browserMode}<button class="ghost drive-icon" title="Google Drive" aria-label="Google Drive" aria-pressed={driveBrowserOpen} onclick={() => void openDriveBackups()}><svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><path fill="#34a853" d="M8.1 3h5.1l-8 14H.1z"/><path fill="#4285f4" d="M13.2 3 21 16.5l-2.5 4.4L10.7 7.4z"/><path fill="#fbbc04" d="M5.2 16.5H21l-2.5 4.4H2.7z"/></svg></button>{/if}<button class="ghost settings-button" aria-label={locale === 'ru' ? 'Настройки' : 'Settings'} title={locale === 'ru' ? 'Настройки' : 'Settings'} onclick={openSettings}>⚙</button><details class="drive-menu header-menu"><summary aria-label={locale === 'ru' ? 'Тема' : 'Theme'} title={locale === 'ru' ? 'Тема' : 'Theme'}>{theme === 'system' ? '◐' : theme === 'light' ? '☀' : '☾'}</summary><div class="drive-menu-content"><button onclick={(event) => { setTheme('system'); event.currentTarget.closest('details')!.open = false; }}>◐ {locale === 'ru' ? 'Системная' : 'System'}</button><button onclick={(event) => { setTheme('light'); event.currentTarget.closest('details')!.open = false; }}>☀ {locale === 'ru' ? 'Светлая' : 'Light'}</button><button onclick={(event) => { setTheme('dark'); event.currentTarget.closest('details')!.open = false; }}>☾ {locale === 'ru' ? 'Тёмная' : 'Dark'}</button></div></details><details class="drive-menu header-menu"><summary aria-label={locale === 'ru' ? 'Язык' : 'Language'} title={locale === 'ru' ? 'Язык' : 'Language'}>{locale === 'ru' ? '🇷🇺' : '🇬🇧'}</summary><div class="drive-menu-content"><button onclick={(event) => { locale = 'ru'; event.currentTarget.closest('details')!.open = false; }}>🇷🇺 Русский</button><button onclick={(event) => { locale = 'en'; event.currentTarget.closest('details')!.open = false; }}>🇬🇧 English</button></div></details></div>
 	</header>
 
 	{#if !driveBrowserOpen}<aside>
@@ -1081,7 +1086,6 @@
 				{#if browserMode}<button onclick={() => void resumeRemoteUpload(selected.id)}>{locale === 'ru' ? 'Повторить отправку из архива' : 'Resume archive upload'}</button>{/if}
 				{#if browserMode && mixedSrc}<button class="ghost" onclick={() => void downloadCompactAudio()}>Скачать аудио · Opus</button>{/if}
 				
-				{#if segments.length}<label><input type="checkbox" bind:checked={sentenceView} /> {locale === 'ru' ? 'Объединять фрагменты фраз' : 'Join phrase fragments'}</label>{/if}
 				{#if sentenceView}
 					{#each sentenceGroups as group (group[0].id)}
 						<div class="segment sentence-group"><button class="seg-play" aria-label={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} onclick={() => togglePlay(group[0])}>▶</button><time>{time(group[0].start_seconds)}</time><div class="seg-body">
@@ -1146,7 +1150,7 @@
 	</section>
 {/if}
 
-{#if summarySettingsOpen}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={cancelSettings}></button><div class="modal summary-settings-dialog" role="dialog" aria-modal="true" tabindex="-1" aria-label={locale === 'ru' ? 'Настройки суммаризации' : 'Summary settings'}><h2>{locale === 'ru' ? 'Настройки суммаризации' : 'Summary settings'}</h2><div class="settings-tabs"><button class="ghost" aria-pressed={settingsTab === 'recognition'} onclick={() => settingsTab = 'recognition'}>{locale === 'ru' ? 'Распознавание' : 'Recognition'}</button><button class="ghost" aria-pressed={settingsTab === 'summary'} onclick={() => settingsTab = 'summary'}>{locale === 'ru' ? 'Суммаризация' : 'Summarization'}</button></div>{#if settingsTab === 'recognition'}<div class="summary-settings">{#if modelDirectory}<p class="model-location">{locale === 'ru' ? 'Папка модели GigaAM' : 'GigaAM model folder'}: <code>{modelDirectory}</code></p>{/if}<label>{locale === 'ru' ? 'Модель распознавания' : 'Recognition model'}<select disabled><option>GigaAM v3 E2E CTC int8 + Silero VAD</option></select></label><small>{locale === 'ru' ? 'Поддерживается только этот проверенный комплект ONNX и словаря. GGUF и модели Ollama предназначены для суммаризации и не совместимы с распознаванием.' : 'Only this validated ONNX and vocabulary set is supported. GGUF and Ollama models are not compatible with recognition.'}</small><span>{model.installed ? (locale === 'ru' ? 'Установлена' : 'Installed') : (locale === 'ru' ? 'Не установлена' : 'Not installed')}</span>{#if !model.installed && !browserMode}<button class="ghost" disabled={model.downloading} onclick={() => invoke('download_model')}>{locale === 'ru' ? 'Скачать модель' : 'Download model'}</button>{/if}</div>{:else}<div class="summary-settings">
+{#if summarySettingsOpen}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={cancelSettings}></button><div class="modal summary-settings-dialog" role="dialog" aria-modal="true" tabindex="-1" aria-label={locale === 'ru' ? 'Настройки суммаризации' : 'Summary settings'}><h2>{locale === 'ru' ? 'Настройки суммаризации' : 'Summary settings'}</h2><div class="settings-tabs"><button class="ghost" aria-pressed={settingsTab === 'recognition'} onclick={() => settingsTab = 'recognition'}>{locale === 'ru' ? 'Распознавание' : 'Recognition'}</button><button class="ghost" aria-pressed={settingsTab === 'summary'} onclick={() => settingsTab = 'summary'}>{locale === 'ru' ? 'Суммаризация' : 'Summarization'}</button></div>{#if settingsTab === 'recognition'}<div class="summary-settings"><label class="sentence-setting"><input type="checkbox" bind:checked={sentenceView} /> {locale === 'ru' ? 'Объединять фрагменты фраз' : 'Join phrase fragments'}</label><small>{locale === 'ru' ? 'Меняет отображение текста, не исходные сегменты распознавания.' : 'Changes the display, not the underlying recognition segments.'}</small>{#if modelDirectory}<p class="model-location">{locale === 'ru' ? 'Папка модели GigaAM' : 'GigaAM model folder'}: <code>{modelDirectory}</code></p>{/if}<label>{locale === 'ru' ? 'Модель распознавания' : 'Recognition model'}<select disabled><option>GigaAM v3 E2E CTC int8 + Silero VAD</option></select></label><small>{locale === 'ru' ? 'Поддерживается только этот проверенный комплект ONNX и словаря. GGUF и модели Ollama предназначены для суммаризации и не совместимы с распознаванием.' : 'Only this validated ONNX and vocabulary set is supported. GGUF and Ollama models are not compatible with recognition.'}</small><span>{model.installed ? (locale === 'ru' ? 'Установлена' : 'Installed') : (locale === 'ru' ? 'Не установлена' : 'Not installed')}</span>{#if !model.installed && !browserMode}<button class="ghost" disabled={model.downloading} onclick={() => invoke('download_model')}>{locale === 'ru' ? 'Скачать модель' : 'Download model'}</button>{/if}</div>{:else}<div class="summary-settings">
 <label>{locale === 'ru' ? 'Источник' : 'Provider'}<select bind:value={summarySource} onchange={() => { if (summarySource === 'ollama') void refreshOllamaModels(); }}><option value="ollama">Ollama · local</option><option value="gguf">GGUF · local</option><option value="api">OpenAI-compatible API</option></select></label>
 {#if summarySource === 'ollama'}<div class="summary-settings-row"><label>{locale === 'ru' ? 'Модель Ollama' : 'Ollama model'}<input type="search" bind:value={summaryModelSearch} placeholder={locale === 'ru' ? 'Поиск модели' : 'Search models'} /><select aria-label={locale === 'ru' ? 'Модель Ollama' : 'Ollama model'} bind:value={ollamaModel}>{#if ollamaModel && !ollamaModels.includes(ollamaModel)}<option value={ollamaModel}>{ollamaModel}</option>{/if}{#each ollamaModels.filter((model) => model.toLowerCase().includes(summaryModelSearch.toLowerCase()) || model === ollamaModel) as model}<option value={model}>{model}</option>{/each}</select></label><button class="ghost" onclick={() => void refreshOllamaModels()}>{locale === 'ru' ? 'Обновить' : 'Refresh'}</button></div>{/if}
 {#if summarySource === 'gguf'}<div class="summary-settings-row"><label>{locale === 'ru' ? 'Файл модели' : 'Model file'}<input readonly value={ggufPath} placeholder=".gguf" /></label><button class="ghost" onclick={() => void pickGguf()}>{locale === 'ru' ? 'Выбрать' : 'Choose'}</button></div><div class="summary-settings-row"><span>{locale === 'ru' ? 'Локальный движок llama.cpp' : 'Local llama.cpp engine'}</span><button class="ghost" disabled={runtimeInstalling} onclick={() => void installGgufRuntime()}>{locale === 'ru' ? 'Установить runtime' : 'Install runtime'}</button></div><small>{locale === 'ru' ? 'Runtime запускает выбранную GGUF-модель локально; устанавливается отдельно и не нужен для Ollama.' : 'The runtime runs the chosen GGUF model locally; it is not needed for Ollama.'}</small>{#if managedGgufPath}<div class="summary-settings-row"><span>{locale === 'ru' ? 'Qwen3-4B установлена' : 'Qwen3-4B installed'}</span><button class="ghost" onclick={() => ggufPath = managedGgufPath ?? ''}>{locale === 'ru' ? 'Выбрать' : 'Use'}</button></div>{:else}<button class="ghost" disabled={runtimeInstalling} onclick={() => void downloadGgufModel()}>{locale === 'ru' ? 'Скачать Qwen3-4B · 2,5 ГБ' : 'Download Qwen3-4B · 2.5 GB'}</button>{/if}{#if modelProgress}<div role="status"><progress max={modelProgress.total} value={modelProgress.downloaded}></progress> {Math.floor(100 * modelProgress.downloaded / modelProgress.total)}%</div>{/if}{/if}
@@ -1157,9 +1161,9 @@
 
 <style>
 	.sentence-group .seg-text { display: inline; width: auto; margin: 0; }
+	.header-menu .drive-menu-content { top: 100%; bottom: auto; right: 0; }
 	.drive-page{position:fixed;inset:58px 0 0;overflow:auto;background:inherit;padding:32px clamp(24px,6vw,88px);z-index:2}
 	.drive-page-content{max-width:1040px;margin:0 auto}.drive-page h1{font-size:28px;margin:24px 0 16px}.drive-back{margin-bottom:4px}.drive-icon{display:inline-flex;align-items:center;justify-content:center}.drive-snapshots{overflow-wrap:anywhere}.drive-actions{display:flex;gap:8px;flex-wrap:wrap}
-	.header-select{display:flex;align-items:center;gap:5px;border:1px solid #cfd3ca;border-radius:8px;background:#fff;padding:0 8px}.header-select select{border:0;background:transparent;color:inherit;min-height:34px;max-width:125px}.header-select:focus-within{outline:2px solid #28705a;outline-offset:2px}:global(body[data-theme="dark"]) .header-select{background:#2c302b;border-color:#59645a;color:#edf2e9}
 	.drive-columns,.drive-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(72px,110px) minmax(110px,160px);gap:12px;align-items:center}.drive-columns{font-size:12px;opacity:.7;border-bottom:1px solid #8885;padding:10px 0}.drive-row{min-height:42px;border-bottom:1px solid #8882}.drive-row label{min-width:0;overflow-wrap:anywhere}.drive-row>span:not(:first-child){text-align:center}
 	.drive-footer{padding-top:16px;border-top:1px solid #8883}.model-location code{display:block;margin-top:6px;overflow-wrap:anywhere;user-select:text}
 	.settings-button { font-size: 24px !important; line-height: 1; }
