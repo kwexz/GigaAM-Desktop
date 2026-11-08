@@ -1,6 +1,6 @@
 # Ogg/Opus: измерения и незакрытые gates
 
-Дата: 2026-10-28, Windows x64, dirty feature branch. Профиль-кандидат: mono 48 kHz, Opus 24 kbit/s. Исходник каждого сравнения — 1 656 648 samples (34.5135 s). Использованы публичные лицензированные fixtures с атрибуцией в tests/fixtures/besarab.json.
+Дата: 2026-10-28, Windows x64, dirty feature branch. Это историческое измерение, не проверка релиза 0.2.0. Профиль-кандидат: mono 48 kHz, Opus 24 kbit/s. Исходник каждого сравнения — 1 656 648 samples (34.5135 s). Использованы публичные лицензированные fixtures с атрибуцией в tests/fixtures/besarab.json.
 
 | Fixture | WAV bytes | FLAC bytes | MP3 bytes | Ogg bytes |
 |---|---:|---:|---:|---:|
@@ -22,13 +22,13 @@ Release `--locked` benchmark (тот же input, тест завершён ус�
 - Clean: 0/304 отличающихся символов, timestamps совпали.
 - Noisy: edit distance 3/305 (0.9836% relative CER), timestamps отличаются.
 
-Это relative CER к baseline, не ошибка по размеченному ground truth. Нулевая регрессия на noisy не доказана. Логи: state/runs/ogg-model-clean, ogg-model-noisy, ogg-reference-clean, ogg-reference-noisy; сводка state/runs/ogg-model-comparison.json.
+Это relative CER к baseline, не ошибка по размеченному ground truth. Нулевая регрессия на noisy не доказана. Сохранена [числовая сводка](ogg-model-comparison.json); исходные локальные логи не входят в этот артефакт.
 
 ## Решение до завершения проверки
 
 ## Дополнительный профиль 48 кбит/с
 
-Release benchmark: clean 186382 bytes / 428 ms; noisy 199135 bytes / 288 ms для тех же 34.5135 s исходной речи. Независимый ffmpeg decode обоих файлов прошёл. Pinned inference нашёл 3/3 контрольные фразы для обоих. Относительно исходного WAV clean CER 0/304, noisy 2/305 = 0.6557%; timestamps отличаются в обоих случаях. Evidence: state/runs/ogg48-model-clean, ogg48-model-noisy, ogg48-model-comparison.json.
+Release benchmark: clean 186382 bytes / 428 ms; noisy 199135 bytes / 288 ms для тех же 34.5135 s исходной речи. Независимый ffmpeg decode обоих файлов прошёл. Pinned inference нашёл 3/3 контрольные фразы для обоих. Относительно исходного WAV clean CER 0/304, noisy 2/305 = 0.6557%; timestamps отличаются в обоих случаях. [Числовая сводка](ogg48-model-comparison.json).
 
 Текущий encoder-кандидат повышен до 48 кбит/с. Это уменьшает наблюдаемую noisy-разницу, но не доказывает нулевую регрессию. Он по-прежнему существенно меньше измеренного MP3/FLAC. Default FLAC пока сохранён; native header/compactness assertions необходимо повторить для нового профиля.
 

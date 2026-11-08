@@ -62,6 +62,24 @@ function mockBackend(options: { installed?: boolean; items?: Item[] } = {}) {
 }
 
 describe('GigaAM page', () => {
+	it('groups phrase fragments without changing their editable segments', async () => {
+		mockBackend({ items: [historyItem] });
+		const backend = invoke.getMockImplementation()!;
+		invoke.mockImplementation(async (command: string, ...args: unknown[]) => command === 'get_segments' ? [
+			{ id: 'a', index: 0, start_seconds: 1, end_seconds: 2, text: 'Начало фразы', source_track: 'file' },
+			{ id: 'b', index: 1, start_seconds: 2, end_seconds: 3, text: 'её окончание.', source_track: 'file' },
+			{ id: 'c', index: 2, start_seconds: 3, end_seconds: 4, text: 'Другая фраза.', source_track: 'file' }
+		] : backend(command, ...args));
+		render(Page);
+		await fireEvent.click(await screen.findByText('meeting.wav'));
+		await fireEvent.click(await screen.findByLabelText('Объединять фрагменты фраз'));
+		const first = screen.getByRole('button', { name: 'Начало фразы' });
+		const second = screen.getByRole('button', { name: 'её окончание.' });
+		expect(first.closest('.segment')).toBe(second.closest('.segment'));
+		expect(first.closest('.segment')).not.toBe(screen.getByRole('button', { name: 'Другая фраза.' }).closest('.segment'));
+		await fireEvent.click(second);
+		expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('её окончание.');
+	});
 	it('does not show one recording’s summary duration on another recording', async () => {
 		const second = { ...historyItem, id: 'tx-2', source_filename: 'second.wav' };
 		mockBackend({ items: [historyItem, second] }); const backend = invoke.getMockImplementation()!;

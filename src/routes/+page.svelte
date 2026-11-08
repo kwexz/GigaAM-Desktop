@@ -6,6 +6,7 @@
 	import { open, save } from '@tauri-apps/plugin-dialog';
 	import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 	import { isTauriRuntime } from '#lib/runtime.ts';
+	import { groupSentenceSegments } from '#lib/sentence-groups.ts';
 	import { WebSession } from '#lib/web-session.ts';
 	import { listBrowserMetadata, putBrowserRecording, readOpfsArchive, loadBrowserOrganization, updateBrowserOrganization, browserSegments, appendOpfsChunk, putArchiveMeta } from '#lib/browser-storage.ts';
 	import { moveNode, deleteFolder, compareNodes, type OrganizationNode } from '#lib/organization.ts';
@@ -36,6 +37,8 @@
 	let items = $state<Item[]>([]);
 	let selectedId = $state('');
 	let segments = $state<Segment[]>([]);
+	let sentenceView = $state(false);
+	let sentenceGroups = $derived(groupSentenceSegments(segments));
 	let query = $state('');
 	let error = $state('');
 	let locale = $state<'ru' | 'en'>('ru');
@@ -1078,9 +1081,21 @@
 				{#if browserMode}<button onclick={() => void resumeRemoteUpload(selected.id)}>{locale === 'ru' ? 'Повторить отправку из архива' : 'Resume archive upload'}</button>{/if}
 				{#if browserMode && mixedSrc}<button class="ghost" onclick={() => void downloadCompactAudio()}>Скачать аудио · Opus</button>{/if}
 				
+				{#if segments.length}<label><input type="checkbox" bind:checked={sentenceView} /> {locale === 'ru' ? 'Объединять фрагменты фраз' : 'Join phrase fragments'}</label>{/if}
+				{#if sentenceView}
+					{#each sentenceGroups as group (group[0].id)}
+						<div class="segment sentence-group"><button class="seg-play" aria-label={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} onclick={() => togglePlay(group[0])}>▶</button><time>{time(group[0].start_seconds)}</time><div class="seg-body">
+							{#if group[0].source_track !== 'file'}<b>{group[0].speaker_id ?? (group[0].source_track === 'microphone' ? (locale === 'ru' ? 'Я' : 'Me') : (locale === 'ru' ? 'Система' : 'System'))}</b>{/if}
+							{#each group as segment (segment.id)}
+								{#if editingId === segment.id}<textarea bind:value={editText} rows={3} onkeydown={(event) => editKeys(event, segment)}></textarea><div class="edit-actions"><button class="primary" onclick={() => void saveEdit(segment)}>{locale === 'ru' ? 'Сохранить' : 'Save'}</button><button class="ghost" onclick={() => editingId = null}>{t.cancel}</button></div>{:else}<button class="seg-text" title={locale === 'ru' ? 'Редактировать фрагмент' : 'Edit fragment'} onclick={() => startEdit(segment)}>{segment.text}</button>{' '}{/if}
+							{/each}
+						</div></div>
+					{/each}
+				{:else}
 				{#each segments as segment (segment.id)}
 					<div class="segment" class:playing={playhead >= segment.start_seconds && playhead < segment.end_seconds}><button class="seg-play" title={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} aria-label={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} onclick={() => togglePlay(segment)}>{#if !audioPaused && playhead >= segment.start_seconds && playhead < segment.end_seconds}<span class="pause-bars" aria-hidden="true"><i></i><i></i></span>{:else}<span class="play-triangle" aria-hidden="true">▶</span>{/if}</button><time>{time(segment.start_seconds)}</time><div class="seg-body">{#if segment.source_track !== 'file'}<b>{segment.speaker_id ?? (segment.source_track === 'microphone' ? (locale === 'ru' ? 'Я' : 'Me') : (locale === 'ru' ? 'Система' : 'System'))}</b>{/if}{#if editingId === segment.id}<textarea bind:value={editText} rows={3} onkeydown={(event) => editKeys(event, segment)}></textarea><div class="edit-actions"><button class="primary" onclick={() => void saveEdit(segment)}>{locale === 'ru' ? 'Сохранить' : 'Save'}</button><button class="ghost" onclick={() => editingId = null}>{t.cancel}</button></div>{:else}<button class="seg-text" title={locale === 'ru' ? 'Нажмите, чтобы редактировать' : 'Click to edit'} onclick={() => startEdit(segment)} onkeydown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); startEdit(segment); } }}>{segment.text}</button>{/if}</div></div>
 				{/each}
+				{/if}
 				{#if !segments.length}{#if selected.status === 'completed'}<div class="empty-transcript"><p>{locale === 'ru' ? 'В записи не найдена речь: сегментов нет. Если аудио не пустое, нажмите «Повторить» для перезапуска распознавания.' : 'No speech found in this recording. If the audio is not empty, press Retry to re-run recognition.'}</p></div>{:else}<div class="processing"><span></span><p>{statuses[locale][selected.status]}</p></div>{/if}{/if}
 			</div></section>
 			<footer><div class="export">{#if !browserMode}<button class="mode-switch" class:active={summaryMode} role="switch" aria-checked={summaryMode} onclick={() => summaryMode = !summaryMode}><span>{locale === 'ru' ? 'Распознавание' : 'Transcription'}</span><i aria-hidden="true"></i><span>{locale === 'ru' ? 'Саммари' : 'Summary'}</span></button>{/if}<div class="tools">{#if summaryMode}<button class="primary" disabled={summaryBusy || !segments.length || recording} onclick={() => void summarizeLocal()}>{locale === 'ru' ? 'Суммаризовать' : 'Summarize'}</button>{:else if ['queued', 'failed', 'cancelled', 'interrupted', 'completed'].includes(selected.status)}<button class="primary" onclick={() => void action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', selected.id)}>{t.start}</button>{/if}{#if ['preparing', 'transcribing'].includes(selected.status)}<button class="primary" onclick={() => void action('cancel_transcription', selected.id)}>{locale === 'ru' ? 'Остановить' : 'Stop'}</button>{/if}</div><details class="drive-menu export-menu"><summary title="Экспорт или копирование">{t.export} <svg class="menu-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg></summary><div class="drive-menu-content"><button onclick={() => void exportResult()}>В файл</button><button onclick={() => summaryMode ? void copyTranscriptText(summaryText) : void copyTranscript()}>Копировать</button></div></details></div><div class="danger">{#if !['queued', 'preparing', 'transcribing'].includes(selected.status)}<button disabled={recording || busy || !segments.length} onclick={() => confirmClear = true}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button>{/if}</div></footer>
@@ -1141,6 +1156,7 @@
 {#if confirmClear}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={() => confirmClear = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label={locale === 'ru' ? 'Очистить текст' : 'Clear transcript'}><h2>{locale === 'ru' ? 'Очистить весь текст?' : 'Clear the entire transcript?'}</h2><p>{locale === 'ru' ? 'Аудиозапись останется. Удалённый текст нельзя восстановить отменой.' : 'Audio will remain. Deleted text cannot be undone.'}</p><div class="modal-actions"><button class="ghost" onclick={() => confirmClear = false}>{t.cancel}</button><button class="danger-solid" onclick={() => void clearCurrentTranscript()}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button></div></div></div>{/if}
 
 <style>
+	.sentence-group .seg-text { display: inline; width: auto; margin: 0; }
 	.drive-page{position:fixed;inset:58px 0 0;overflow:auto;background:inherit;padding:32px clamp(24px,6vw,88px);z-index:2}
 	.drive-page-content{max-width:1040px;margin:0 auto}.drive-page h1{font-size:28px;margin:24px 0 16px}.drive-back{margin-bottom:4px}.drive-icon{display:inline-flex;align-items:center;justify-content:center}.drive-snapshots{overflow-wrap:anywhere}.drive-actions{display:flex;gap:8px;flex-wrap:wrap}
 	.header-select{display:flex;align-items:center;gap:5px;border:1px solid #cfd3ca;border-radius:8px;background:#fff;padding:0 8px}.header-select select{border:0;background:transparent;color:inherit;min-height:34px;max-width:125px}.header-select:focus-within{outline:2px solid #28705a;outline-offset:2px}:global(body[data-theme="dark"]) .header-select{background:#2c302b;border-color:#59645a;color:#edf2e9}
