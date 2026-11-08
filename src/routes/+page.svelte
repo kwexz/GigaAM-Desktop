@@ -1162,7 +1162,12 @@
 
 <style>
 	.sentence-group .seg-text { display: inline; width: auto; margin: 0; }
-	.header-menu .drive-menu-content { top: 100%; bottom: auto; right: 0; }
+	.header-actions .header-menu > summary { display:flex; align-items:center; justify-content:center; width:36px; height:34px; padding:0; box-sizing:border-box; border:1px solid #d5d7d0; border-radius:8px; font-size:16px; line-height:1; }
+	.header-actions .header-menu .drive-menu-content { top:calc(100% + 6px); bottom:auto; left:auto; right:0; min-width:160px; gap:4px; padding:6px; }
+	.header-actions .header-menu .drive-menu-content button { border:0; background:transparent; border-radius:6px; padding:8px 10px; font-size:13px; font-weight:400; }
+	.header-actions .header-menu .drive-menu-content button:hover { background:#edf1eb; }
+	:global(body[data-theme="dark"]) .header-actions .header-menu > summary, :global(body[data-theme="dark"]) .header-actions .header-menu .drive-menu-content { background:#262926; border-color:#59645a; color:#eef1eb; }
+	:global(body[data-theme="dark"]) .header-actions .header-menu .drive-menu-content button:hover { background:#3a433b; }
 	.drive-page{position:fixed;inset:58px 0 0;overflow:auto;background:inherit;padding:32px clamp(24px,6vw,88px);z-index:2}
 	.drive-page-content{max-width:1040px;margin:0 auto}.drive-page h1{font-size:28px;margin:24px 0 16px}.drive-back{margin-bottom:4px}.drive-icon{display:inline-flex;align-items:center;justify-content:center}.drive-snapshots{overflow-wrap:anywhere}.drive-actions{display:flex;gap:8px;flex-wrap:wrap}
 	.drive-columns,.drive-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(72px,110px) minmax(110px,160px);gap:12px;align-items:center}.drive-columns{font-size:12px;opacity:.7;border-bottom:1px solid #8885;padding:10px 0}.drive-row{min-height:42px;border-bottom:1px solid #8882}.drive-row label{min-width:0;overflow-wrap:anywhere}.drive-row>span:not(:first-child){text-align:center}
