@@ -1087,11 +1087,12 @@
 				{#if browserMode && mixedSrc}<button class="ghost" onclick={() => void downloadCompactAudio()}>Скачать аудио · Opus</button>{/if}
 				
 				{#if sentenceView}
-					{#each sentenceGroups as group (group[0].id)}
-						<div class="segment sentence-group"><button class="seg-play" aria-label={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} onclick={() => togglePlay(group[0])}>▶</button><time>{time(group[0].start_seconds)}</time><div class="seg-body">
-							{#if group[0].source_track !== 'file'}<b>{group[0].speaker_id ?? (group[0].source_track === 'microphone' ? (locale === 'ru' ? 'Я' : 'Me') : (locale === 'ru' ? 'Система' : 'System'))}</b>{/if}
-							{#each group as segment (segment.id)}
-								{#if editingId === segment.id}<textarea bind:value={editText} rows={3} onkeydown={(event) => editKeys(event, segment)}></textarea><div class="edit-actions"><button class="primary" onclick={() => void saveEdit(segment)}>{locale === 'ru' ? 'Сохранить' : 'Save'}</button><button class="ghost" onclick={() => editingId = null}>{t.cancel}</button></div>{:else}<button class="seg-text" title={locale === 'ru' ? 'Редактировать фрагмент' : 'Edit fragment'} onclick={() => startEdit(segment)}>{segment.text}</button>{' '}{/if}
+					{#each sentenceGroups as group (group[0].key)}
+						<div class="segment sentence-group"><button class="seg-play" aria-label={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} onclick={() => togglePlay(group[0].segment)}>▶</button><time>{time(group[0].segment.start_seconds)}</time><div class="seg-body">
+							{#if group[0].segment.source_track !== 'file'}<b>{group[0].segment.speaker_id ?? (group[0].segment.source_track === 'microphone' ? (locale === 'ru' ? 'Я' : 'Me') : (locale === 'ru' ? 'Система' : 'System'))}</b>{/if}
+							{#each group as fragment (fragment.key)}
+								{@const segment = fragment.segment}
+								{#if editingId === segment.id}<textarea bind:value={editText} rows={3} onkeydown={(event) => editKeys(event, segment)}></textarea><div class="edit-actions"><button class="primary" onclick={() => void saveEdit(segment)}>{locale === 'ru' ? 'Сохранить' : 'Save'}</button><button class="ghost" onclick={() => editingId = null}>{t.cancel}</button></div>{:else}<button class="seg-text" title={locale === 'ru' ? 'Редактировать исходный сегмент' : 'Edit original segment'} onclick={() => startEdit(segment)}>{fragment.text}</button>{' '}{/if}
 							{/each}
 						</div></div>
 					{/each}

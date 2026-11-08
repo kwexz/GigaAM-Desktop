@@ -8,7 +8,7 @@ describe('groupSentenceSegments', () => {
 			{ text: 'на следующей строке.', source_track: 'file' },
 			{ text: 'Новое предложение', source_track: 'file' }
 		];
-		expect(groupSentenceSegments(segments)).toEqual([[segments[0], segments[1]], [segments[2]]]);
+		expect(groupSentenceSegments(segments).map((group) => group.map((item) => item.segment))).toEqual([[segments[0], segments[1]], [segments[2]]]);
 	});
 
 	it('never joins different tracks or speakers', () => {
@@ -17,6 +17,13 @@ describe('groupSentenceSegments', () => {
 			{ text: 'Два', source_track: 'system', speaker_id: 'a' },
 			{ text: 'Три', source_track: 'system', speaker_id: 'b' }
 		];
-		expect(groupSentenceSegments(segments)).toEqual(segments.map((segment) => [segment]));
+		expect(groupSentenceSegments(segments).map((group) => group.map((item) => item.segment))).toEqual(segments.map((segment) => [segment]));
+	});
+
+	it('splits multiple sentences while preserving the original editable segment', () => {
+		const segment = { text: 'Первое предложение. Второе предложение!', source_track: 'file' };
+		const result = groupSentenceSegments([segment]);
+		expect(result.map((group) => group[0].text)).toEqual(['Первое предложение.', 'Второе предложение!']);
+		expect(result.every((group) => group[0].segment === segment)).toBe(true);
 	});
 });
