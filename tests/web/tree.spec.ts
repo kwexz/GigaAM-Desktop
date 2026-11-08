@@ -11,6 +11,7 @@ test('tree expands, collapses, renames on double click and moves records by drag
 		]);
 	});
 	await page.reload();
+	await page.getByRole('button', { name: 'Expand folder' }).click();
 	await expect(page.getByTestId('recording-item')).toBeVisible();
 	await page.getByRole('button', { name: 'Collapse folder' }).click();
 	await expect(page.getByTestId('recording-item')).toHaveCount(0);
@@ -31,8 +32,8 @@ test('tree expands, collapses, renames on double click and moves records by drag
 	const trash = page.getByRole('button', { name: 'Удалить папку' });
 	await page.getByRole('button', { name: '📁 Renamed', exact: true }).hover();
 	await expect(trash).toHaveCSS('opacity', '1');
-	page.once('dialog', (dialog) => dialog.accept());
 	await trash.click();
+	await page.getByRole('dialog').getByRole('button', { name: 'Удалить', exact: true }).click();
 	await expect(page.getByRole('button', { name: '📁 Renamed', exact: true })).toHaveCount(0);
 	await expect(page.getByTestId('recording-item')).toBeVisible();
 });
