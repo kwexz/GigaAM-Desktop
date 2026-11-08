@@ -23,6 +23,10 @@ name = "inference-spike"
 path = "src/bin/inference_spike.rs"
 required-features = ["inference-spike"]
 
+[[bin]]
+name = "gigaam-server"
+path = "src/bin/gigaam_server.rs"
+
 [features]
 inference-spike = []
 
@@ -31,12 +35,20 @@ tauri-build = { version = "2.7.1", features = [] }
 
 [dependencies]
 anyhow = "1.0"
+base64 = "0.22"
+rand = "0.9"
+url = "2"
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
+axum = { version = "0.8", features = ["multipart", "ws"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["fs", "io-util", "net", "signal", "sync"] }
+tower = { version = "0.5", features = ["util"] }
 flac-codec = "1.3.3"
 half = "2.7"
 hound = "3.5"
 ndarray = "0.17"
 ort = "2.0.0-rc.13"
-reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "native-tls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "native-tls", "form"] }
 rubato = "0.16"
 rusqlite = { version = "0.37", features = ["bundled"] }
 rustfft = "6.4"
@@ -51,6 +63,8 @@ tauri-plugin-dialog = "2.6.0"
 tauri-plugin-fs = "2.4.5"
 tauri-plugin-opener = "2.5.2"
 tauri-plugin-single-instance = "2.3.4"
+opus-pure = "0.2.2"
+webm-iterable = "0.7.1"
 
 [target."cfg(windows)".dependencies]
 wasapi = { path = "../vendor/wasapi" }

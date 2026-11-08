@@ -12,6 +12,10 @@ use flac_codec::{
     encode::{FlacByteWriter, Options},
 };
 use serde::{Deserialize, Serialize};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -27,11 +31,12 @@ pub enum ArchiveFormat {
     Flac,
     Wav,
     Mp3,
+    Ogg,
 }
 
 impl Default for ArchiveFormat {
     fn default() -> Self {
-        Self::Flac
+        Self::Ogg
     }
 }
 
@@ -41,6 +46,7 @@ impl ArchiveFormat {
             Self::Flac => "flac",
             Self::Wav => "wav",
             Self::Mp3 => "mp3",
+            Self::Ogg => "ogg",
         }
     }
 }
@@ -78,6 +84,8 @@ pub struct LiveStatus {
     pub mic_format: String,
     pub sys_format: String,
     pub paused: bool,
+    pub microphone_capture_state: String,
+    pub system_capture_state: String,
 }
 
 pub fn clamp_gain(gain: f32) -> f32 {
@@ -131,8 +139,12 @@ pub struct LiveCapture {
     pub sys_format: String,
     pub log_path: Option<PathBuf>,
     pub timeline_origin_100ns: Option<u64>,
+    pub microphone_capture_state: String,
+    pub system_capture_state: String,
     pub microphone_base_sample: usize,
     pub system_base_sample: usize,
+    archive_error: Option<String>,
+    pub finalization_cancel: Arc<AtomicBool>,
     pub error: Option<String>,
 }
 
@@ -188,9 +200,13 @@ impl LiveCapture {
             sys_format: String::new(),
             log_path,
             timeline_origin_100ns: None,
+            microphone_capture_state: "starting".into(),
+            system_capture_state: "starting".into(),
             microphone_base_sample: 0,
             system_base_sample: 0,
             error: None,
+            archive_error: None,
+            finalization_cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -206,6 +222,8 @@ impl LiveCapture {
             mic_format: self.mic_format.clone(),
             sys_format: self.sys_format.clone(),
             paused: false,
+            microphone_capture_state: self.microphone_capture_state.clone(),
+            system_capture_state: self.system_capture_state.clone(),
         }
     }
 
@@ -214,6 +232,12 @@ impl LiveCapture {
     }
 
     pub fn finish(&mut self) -> Result<Vec<PathBuf>> {
+        if self.finalization_cancel.load(Ordering::Acquire) {
+            anyhow::bail!("Live finalization cancelled; raw audio retained");
+        }
+        if let Some(error) = &self.archive_error {
+            anyhow::bail!("Audio archive integrity compromised; raw material retained: {error}");
+        }
         if !self.keep_audio {
             return Ok(Vec::new());
         }
@@ -221,6 +245,23 @@ impl LiveCapture {
         drop(self.microphone_file.take());
         drop(self.system_file.take());
         fs::create_dir_all(&self.directory)?;
+        struct UncommittedArchives {
+            paths: Vec<PathBuf>,
+            committed: bool,
+        }
+        impl Drop for UncommittedArchives {
+            fn drop(&mut self) {
+                if !self.committed {
+                    for path in &self.paths {
+                        let _ = fs::remove_file(path);
+                    }
+                }
+            }
+        }
+        let mut archive_guard = UncommittedArchives {
+            paths: Vec::new(),
+            committed: false,
+        };
         let mut files = Vec::new();
         let timestamp = archive_timestamp(self.started_ms);
         if self.microphone_path.exists() {
@@ -228,7 +269,13 @@ impl LiveCapture {
                 "microphone-{timestamp}.{}",
                 self.archive_format.extension()
             ));
-            transcode_raw(&self.microphone_path, &path, self.archive_format)?;
+            transcode_raw_cancellable(
+                &self.microphone_path,
+                &path,
+                self.archive_format,
+                Some(&self.finalization_cancel),
+            )?;
+            archive_guard.paths.push(path.clone());
             files.push(path);
         }
         if self.system_path.exists() {
@@ -236,11 +283,16 @@ impl LiveCapture {
                 "system-{timestamp}.{}",
                 self.archive_format.extension()
             ));
-            transcode_raw(&self.system_path, &path, self.archive_format)?;
+            transcode_raw_cancellable(
+                &self.system_path,
+                &path,
+                self.archive_format,
+                Some(&self.finalization_cancel),
+            )?;
+            archive_guard.paths.push(path.clone());
             files.push(path);
         }
-        let _ = fs::remove_file(&self.microphone_path);
-        let _ = fs::remove_file(&self.system_path);
+        check_archive_cancel(Some(&self.finalization_cancel))?;
         // Track start offsets (seconds from the session origin) so the
         // archived tracks can later be mixed back together chronologically.
         // Sessions predating this file mix from zero, as before.
@@ -259,12 +311,37 @@ impl LiveCapture {
             }
         }
         if !tracks.is_empty() {
-            let _ = fs::write(
-                self.directory.join("tracks.json"),
-                serde_json::to_string_pretty(&tracks).unwrap_or_default(),
-            );
+            let manifest = self.directory.join("tracks.json");
+            let staged = self.directory.join("tracks.json.partial");
+            archive_guard.paths.push(staged.clone());
+            fs::write(&staged, serde_json::to_string_pretty(&tracks)?)?;
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&staged)?
+                .sync_all()?;
+            check_archive_cancel(Some(&self.finalization_cancel))?;
+            // A pre-existing manifest may describe recovery material. Do not
+            // replace it silently during retry/finalization.
+            if manifest.exists() {
+                anyhow::bail!("Track manifest already exists; recovery material retained");
+            }
+            fs::rename(&staged, &manifest)?;
+            archive_guard.paths.push(manifest);
         }
+        check_archive_cancel(Some(&self.finalization_cancel))?;
+        archive_guard.committed = true;
+        // Raw material is intentionally retained until the caller has
+        // durably committed archive metadata. Never delete it in preparation.
         Ok(files)
+    }
+
+    pub fn cleanup_committed_raw(&self) -> Result<()> {
+        for path in [&self.microphone_path, &self.system_path] {
+            if path.is_file() {
+                fs::remove_file(path)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn initialize_paths(&mut self) -> Result<()> {
@@ -374,6 +451,7 @@ impl LiveCapture {
             }
         }
         if let Err(error) = self.append_archive(microphone, &samples) {
+            self.archive_error = Some(error.to_string());
             self.error = Some(error.to_string());
             return;
         }
@@ -396,15 +474,89 @@ impl LiveCapture {
     }
 }
 
-fn transcode_raw(input: &Path, output: &Path, format: ArchiveFormat) -> Result<()> {
-    match format {
-        ArchiveFormat::Flac => transcode_raw_to_flac(input, output),
-        ArchiveFormat::Wav => transcode_raw_to_wav(input, output),
-        ArchiveFormat::Mp3 => transcode_raw_to_mp3(input, output),
+fn transcode_raw_cancellable(
+    input: &Path,
+    output: &Path,
+    format: ArchiveFormat,
+    cancel: Option<&AtomicBool>,
+) -> Result<()> {
+    let partial = output.with_extension(format!("{}.partial", format.extension()));
+    let result = (|| {
+        match format {
+            ArchiveFormat::Flac => transcode_raw_to_flac_cancellable(input, &partial, cancel),
+            ArchiveFormat::Wav => transcode_raw_to_wav_cancellable(input, &partial, cancel),
+            ArchiveFormat::Mp3 => transcode_raw_to_mp3_cancellable(input, &partial, cancel),
+            ArchiveFormat::Ogg => transcode_raw_to_ogg_cancellable(input, &partial, cancel),
+        }?;
+        check_archive_cancel(cancel)?;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&partial)?
+            .sync_all()?;
+        fs::rename(&partial, output)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&partial);
     }
+    result
+}
+
+fn check_archive_cancel(cancel: Option<&AtomicBool>) -> Result<()> {
+    if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        anyhow::bail!("Live finalization cancelled; raw audio retained");
+    }
+    Ok(())
+}
+
+fn transcode_raw_to_ogg_cancellable(input: &Path, output: &Path, cancel: Option<&AtomicBool>) -> Result<()> {
+    use std::io::Read;
+    use opus_pure::{Application, MAX_PACKET_BYTES, OggOpusWriter, OpusEncoder, OpusHead, OpusTags};
+    let mut source = std::io::BufReader::new(fs::File::open(input)?);
+    let mut encoder = OpusEncoder::new(48_000, 1, Application::Audio).map_err(|e| anyhow::anyhow!("Opus encoder: {e}"))?;
+    encoder.bitrate_bps = 48_000;
+    let head = OpusHead::for_encoder(&encoder, 48_000);
+    let pre_skip = head.pre_skip;
+    let input_bytes = source.get_ref().metadata()?.len();
+    anyhow::ensure!(input_bytes % 4 == 0, "Truncated raw audio");
+    let total_samples = input_bytes / 4;
+    let frames = (total_samples + u64::from(pre_skip)).div_ceil(960);
+    let final_granule = total_samples + u64::from(pre_skip);
+    let mut writer = OggOpusWriter::with_tags(std::io::BufWriter::new(fs::File::create(output)?), head, OpusTags::new())?;
+    let mut raw = [0u8; 960 * 4];
+    let mut samples = [0f32; 960];
+    let mut packet = vec![0u8; MAX_PACKET_BYTES];
+    for frame_index in 0..frames {
+        check_archive_cancel(cancel)?;
+        let mut bytes = 0;
+        while bytes < raw.len() {
+            let count = source.read(&mut raw[bytes..])?;
+            if count == 0 { break; }
+            bytes += count;
+        }
+        anyhow::ensure!(bytes % 4 == 0, "Truncated raw audio");
+        samples.fill(0.0);
+        for (sample, chunk) in samples.iter_mut().zip(raw[..bytes].chunks_exact(4)) {
+            *sample = f32::from_le_bytes(chunk.try_into().unwrap());
+            anyhow::ensure!(sample.is_finite(), "Non-finite raw audio sample");
+        }
+        let count = encoder.encode(&samples, 960, &mut packet).map_err(|e| anyhow::anyhow!("Opus encode: {e}"))?;
+        if frame_index + 1 == frames {
+            writer.write_packet_with_duration(&packet[..count], (final_granule - writer.granule() as u64) as u32)?;
+        } else { writer.write_packet(&packet[..count])?; }
+    }
+    writer.finish()?;
+    Ok(())
 }
 
 fn transcode_raw_to_flac(input: &Path, output: &Path) -> Result<()> {
+    transcode_raw_to_flac_cancellable(input, output, None)
+}
+fn transcode_raw_to_flac_cancellable(
+    input: &Path,
+    output: &Path,
+    cancel: Option<&AtomicBool>,
+) -> Result<()> {
     use std::io::{Read, Write};
     let output_file = fs::File::create(output)
         .with_context(|| format!("transcode: cannot create {}", output.display()))?;
@@ -423,6 +575,7 @@ fn transcode_raw_to_flac(input: &Path, output: &Path) -> Result<()> {
     );
     let mut floats = [0_u8; 16 * 1024];
     loop {
+        check_archive_cancel(cancel)?;
         let read = input.read(&mut floats)?;
         if read == 0 {
             break;
@@ -441,7 +594,11 @@ fn transcode_raw_to_flac(input: &Path, output: &Path) -> Result<()> {
         .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
-fn transcode_raw_to_wav(input: &Path, output: &Path) -> Result<()> {
+fn transcode_raw_to_wav_cancellable(
+    input: &Path,
+    output: &Path,
+    cancel: Option<&AtomicBool>,
+) -> Result<()> {
     let mut input = std::io::BufReader::new(fs::File::open(input)?);
     let spec = hound::WavSpec {
         channels: 1,
@@ -452,6 +609,7 @@ fn transcode_raw_to_wav(input: &Path, output: &Path) -> Result<()> {
     let mut writer = hound::WavWriter::create(output, spec)?;
     let mut floats = [0_u8; 16 * 1024];
     loop {
+        check_archive_cancel(cancel)?;
         let read = input.read(&mut floats)?;
         if read == 0 {
             break;
@@ -466,6 +624,13 @@ fn transcode_raw_to_wav(input: &Path, output: &Path) -> Result<()> {
 }
 
 fn transcode_raw_to_mp3(input: &Path, output: &Path) -> Result<()> {
+    transcode_raw_to_mp3_cancellable(input, output, None)
+}
+fn transcode_raw_to_mp3_cancellable(
+    input: &Path,
+    output: &Path,
+    cancel: Option<&AtomicBool>,
+) -> Result<()> {
     use shine_rs::{Mp3Encoder, Mp3EncoderConfig, StereoMode};
 
     let mut input = std::io::BufReader::new(fs::File::open(input)?);
@@ -479,6 +644,7 @@ fn transcode_raw_to_mp3(input: &Path, output: &Path) -> Result<()> {
         Mp3Encoder::new(config).map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let mut floats = [0_u8; 16 * 1024];
     loop {
+        check_archive_cancel(cancel)?;
         let read = input.read(&mut floats)?;
         if read == 0 {
             break;
@@ -506,8 +672,19 @@ fn transcode_raw_to_mp3(input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn encode_raw_48k(input: &Path, output: &Path, format: ArchiveFormat) -> Result<()> {
+    transcode_raw_cancellable(input, output, format, None)
+}
+
 pub(crate) fn encode_mono_48k(samples: &[f32], output: &Path, format: ArchiveFormat) -> Result<()> {
     match format {
+        ArchiveFormat::Ogg => {
+            let raw = output.with_extension("mix.raw");
+            write_raw_samples(&raw, samples)?;
+            let result = transcode_raw_to_ogg_cancellable(&raw, output, None);
+            let _ = fs::remove_file(raw);
+            result
+        }
         ArchiveFormat::Wav => crate::pipeline::write_mono_48k_wav(samples, output),
         ArchiveFormat::Flac => {
             let raw = output.with_extension("mix.raw");
@@ -580,6 +757,34 @@ fn rms_tail(samples: &[f32]) -> f32 {
 #[cfg(target_os = "windows")]
 pub mod platform {
     use super::*;
+
+    #[test]
+    fn ogg_live_finish_keeps_raw_until_commit() {
+        let directory = std::env::temp_dir().join(format!("gigaam-ogg-live-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir(&directory).unwrap();
+        let mut capture = LiveCapture::new("ogg-live".into(), 0, LiveSource::SystemAndMicrophone, None, true, ArchiveFormat::Ogg, 1.0, directory.clone(), None);
+        capture.initialize_paths().unwrap();
+        capture.append_timed(true, 10_000_000, vec![0.1; 4800]);
+        capture.append_timed(false, 15_000_000, vec![0.1; 4800]);
+        let raw = capture.microphone_path.clone();
+        let archive = capture.finish().unwrap();
+        assert_eq!(archive.len(), 2);
+        let manifest: serde_json::Value = serde_json::from_slice(&fs::read(directory.join("tracks.json")).unwrap()).unwrap();
+        let mic = manifest.as_array().unwrap().iter().find(|entry| entry["file"].as_str().unwrap().starts_with("microphone")).unwrap();
+        let system = manifest.as_array().unwrap().iter().find(|entry| entry["file"].as_str().unwrap().starts_with("system")).unwrap();
+        assert!((system["offset_seconds"].as_f64().unwrap() - mic["offset_seconds"].as_f64().unwrap() - 0.5).abs() < 0.001);
+        assert!(raw.exists(), "raw retained until metadata commit");
+        for entry in fs::read_dir(&directory).unwrap().flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|extension| extension == "ogg") {
+                assert_eq!(&fs::read(path).unwrap()[..4], b"OggS");
+            }
+        }
+        drop(capture);
+        for entry in fs::read_dir(&directory).unwrap().flatten() { fs::remove_file(entry.path()).unwrap(); }
+        fs::remove_dir(directory).unwrap();
+    }
+    use crate::capture_recovery::{CaptureAttempt, SupervisorEvent};
     use rubato::{FftFixedIn, Resampler};
     use std::{
         collections::VecDeque,
@@ -608,8 +813,11 @@ pub mod platform {
     }
 
     impl CaptureHandle {
-        pub fn stop(&self) {
+        pub fn request_stop(&self) {
             self.stop.store(true, Ordering::Relaxed);
+        }
+        pub fn stop(&self) {
+            self.request_stop();
             for thread in self.threads.lock().unwrap().drain(..) {
                 let _ = thread.join();
             }
@@ -637,7 +845,19 @@ pub mod platform {
             let capture = capture.clone();
             threads.push(thread::spawn(move || {
                 let _ = initialize_mta();
-                let result: Result<()> = (|| {
+                struct Attempt<'a> {
+                    capture: &'a Arc<Mutex<LiveCapture>>,
+                    mic: bool,
+                    direction: Direction,
+                    stop_flag: &'a AtomicBool,
+                }
+                impl CaptureAttempt for Attempt<'_> {
+                    fn run(&mut self, reconnect_attempts: &mut usize) -> Result<(), String> {
+                        let capture = self.capture;
+                        let mic = self.mic;
+                        let direction = &self.direction;
+                        let stop_flag = self.stop_flag;
+                        (|| -> Result<()> {
                     let enumerator = DeviceEnumerator::new()?;
                     let dual_source = matches!(
                         capture.lock().unwrap().source,
@@ -655,10 +875,12 @@ pub mod platform {
                                     .get_device_with_name(name)
                             })
                             .transpose()?
-                            .unwrap_or(enumerator.get_default_device(&direction)?)
+                            .unwrap_or(enumerator.get_default_device(direction)?)
                     } else {
-                        enumerator.get_default_device(&direction)?
+                        enumerator.get_default_device(direction)?
                     };
+                    let endpoint_id = device.get_id()?;
+                    let mut endpoint_checked = std::time::Instant::now();
                     // Open the device in its native mix format and convert
                     // here (downmix + resample to 48 kHz mono). Engine
                     // autoconvert stays ON: this engine rejects some
@@ -843,7 +1065,24 @@ pub mod platform {
                     let mut last_ts = 0u64;
                     let mut since_ts = 0usize;
                     client.start_stream()?;
+                    let mut healthy_audio_samples = 0usize;
+                    {
+                        let mut state = capture.lock().unwrap();
+                        let value = if *reconnect_attempts > 0 { "resumed" } else { "capturing" };
+                        if mic { state.microphone_capture_state = value.into(); }
+                        else { state.system_capture_state = value.into(); }
+                    }
+                    let loop_result: Result<()> = (|| {
                     while !stop_flag.load(Ordering::Relaxed) {
+                        if !mic && endpoint_checked.elapsed() >= std::time::Duration::from_secs(1) {
+                            endpoint_checked = std::time::Instant::now();
+                            let current_endpoint = enumerator.get_default_device(direction)
+                                .and_then(|device| device.get_id())
+                                .map_err(|error| anyhow::anyhow!("AUDCLNT_E_DEVICE_INVALIDATED: default render unavailable: {error}"))?;
+                            if current_endpoint != endpoint_id {
+                                anyhow::bail!("AUDCLNT_E_DEVICE_INVALIDATED: default render endpoint changed");
+                            }
+                        }
                         let t0 = std::time::Instant::now();
                         let info = reader.read_from_device_to_deque(&mut bytes)?;
                         let t1 = std::time::Instant::now();
@@ -852,6 +1091,8 @@ pub mod platform {
                         let raw: Vec<u8> = bytes.drain(..).collect();
                         let mono = bytes_to_mono_f32(&raw, dev_ch, bytes_per_sample, float32);
                         let raw_len = mono.len();
+                        healthy_audio_samples = healthy_audio_samples.saturating_add(raw_len.saturating_mul(48_000) / dev_rate);
+                        crate::capture_recovery::reset_after_healthy_capture(reconnect_attempts, healthy_audio_samples);
                         let samples_48k = if let Some(resampler) = resampler.as_mut() {
                             pending.extend_from_slice(&mono);
                             let mut out = Vec::new();
@@ -918,6 +1159,8 @@ pub mod platform {
                             }
                         }
                     }
+                    Ok(())
+                    })();
                     // Flush resampler leftovers so the session tail is kept.
                     if let Some(resampler) = resampler.as_mut() {
                         if !pending.is_empty() {
@@ -945,15 +1188,54 @@ pub mod platform {
                         }
                     }
                     client.stop_stream()?;
+                    loop_result?;
                     Ok(())
-                })();
-                if let Err(error) = result {
-                    let mut state = capture.lock().unwrap();
-                    if let Some(path) = state.log_path.clone() {
-                        debug_log(&path, &format!("capture thread error (mic={mic}): {error}"));
+                        })()
+                        .map_err(|error| error.to_string())
                     }
-                    state.set_error(error);
                 }
+                let explicitly_selected =
+                    mic && capture.lock().unwrap().microphone_device.is_some();
+                let mut attempt = Attempt {
+                    capture: &capture,
+                    mic,
+                    direction,
+                    stop_flag: &stop_flag,
+                };
+                crate::capture_recovery::supervise_capture(
+                    &mut attempt,
+                    &stop_flag,
+                    explicitly_selected,
+                    &mut |event| match event {
+                        SupervisorEvent::AttemptStarted { .. } | SupervisorEvent::Stopped => {}
+                        SupervisorEvent::Reconnecting { attempt, delay } => {
+                            {
+                                let mut state = capture.lock().unwrap();
+                                if mic {
+                                    state.microphone_capture_state = "reconnecting".into();
+                                } else {
+                                    state.system_capture_state = "reconnecting".into();
+                                }
+                            }
+                            if let Some(path) = capture.lock().unwrap().log_path.clone() {
+                                debug_log(
+                                    &path,
+                                    &format!(
+                                        "capture reconnecting mic={mic} attempt={attempt} delay_ms={}",
+                                        delay.as_millis()
+                                    ),
+                                );
+                            }
+                        }
+                        SupervisorEvent::Failed { error } => {
+                            let mut state = capture.lock().unwrap();
+                            if let Some(path) = state.log_path.clone() {
+                                debug_log(&path, &format!("capture thread error (mic={mic}): {error}"));
+                            }
+                            state.set_error(error);
+                        }
+                    },
+                );
             }));
         }
         Ok(CaptureHandle {
@@ -967,6 +1249,7 @@ pub mod platform {
 pub mod platform {
     use super::*;
     use screencapturekit::prelude::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     pub fn microphones() -> Result<Vec<String>> {
@@ -975,6 +1258,7 @@ pub mod platform {
 
     struct Handler {
         capture: Arc<Mutex<LiveCapture>>,
+        stopped: Arc<AtomicBool>,
     }
     impl SCStreamOutputTrait for Handler {
         fn did_output_sample_buffer(
@@ -982,6 +1266,9 @@ pub mod platform {
             sample: CMSampleBuffer,
             output_type: SCStreamOutputType,
         ) {
+            if self.stopped.load(Ordering::Acquire) {
+                return;
+            }
             let time = sample.output_presentation_timestamp();
             let timestamp_100ns = if time.timescale > 0 {
                 (time.value.max(0) as u128 * 10_000_000 / time.timescale as u128) as u64
@@ -990,6 +1277,9 @@ pub mod platform {
             };
             if let Ok(list) = sample.audio_buffer_list() {
                 let mut capture = self.capture.lock().unwrap();
+                if self.stopped.load(Ordering::Acquire) {
+                    return;
+                }
                 for buffer in &list {
                     let samples = buffer
                         .data()
@@ -1013,9 +1303,14 @@ pub mod platform {
 
     pub struct CaptureHandle {
         stream: Mutex<Option<SCStream>>,
+        stopped: Arc<AtomicBool>,
     }
     impl CaptureHandle {
+        pub fn request_stop(&self) {
+            self.stopped.store(true, Ordering::Release);
+        }
         pub fn stop(&self) {
+            self.request_stop();
             if let Some(stream) = self.stream.lock().unwrap().take() {
                 let _ = stream.stop_capture();
             }
@@ -1048,10 +1343,12 @@ pub mod platform {
                 LiveSource::Microphone | LiveSource::SystemAndMicrophone
             ))?;
         let mut stream = SCStream::new(&filter, &config)?;
+        let stopped = Arc::new(AtomicBool::new(false));
         if matches!(source, LiveSource::System | LiveSource::SystemAndMicrophone) {
             stream.add_output_handler(
                 Handler {
                     capture: capture.clone(),
+                    stopped: stopped.clone(),
                 },
                 SCStreamOutputType::Audio,
             )?;
@@ -1060,11 +1357,18 @@ pub mod platform {
             source,
             LiveSource::Microphone | LiveSource::SystemAndMicrophone
         ) {
-            stream.add_output_handler(Handler { capture }, SCStreamOutputType::Microphone)?;
+            stream.add_output_handler(
+                Handler {
+                    capture,
+                    stopped: stopped.clone(),
+                },
+                SCStreamOutputType::Microphone,
+            )?;
         }
         stream.start_capture()?;
         Ok(CaptureHandle {
             stream: Mutex::new(Some(stream)),
+            stopped,
         })
     }
 }
@@ -1075,6 +1379,7 @@ pub mod platform {
     use std::sync::{Arc, Mutex};
     pub struct CaptureHandle;
     impl CaptureHandle {
+        pub fn request_stop(&self) {}
         pub fn stop(&self) {}
     }
     pub fn start(_capture: Arc<Mutex<LiveCapture>>) -> Result<CaptureHandle> {
@@ -1087,7 +1392,203 @@ pub mod platform {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "explicit speech codec benchmark; run with --ignored --nocapture"]
+    fn compare_speech_archive_profiles() {
+        let root = std::env::temp_dir().join(format!("gigaam-codec-profile-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for fixture in ["besarab-clean.wav", "besarab-noisy.wav"] {
+            let input = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures").join(fixture);
+            let mut reader = hound::WavReader::open(input).unwrap();
+            let spec = reader.spec();
+            let source: Vec<f32> = reader.samples::<i16>().map(|s| s.unwrap() as f32 / 32768.0).collect();
+            let mono: Vec<f32> = source.chunks(spec.channels as usize).map(|frame| frame.iter().sum::<f32>() / spec.channels as f32).collect();
+            let samples: Vec<f32> = (0..(mono.len() as u64 * 48_000 / spec.sample_rate as u64) as usize).map(|i| mono[(i as u64 * spec.sample_rate as u64 / 48_000) as usize]).collect();
+            for format in [super::ArchiveFormat::Wav, super::ArchiveFormat::Flac, super::ArchiveFormat::Mp3, super::ArchiveFormat::Ogg] {
+                if let Ok(selected) = std::env::var("GIGAAM_CODEC_PROFILE") {
+                    if selected != format.extension() { continue; }
+                }
+                let output = root.join(format!("{fixture}.{}", format.extension()));
+                let start = std::time::Instant::now();
+                super::encode_mono_48k(&samples, &output, format).unwrap();
+                println!("profile fixture={fixture} format={} bytes={} samples={} elapsed_ms={}", format.extension(), std::fs::metadata(&output).unwrap().len(), samples.len(), start.elapsed().as_millis());
+				if std::env::var_os("GIGAAM_KEEP_CODEC_OUTPUT").is_none() { std::fs::remove_file(output).unwrap(); }
+            }
+        }
+        if std::env::var_os("GIGAAM_KEEP_CODEC_OUTPUT").is_none() { std::fs::remove_dir(root).unwrap(); }
+    }
+    #[test]
+    fn ogg_opus_archive_has_real_container_and_is_compact() {
+        let output = std::env::temp_dir().join(format!("gigaam-{}-{}.ogg", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let samples: Vec<f32> = (0..48_000).map(|i| ((i as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin()) * 0.1).collect();
+        super::encode_mono_48k(&samples, &output, super::ArchiveFormat::Ogg).unwrap();
+        let bytes = std::fs::read(&output).unwrap();
+        std::fs::remove_file(output).unwrap();
+        assert_eq!(&bytes[..4], b"OggS");
+        assert!(bytes.windows(8).any(|window| window == b"OpusHead"));
+        assert!(bytes.len() < 12_000, "one second archive: {} bytes", bytes.len());
+        // Independently inspect container EOS granule, not just decoder output
+        // which includes codec lookahead/padding before RFC 7845 trimming.
+        let mut offset = 0;
+        let mut eos_granule = None;
+        while offset < bytes.len() {
+            assert_eq!(&bytes[offset..offset + 4], b"OggS");
+            let segments = bytes[offset + 26] as usize;
+            let body: usize = bytes[offset + 27..offset + 27 + segments].iter().map(|value| *value as usize).sum();
+            if bytes[offset + 5] & 4 != 0 {
+                eos_granule = Some(u64::from_le_bytes(bytes[offset + 6..offset + 14].try_into().unwrap()));
+            }
+            offset += 27 + segments + body;
+        }
+        let mut reader = opus_pure::OggOpusReader::new(std::io::Cursor::new(bytes)).unwrap();
+        let head = reader.head().clone();
+        assert_eq!(eos_granule.unwrap() - u64::from(head.pre_skip), 48_000);
+        let mut decoder = head.decoder(48_000).unwrap();
+        let mut decoded = vec![0.0f32; opus_pure::MAX_PACKET_SAMPLES];
+        let mut frames = 0;
+        for packet in reader.packets() {
+            let packet = packet.unwrap();
+            frames += decoder.decode(&packet.data, opus_pure::MAX_PACKET_SAMPLES, &mut decoded).unwrap();
+            assert!(decoded.iter().all(|sample| sample.is_finite()));
+        }
+        assert!(frames >= 48_000);
+    }
+    #[test]
+    fn ogg_cancel_retains_raw_and_does_not_publish_partial_archive() {
+        let root = std::env::temp_dir().join(format!("gigaam-ogg-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let raw = root.join("source.raw");
+        let output = root.join("archive.ogg");
+        super::write_raw_samples(&raw, &[0.0; 960]).unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+        assert!(super::transcode_raw_cancellable(&raw, &output, super::ArchiveFormat::Ogg, Some(&cancel)).is_err());
+        assert!(raw.exists());
+        assert!(!output.exists());
+        assert!(!output.with_extension("ogg.partial").exists());
+        std::fs::remove_file(raw).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn ogg_retry_replaces_only_staged_output_and_keeps_raw() {
+        let root = std::env::temp_dir().join(format!("gigaam-ogg-retry-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let raw = root.join("source.raw");
+        let output = root.join("archive.ogg");
+        super::write_raw_samples(&raw, &[0.1; 4800]).unwrap();
+        std::fs::write(output.with_extension("ogg.partial"), b"interrupted output").unwrap();
+        super::transcode_raw_cancellable(&raw, &output, super::ArchiveFormat::Ogg, None).unwrap();
+        assert_eq!(&std::fs::read(&output).unwrap()[..4], b"OggS");
+        assert!(raw.exists());
+        assert!(!output.with_extension("ogg.partial").exists());
+        for path in [raw, output] { std::fs::remove_file(path).unwrap(); }
+        std::fs::remove_dir(root).unwrap();
+    }
     use super::*;
+
+    #[test]
+    fn second_track_failure_rolls_back_first_archive_and_keeps_raw() {
+        let directory = std::env::temp_dir().join(format!(
+            "gigaam-track-failure-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let mut capture = LiveCapture::new(
+            "dual-failure".into(),
+            0,
+            LiveSource::SystemAndMicrophone,
+            None,
+            true,
+            ArchiveFormat::Wav,
+            1.0,
+            directory.clone(),
+            None,
+        );
+        capture.initialize_paths().unwrap();
+        capture.append_timed(true, 10_000_000, vec![0.1; 4800]);
+        drop(capture.system_file.take());
+        if capture.system_path.exists() {
+            fs::remove_file(&capture.system_path).unwrap();
+        }
+        fs::create_dir(&capture.system_path).unwrap();
+        assert!(capture.finish().is_err());
+        assert!(capture.microphone_path.exists());
+        assert!(!fs::read_dir(&directory).unwrap().flatten().any(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "wav")
+        }));
+        drop(capture);
+        for entry in fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                fs::remove_dir(path).unwrap();
+            } else {
+                fs::remove_file(path).unwrap();
+            }
+        }
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn cancelled_archive_keeps_raw_recovery_material() {
+        let directory = std::env::temp_dir().join(format!(
+            "gigaam-cancel-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let input = directory.join("audio.f32");
+        fs::write(&input, vec![0u8; 16_384]).unwrap();
+        let cancel = AtomicBool::new(true);
+        for format in [ArchiveFormat::Wav, ArchiveFormat::Flac, ArchiveFormat::Mp3, ArchiveFormat::Ogg] {
+            let output = directory.join(format!("audio.{}", format.extension()));
+            assert!(
+                transcode_raw_cancellable(&input, &output, format, Some(&cancel))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("cancelled")
+            );
+            assert_eq!(fs::metadata(&input).unwrap().len(), 16_384);
+            if output.exists() {
+                fs::remove_file(output).unwrap();
+            }
+        }
+        fs::remove_file(input).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn compromised_archive_cannot_report_success_even_if_capture_error_clears() {
+        let mut capture = LiveCapture::new(
+            "failed-archive".into(),
+            0,
+            LiveSource::Microphone,
+            None,
+            true,
+            ArchiveFormat::Wav,
+            1.0,
+            PathBuf::new(),
+            None,
+        );
+        capture.archive_error = Some("injected partial write".into());
+        capture.error = None;
+        assert!(
+            capture
+                .finish()
+                .unwrap_err()
+                .to_string()
+                .contains("integrity compromised")
+        );
+    }
 
     #[test]
     fn dual_tracks_remain_separate() {

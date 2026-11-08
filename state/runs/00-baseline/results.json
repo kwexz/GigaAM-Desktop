@@ -1,0 +1,62 @@
+[
+  {
+    "name": "install",
+    "command": "npm.cmd ci",
+    "started_utc": "2026-10-27T20:53:53.4611208Z",
+    "elapsed_ms": 12869,
+    "exit_code": 0,
+    "status": "verified",
+    "stdout": "state\\runs\\00-baseline\\install.stdout.txt",
+    "stderr": "state\\runs\\00-baseline\\install.stderr.txt"
+  },
+  {
+    "name": "check",
+    "command": "npm.cmd run check",
+    "started_utc": "2026-10-27T20:54:06.3782325Z",
+    "elapsed_ms": 25258,
+    "exit_code": 0,
+    "status": "verified",
+    "stdout": "state\\runs\\00-baseline\\check.stdout.txt",
+    "stderr": "state\\runs\\00-baseline\\check.stderr.txt"
+  },
+  {
+    "name": "unit-web",
+    "command": "npm.cmd test",
+    "started_utc": "2026-10-27T20:54:31.6963118Z",
+    "elapsed_ms": 10458,
+    "exit_code": 0,
+    "status": "verified",
+    "stdout": "state\\runs\\00-baseline\\unit-web.stdout.txt",
+    "stderr": "state\\runs\\00-baseline\\unit-web.stderr.txt"
+  },
+  {
+    "name": "build-web",
+    "command": "npm.cmd run build",
+    "started_utc": "2026-10-27T20:54:42.1631000Z",
+    "elapsed_ms": 8923,
+    "exit_code": 0,
+    "status": "verified",
+    "stdout": "state\\runs\\00-baseline\\build-web.stdout.txt",
+    "stderr": "state\\runs\\00-baseline\\build-web.stderr.txt"
+  },
+  {
+    "name": "unit-rust",
+    "command": "cargo test --locked --manifest-path src-tauri/Cargo.toml --lib",
+    "started_utc": "2026-10-27T20:54:51.0924665Z",
+    "elapsed_ms": 6982,
+    "exit_code": 0,
+    "status": "verified",
+    "stdout": "state\\runs\\00-baseline\\unit-rust.stdout.txt",
+    "stderr": "state\\runs\\00-baseline\\unit-rust.stderr.txt"
+  },
+  {
+    "name": "integration-rust",
+    "command": "cargo test --locked --manifest-path src-tauri/Cargo.toml",
+    "started_utc": "2026-10-27T20:54:58.0777628Z",
+    "elapsed_ms": 2292,
+    "exit_code": 0,
+    "status": "verified",
+    "stdout": "state\\runs\\00-baseline\\integration-rust.stdout.txt",
+    "stderr": "state\\runs\\00-baseline\\integration-rust.stderr.txt"
+  }
+]

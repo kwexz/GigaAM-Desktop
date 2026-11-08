@@ -1,0 +1,38 @@
+audio=tests/fixtures/besarab-noisy.wav
+source_duration_s=34.514
+audio_duration_s=34.514
+speech_regions=14
+asr_chunks=2
+last_output_shape=[1, 326, 257]
+model_load_ms=1224
+vad_ms=190
+preprocess_ms=3166
+inference_ms=2016
+rtf=0.1559
+rss_baseline_mib=9.5
+rss_model_loaded_mib=281.9
+rss_after_inference_mib=313.1
+segments=[
+  {
+    "id": "besarab-noisy:0",
+    "transcription_id": "besarab-noisy",
+    "index": 0,
+    "start_seconds": 0.776,
+    "end_seconds": 19.448,
+    "text": "Привет. Меня зовут Сергей Васильевич Бессарап. Или просто Сергей Бессарап? Я белорусский учёный, химик, специалист в области колоидной химии и химии поверхностей. Мои дополнительные активности — это научная коммуникация и",
+    "source_track": "file",
+    "speaker_id": null,
+    "state": "final"
+  },
+  {
+    "id": "besarab-noisy:1",
+    "transcription_id": "besarab-noisy",
+    "index": 1,
+    "start_seconds": 19.72,
+    "end_seconds": 32.76,
+    "text": "Технологическая журналистика. Я трансгуманист, акселерационист и техносолюционист. Верю и надеюсь на человечество, разум, науку и технологии.",
+    "source_track": "file",
+    "speaker_id": null,
+    "state": "final"
+  }
+]

@@ -1,0 +1,101 @@
+warning: function `transcode_raw_to_flac` is never used
+   --> src\live.rs:509:4
+    |
+509 | fn transcode_raw_to_flac(input: &Path, output: &Path) -> Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `transcode_raw_to_mp3` is never used
+   --> src\live.rs:583:4
+    |
+583 | fn transcode_raw_to_mp3(input: &Path, output: &Path) -> Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `encode_mono_48k` is never used
+   --> src\live.rs:636:15
+    |
+636 | pub(crate) fn encode_mono_48k(samples: &[f32], output: &Path, format: ArchiveFormat) -> Result<()> {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `write_raw_samples` is never used
+   --> src\live.rs:656:4
+    |
+656 | fn write_raw_samples(path: &Path, samples: &[f32]) -> Result<()> {
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `decode_mono_48k` is never used
+   --> src\pipeline.rs:523:15
+    |
+523 | pub(crate) fn decode_mono_48k(path: &Path) -> Result<Vec<f32>> {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `mix_mono_48k` is never used
+   --> src\pipeline.rs:694:15
+    |
+694 | pub(crate) fn mix_mono_48k(inputs: &[(PathBuf, f64)]) -> Result<Vec<f32>> {
+    |               ^^^^^^^^^^^^
+
+warning: function `write_mono_48k_wav` is never used
+   --> src\pipeline.rs:709:15
+    |
+709 | pub(crate) fn write_mono_48k_wav(samples: &[f32], output: &Path) -> Result<()> {
+    |               ^^^^^^^^^^^^^^^^^^
+
+warning: method `compact_audio_tail` is never used
+    --> src\pipeline.rs:1071:19
+     |
+ 859 | impl LiveScanner {
+     | ---------------- method in this implementation
+...
+1071 |     pub(crate) fn compact_audio_tail(&mut self, keep_16k: usize) {
+     |                   ^^^^^^^^^^^^^^^^^^
+
+warning: field `duration_samples` is never read
+   --> src\server.rs:165:5
+    |
+159 | struct LiveEnvelope {
+    |        ------------ field in this struct
+...
+165 |     duration_samples: u32,
+    |     ^^^^^^^^^^^^^^^^
+    |
+    = note: `LiveEnvelope` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: function `rss_plateau_smoke` is never used
+  --> src\streaming.rs:32:15
+   |
+32 | pub(crate) fn rss_plateau_smoke(minutes: &[u64]) -> Result<Vec<(u64, u64, u64)>> {
+   |               ^^^^^^^^^^^^^^^^^
+
+warning: function `process_rss` is never used
+  --> src\streaming.rs:58:4
+   |
+58 | fn process_rss(system: &mut sysinfo::System) -> Result<u64> {
+   |    ^^^^^^^^^^^
+
+warning: field `duration_samples` is never read
+   --> src\server.rs:165:5
+    |
+159 | struct LiveEnvelope {
+    |        ------------ field in this struct
+...
+165 |     duration_samples: u32,
+    |     ^^^^^^^^^^^^^^^^
+    |
+    = note: `LiveEnvelope` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `gigaam-desktop` (lib) generated 11 warnings
+warning: `gigaam-desktop` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.61s
+     Running unittests src\lib.rs (src-tauri\target\debug\deps\gigaam_desktop_lib-05b0b8a71d7b08a9.exe)
+     Running unittests src\main.rs (src-tauri\target\debug\deps\gigaam_desktop-faeac3e135a20fdd.exe)
+     Running unittests src\bin\gigaam_server.rs (src-tauri\target\debug\deps\gigaam_server-1982685a2926f953.exe)
+     Running tests\live_lifecycle.rs (src-tauri\target\debug\deps\live_lifecycle-185300223ecb392a.exe)
+     Running tests\live_model.rs (src-tauri\target\debug\deps\live_model-541eb39e2bbe67e6.exe)
+     Running tests\long_archive.rs (src-tauri\target\debug\deps\long_archive-04f693cf6f847f7a.exe)
+     Running tests\signal_fixtures.rs (src-tauri\target\debug\deps\signal_fixtures-d8f7d71249355a1d.exe)
+     Running tests\streaming_long_model.rs (src-tauri\target\debug\deps\streaming_long_model-689a2a2f37197552.exe)
+     Running tests\streaming_model.rs (src-tauri\target\debug\deps\streaming_model-9203f3eab05538bb.exe)
+   Doc-tests gigaam_desktop_lib

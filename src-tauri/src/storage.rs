@@ -11,6 +11,169 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn summary_settings(&self)->rusqlite::Result<Option<String>> {
+        self.connection.execute_batch("CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)")?;
+        self.connection.query_row("SELECT value FROM app_settings WHERE key='summary'",[],|row|row.get(0)).optional()
+    }
+    pub fn save_summary_settings(&self,value:&str)->rusqlite::Result<()> {
+        self.summary_settings()?;
+        self.connection.execute("INSERT INTO app_settings(key,value) VALUES('summary',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[value])?;Ok(())
+    }
+    pub fn drive_selection(&self)->rusqlite::Result<String>{
+        self.connection.execute_batch("CREATE TABLE IF NOT EXISTS drive_selection(id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)")?;
+        Ok(self.connection.query_row("SELECT value FROM drive_selection WHERE id=1",[],|row|row.get(0)).optional()?.unwrap_or_else(||"{}".into()))
+    }
+    pub fn save_drive_selection(&self,value:&str)->rusqlite::Result<()>{
+        self.drive_selection()?;
+        self.connection.execute("INSERT INTO drive_selection(id,value) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET value=excluded.value",[value])?;Ok(())
+    }
+    pub fn load_summary(&self,id:&str)->rusqlite::Result<String>{
+        self.connection.execute_batch("CREATE TABLE IF NOT EXISTS summaries(recording_id TEXT PRIMARY KEY REFERENCES transcriptions(id) ON DELETE CASCADE,text TEXT NOT NULL)")?;
+        Ok(self.connection.query_row("SELECT text FROM summaries WHERE recording_id=?1",[id],|row|row.get(0)).optional()?.unwrap_or_default())
+    }
+    pub fn save_summary(&self,id:&str,text:&str)->rusqlite::Result<()>{
+        self.load_summary(id)?;
+        self.connection.execute("INSERT INTO summaries(recording_id,text) VALUES(?1,?2) ON CONFLICT(recording_id) DO UPDATE SET text=excluded.text",params![id,text])?;Ok(())
+    }
+    pub fn restored_snapshot(&self, remote_id:&str)->rusqlite::Result<Option<String>> {
+        self.connection.execute_batch("CREATE TABLE IF NOT EXISTS drive_restores(remote_id TEXT PRIMARY KEY,local_id TEXT NOT NULL REFERENCES transcriptions(id) ON DELETE CASCADE)")?;
+        self.connection.query_row("SELECT local_id FROM drive_restores WHERE remote_id=?1",[remote_id],|row|row.get(0)).optional()
+    }
+    pub fn restore_snapshot(&mut self,remote_id:&str,record:&Transcription,segments:&[TranscriptSegment])->rusqlite::Result<String>{
+        self.restore_snapshot_organized(remote_id,record,segments,&serde_json::Value::Null)
+    }
+    pub fn restore_snapshot_organized(&mut self,remote_id:&str,record:&Transcription,segments:&[TranscriptSegment],manifest:&serde_json::Value)->rusqlite::Result<String>{
+        if let Some(id)=self.restored_snapshot(remote_id)?{return Ok(id);}
+        let tx=self.connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some(id)=tx.query_row("SELECT local_id FROM drive_restores WHERE remote_id=?1",[remote_id],|row|row.get::<_,String>(0)).optional()?{return Ok(id);}
+        insert_transcription(&tx,record)?;
+        for segment in segments {
+            if segment.transcription_id!=record.id || !segment.start_seconds.is_finite() || !segment.end_seconds.is_finite() || segment.start_seconds<0.0 || segment.end_seconds<segment.start_seconds{return Err(rusqlite::Error::InvalidQuery);}
+            tx.execute("INSERT INTO transcript_segments(id,transcription_id,segment_index,start_seconds,end_seconds,text,source_track,speaker_id,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![segment.id,segment.transcription_id,segment.index,segment.start_seconds,segment.end_seconds,segment.text,source_track_value(segment.source_track),segment.speaker_id,segment_state_value(segment.state)])?;
+        }
+        tx.execute("INSERT INTO drive_restores(remote_id,local_id) VALUES(?1,?2)",params![remote_id,record.id])?;
+        // Three-way folder-name reconciliation: apply a remote rename only
+        // while the local value still matches the last imported baseline.
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS drive_folder_baselines(local_id TEXT PRIMARY KEY REFERENCES recording_folders(id) ON DELETE CASCADE,name TEXT NOT NULL)")?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS drive_folder_locations(local_id TEXT PRIMARY KEY REFERENCES recording_folders(id) ON DELETE CASCADE,parent_id TEXT,position INTEGER NOT NULL)")?;
+        if let Some(nodes)=manifest["organization"].as_array(){
+            // Include empty folders too; validate every source parent chain
+            // before committing any recording or tree data.
+            let device=manifest["device_id"].as_str().unwrap_or("legacy");
+            let folder_id=|id:&str|{
+                if let Some(local)=manifest["local_folder_mappings"][id].as_str(){return local.to_owned();}
+                if id.starts_with("drive-folder-")&&id.len()==77&&id[13..].bytes().all(|c|c.is_ascii_hexdigit()){return id.to_owned();}
+                use sha2::{Digest,Sha256};format!("drive-folder-{:x}",Sha256::digest(format!("{device}:{id}").as_bytes()))
+            };
+            let mut imported=std::collections::HashSet::new();
+            for folder in nodes.iter().filter(|node|node["kind"]=="folder"){
+                let source=folder["id"].as_str().filter(|id|!id.is_empty()).ok_or(rusqlite::Error::InvalidQuery)?;
+                let mut cursor=Some(source);let mut seen=std::collections::HashSet::new();
+                while let Some(id)=cursor{
+                    if !seen.insert(id)||seen.len()>64{return Err(rusqlite::Error::InvalidQuery);}
+                    let node=nodes.iter().find(|node|node["kind"]=="folder"&&node["id"].as_str()==Some(id)).ok_or(rusqlite::Error::InvalidQuery)?;
+                    cursor=node["parent_id"].as_str();
+                }
+                let name=folder["name"].as_str().filter(|name|!name.trim().is_empty()&&name.len()<=1024).ok_or(rusqlite::Error::InvalidQuery)?;
+                if tx.execute("INSERT OR IGNORE INTO recording_folders(id,parent_id,name,position) VALUES(?1,NULL,?2,?3)",params![folder_id(source),name,folder["position"].as_i64().unwrap_or(0).max(0)])?==1{imported.insert(folder_id(source));}
+                let local_id=folder_id(source);
+                let baseline:Option<String>=tx.query_row("SELECT name FROM drive_folder_baselines WHERE local_id=?1",[&local_id],|row|row.get(0)).optional()?;
+                if let Some(previous)=baseline {
+                    tx.execute("UPDATE recording_folders SET name=?2 WHERE id=?1 AND name=?3",params![local_id,name,previous])?;
+                }
+                tx.execute("INSERT INTO drive_folder_baselines(local_id,name) VALUES(?1,?2) ON CONFLICT(local_id) DO UPDATE SET name=excluded.name",params![local_id,name])?;
+            }
+            // Set parents only for newly imported folders; existing local
+            // hierarchy is retained until explicit conflict resolution.
+            for folder in nodes.iter().filter(|node|node["kind"]=="folder"){
+                let id=folder_id(folder["id"].as_str().ok_or(rusqlite::Error::InvalidQuery)?);
+                let parent=folder["parent_id"].as_str().map(&folder_id);
+                let position=folder["position"].as_i64().unwrap_or(0).max(0);
+                let baseline:Option<(Option<String>,i64)>=tx.query_row("SELECT parent_id,position FROM drive_folder_locations WHERE local_id=?1",[&id],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+                let local:(Option<String>,i64)=tx.query_row("SELECT parent_id,position FROM recording_folders WHERE id=?1",[&id],|row|Ok((row.get(0)?,row.get(1)?)))?;
+                if imported.contains(&id)||baseline.as_ref()==Some(&local){
+                    // A valid source tree can still cycle with a conflicting
+                    // local move. Keep local structure rather than introduce it.
+                    let mut cursor=parent.clone();let mut seen=std::collections::HashSet::new();let mut safe=true;
+                    while let Some(current)=cursor{if current==id||!seen.insert(current.clone()){safe=false;break;}cursor=tx.query_row("SELECT parent_id FROM recording_folders WHERE id=?1",[current],|row|row.get(0)).optional()?.flatten();}
+                    if safe{tx.execute("UPDATE recording_folders SET parent_id=?2,position=?3 WHERE id=?1",params![id,parent,position])?;}
+                }
+                tx.execute("INSERT INTO drive_folder_locations(local_id,parent_id,position) VALUES(?1,?2,?3) ON CONFLICT(local_id) DO UPDATE SET parent_id=excluded.parent_id,position=excluded.position",params![id,parent,position])?;
+            }
+            let original=manifest["organization_recording_id"].as_str().or_else(||manifest["recording"]["id"].as_str()).or_else(||manifest["original_recording_id"].as_str()).unwrap_or("");
+            if let Some(recording)=nodes.iter().find(|node|node["kind"]=="recording"&&node["id"].as_str()==Some(original)){
+                let mut parent=recording["parent_id"].as_str();let mut chain=Vec::new();let mut seen=std::collections::HashSet::new();
+                while let Some(id)=parent{
+                    if !seen.insert(id)||chain.len()>=64{return Err(rusqlite::Error::InvalidQuery);}
+                    let folder=nodes.iter().find(|node|node["kind"]=="folder"&&node["id"].as_str()==Some(id)).ok_or(rusqlite::Error::InvalidQuery)?;
+                    chain.push(folder);parent=folder["parent_id"].as_str();
+                }
+                let mut local_parent:Option<String>=None;
+                for folder in chain.iter().rev(){
+                    let name=folder["name"].as_str().filter(|name|!name.trim().is_empty()&&name.len()<=1024).ok_or(rusqlite::Error::InvalidQuery)?;
+                    let source_folder=folder["id"].as_str().ok_or(rusqlite::Error::InvalidQuery)?;
+                    let id=folder_id(source_folder);
+                    tx.execute("INSERT OR IGNORE INTO recording_folders(id,parent_id,name,position) VALUES(?1,?2,?3,?4)",params![id,local_parent,name,folder["position"].as_i64().unwrap_or(0).max(0)])?;local_parent=Some(id);
+                }
+                tx.execute("INSERT INTO recording_positions(recording_id,folder_id,position) VALUES(?1,?2,?3)",params![record.id,local_parent,recording["position"].as_i64().unwrap_or(0).max(0)])?;
+            }
+        }
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS drive_lineage(local_id TEXT PRIMARY KEY REFERENCES transcriptions(id) ON DELETE CASCADE,original_id TEXT,device_id TEXT,revision TEXT)")?;
+        tx.execute("INSERT INTO drive_lineage(local_id,original_id,device_id,revision) VALUES(?1,?2,?3,?4)",params![record.id,manifest["original_recording_id"].as_str(),manifest["device_id"].as_str(),manifest["revision"].as_str()])?;
+        tx.commit()?;Ok(record.id.clone())
+    }
+    pub fn clear_transcript(&mut self, id: &str) -> rusqlite::Result<()> {
+        self.connection.execute("DELETE FROM transcript_segments WHERE transcription_id=?1", [id])?;
+        Ok(())
+    }
+    pub fn complete_live_archive(
+        &mut self,
+        id: &str,
+        duration: f64,
+        audio_path: Option<&str>,
+        now_ms: i64,
+    ) -> rusqlite::Result<()> {
+        let transaction = self.connection.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE transcriptions SET duration_seconds=?2,audio_path=?3,status='completed',completed_ms=?4,error=NULL
+             WHERE id=?1 AND status='transcribing' AND cancel_requested=0",
+            params![id, duration, audio_path, now_ms],
+        )?;
+        if changed != 1 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        transaction.commit()
+    }
+
+    pub fn begin_live_finalization(&mut self, id: &str, now_ms: i64) -> rusqlite::Result<()> {
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS live_finalizations (
+                transcription_id TEXT PRIMARY KEY REFERENCES transcriptions(id) ON DELETE CASCADE,
+                state TEXT NOT NULL CHECK(state IN ('finalizing','completed','failed')),
+                updated_ms INTEGER NOT NULL
+            );",
+        )?;
+        self.connection.execute(
+            "INSERT INTO live_finalizations(transcription_id,state,updated_ms) VALUES (?1,'finalizing',?2)
+             ON CONFLICT(transcription_id) DO UPDATE SET state='finalizing',updated_ms=excluded.updated_ms",
+            params![id, now_ms],
+        )?;
+        Ok(())
+    }
+
+    pub fn finish_live_finalization(
+        &mut self,
+        id: &str,
+        success: bool,
+        now_ms: i64,
+    ) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "UPDATE live_finalizations SET state=?2,updated_ms=?3 WHERE transcription_id=?1",
+            params![id, if success { "completed" } else { "failed" }, now_ms],
+        )?;
+        Ok(())
+    }
+
     pub fn open(path: impl AsRef<Path>) -> rusqlite::Result<Self> {
         let connection = Connection::open(path)?;
         let mut store = Self { connection };
@@ -25,7 +188,101 @@ impl Store {
         Ok(store)
     }
 
+    pub fn list_folders(&self) -> rusqlite::Result<Vec<(String, Option<String>, String, i64)>> {
+        let mut statement = self.connection.prepare("SELECT id,parent_id,name,position FROM recording_folders ORDER BY position,id")?;
+        statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?.collect()
+    }
+
+    pub fn load_organization(&self) -> rusqlite::Result<serde_json::Value> {
+        let mut nodes = Vec::new();
+        for (id, parent, name, position) in self.list_folders()? {
+            nodes.push(serde_json::json!({"id":id,"parent_id":parent,"name":name,"position":position,"kind":"folder"}));
+        }
+        let mut statement = self.connection.prepare("SELECT t.id,p.folder_id,t.source_filename,COALESCE(p.position,ROW_NUMBER() OVER (ORDER BY t.created_ms DESC,t.id)-1) FROM transcriptions t LEFT JOIN recording_positions p ON p.recording_id=t.id ORDER BY t.created_ms DESC,t.id")?;
+        for row in statement.query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,String>(2)?,row.get::<_,i64>(3)?)))? {
+            let (id,parent,name,position)=row?;
+            nodes.push(serde_json::json!({"id":id,"parent_id":parent,"name":name,"position":position,"kind":"recording"}));
+        }
+        Ok(serde_json::Value::Array(nodes))
+    }
+
+    pub fn save_organization_if_unchanged(&mut self, previous: serde_json::Value, nodes: serde_json::Value) -> Result<(), String> {
+        let normalize = |value: serde_json::Value| {
+            let mut entries = value.as_array().cloned().unwrap_or_default();
+            entries.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+            entries
+        };
+        if !previous.is_array() || normalize(self.load_organization().map_err(|error| error.to_string())?) != normalize(previous) {
+            return Err("Organization changed; refresh and retry".into());
+        }
+        self.save_organization(nodes)
+    }
+
+    pub fn save_organization(&mut self, nodes: serde_json::Value) -> Result<(), String> {
+        let nodes = nodes.as_array().ok_or("Expected organization array")?;
+        if nodes.len() > 100_000 { return Err("Organization limit exceeded".into()); }
+        let mut ids = std::collections::HashSet::new();
+        let mut folders = std::collections::HashMap::new();
+        for node in nodes {
+            let id=node["id"].as_str().filter(|id| !id.is_empty()).ok_or("Missing ID")?;
+            if id.len() > 256 { return Err("Item ID too long".into()); }
+            if !ids.insert(id) { return Err("Duplicate ID".into()); }
+            if node["position"].as_u64().filter(|n| *n <= i64::MAX as u64).is_none() { return Err("Invalid position".into()); }
+            if node["kind"] == "folder" {
+                let existing_recording: bool = self.connection.query_row("SELECT EXISTS(SELECT 1 FROM transcriptions WHERE id=?1)", [id], |row| row.get(0)).map_err(|error| error.to_string())?;
+                if existing_recording { return Err("Folder ID collides with recording".into()); }
+                if node["name"].as_str().filter(|s| !s.trim().is_empty() && s.len() <= 1024).is_none() { return Err("Invalid folder name".into()); }
+                folders.insert(id, node["parent_id"].as_str());
+            } else if node["kind"] != "recording" { return Err("Invalid item kind".into()); }
+            if !node["parent_id"].is_null() && !node["parent_id"].is_string() { return Err("Invalid parent".into()); }
+        }
+        for node in nodes {
+            let id=node["id"].as_str().unwrap();
+            let mut parent=node["parent_id"].as_str();
+            let mut seen=std::collections::HashSet::from([id]);
+            while let Some(p)=parent {
+                if !seen.insert(p) { return Err("Folder cycle".into()); }
+                parent=*folders.get(p).ok_or("Unknown parent")?;
+            }
+        }
+        let tx=self.connection.transaction().map_err(|e|e.to_string())?;
+        let count: usize = tx.query_row("SELECT COUNT(*) FROM transcriptions", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if nodes.iter().filter(|node| node["kind"] == "recording").count() != count {
+            return Err("Recording list changed; refresh before changing organization".into());
+        }
+        tx.execute("DELETE FROM recording_positions", []).map_err(|e|e.to_string())?;
+        tx.execute("UPDATE recording_folders SET parent_id=NULL", []).map_err(|e|e.to_string())?;
+        tx.execute("DELETE FROM recording_folders", []).map_err(|e|e.to_string())?;
+        for node in nodes.iter().filter(|node| node["kind"]=="folder") {
+            tx.execute("INSERT INTO recording_folders(id,name,position) VALUES(?1,?2,?3)", rusqlite::params![node["id"].as_str(),node["name"].as_str(),node["position"].as_i64()]).map_err(|e|e.to_string())?;
+        }
+        for node in nodes {
+            if node["kind"]=="folder" {
+                tx.execute("UPDATE recording_folders SET parent_id=?2 WHERE id=?1",rusqlite::params![node["id"].as_str(),node["parent_id"].as_str()]).map_err(|e|e.to_string())?;
+            } else {
+                let exists: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM transcriptions WHERE id=?1)",[node["id"].as_str()],|row|row.get(0)).map_err(|e|e.to_string())?;
+                if !exists { return Err("Unknown recording".into()); }
+                tx.execute("INSERT INTO recording_positions(recording_id,folder_id,position) VALUES(?1,?2,?3)",rusqlite::params![node["id"].as_str(),node["parent_id"].as_str(),node["position"].as_i64()]).map_err(|e|e.to_string())?;
+            }
+        }
+        tx.commit().map_err(|e|e.to_string())
+    }
+
+
     fn migrate(&mut self) -> rusqlite::Result<()> {
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS recording_folders (
+                id TEXT PRIMARY KEY,
+                parent_id TEXT REFERENCES recording_folders(id),
+                name TEXT NOT NULL CHECK(length(trim(name)) > 0),
+                position INTEGER NOT NULL CHECK(position >= 0)
+             );
+             CREATE TABLE IF NOT EXISTS recording_positions (
+                recording_id TEXT PRIMARY KEY REFERENCES transcriptions(id) ON DELETE CASCADE,
+                folder_id TEXT REFERENCES recording_folders(id),
+                position INTEGER NOT NULL CHECK(position >= 0)
+             );"
+        )?;
         self.connection.execute_batch(
             "PRAGMA foreign_keys = ON;
              CREATE TABLE IF NOT EXISTS transcriptions (
@@ -528,6 +785,17 @@ impl Store {
     }
 
     pub fn recover_interrupted(&mut self, now_ms: i64) -> rusqlite::Result<usize> {
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS live_finalizations (
+                transcription_id TEXT PRIMARY KEY REFERENCES transcriptions(id) ON DELETE CASCADE,
+                state TEXT NOT NULL CHECK(state IN ('finalizing','completed','failed')),
+                updated_ms INTEGER NOT NULL
+            );",
+        )?;
+        self.connection.execute(
+            "UPDATE live_finalizations SET state='failed',updated_ms=?1 WHERE state='finalizing'",
+            [now_ms],
+        )?;
         self.connection.execute(
             "UPDATE transcriptions SET status = 'interrupted', completed_ms = ?1,
                     error = 'Application stopped during transcription'
@@ -643,6 +911,179 @@ fn map_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptSegment> {
 
 #[cfg(test)]
 mod tests {
+    #[test]fn conflicting_drive_versions_remain_independent_after_edit_clear_and_delete(){
+        let mut store=super::Store::memory().unwrap();
+        let left=transcription("conflict-left",TranscriptionStatus::Completed);let right=transcription("conflict-right",TranscriptionStatus::Completed);
+        let left_segment=TranscriptSegment::new(&left.id,0,0.0,1.0,"left text".into(),SourceTrack::File,SegmentState::Final).unwrap();
+        let right_segment=TranscriptSegment::new(&right.id,0,0.0,1.0,"right text".into(),SourceTrack::File,SegmentState::Final).unwrap();
+        let manifest=serde_json::json!({"original_recording_id":"original","device_id":"device","revision":"left"});
+        store.restore_snapshot_organized("remote-left",&left,&[left_segment],&manifest).unwrap();
+        let mut other=manifest.clone();other["revision"]="right".into();store.restore_snapshot_organized("remote-right",&right,&[right_segment],&other).unwrap();
+        store.update_segment_text(&left.id,0,"edited left".into()).unwrap();
+        assert_eq!(store.segments(&right.id).unwrap()[0].text,"right text");
+        assert_eq!(store.restored_snapshot("remote-left").unwrap(),Some(left.id.clone()));
+        assert_eq!(store.restored_snapshot("remote-right").unwrap(),Some(right.id.clone()));
+        store.clear_transcript(&left.id).unwrap();assert_eq!(store.segments(&right.id).unwrap().len(),1);assert!(store.get(&right.id).unwrap().is_some());
+        store.delete_history(&left.id).unwrap();
+        assert!(store.get(&left.id).unwrap().is_none());assert!(store.restored_snapshot("remote-left").unwrap().is_none());
+        assert_eq!(store.segments(&right.id).unwrap()[0].text,"right text");assert_eq!(store.restored_snapshot("remote-right").unwrap(),Some(right.id));
+    }
+    #[test]fn drive_reuploaded_copy_keeps_recording_placement(){
+        let mut store=super::Store::memory().unwrap();
+        let manifest=serde_json::json!({"original_recording_id":"original","organization_recording_id":"copy-on-device-b","device_id":"device-b","organization":[{"id":"folder","kind":"folder","parent_id":null,"name":"Folder","position":0},{"id":"copy-on-device-b","kind":"recording","parent_id":"folder","position":4}]});
+        store.restore_snapshot_organized("copy-remote",&transcription("copy-on-device-c",TranscriptionStatus::Completed),&[],&manifest).unwrap();
+        let nodes=store.load_organization().unwrap();let record=nodes.as_array().unwrap().iter().find(|node|node["id"]=="copy-on-device-c").unwrap();assert!(!record["parent_id"].is_null());assert_eq!(record["position"],4);
+    }
+    #[test]fn drive_restore_uses_original_local_folder_mapping(){
+        let mut store=super::Store::memory().unwrap();
+        store.save_organization(serde_json::json!([{"id":"local-folder","kind":"folder","parent_id":null,"name":"Local folder","position":0}])).unwrap();
+        let manifest=serde_json::json!({"device_id":"device","local_folder_mappings":{"cloud-folder":"local-folder"},"original_recording_id":"original","organization":[{"id":"cloud-folder","kind":"folder","parent_id":null,"name":"Remote name","position":0},{"id":"original","kind":"recording","parent_id":"cloud-folder","position":0}]});
+        store.restore_snapshot_organized("mapped-remote",&transcription("mapped-local",TranscriptionStatus::Completed),&[],&manifest).unwrap();
+        assert_eq!(store.list_folders().unwrap().len(),1);assert_eq!(store.list_folders().unwrap()[0].2,"Local folder");
+        let nodes=store.load_organization().unwrap();let record=nodes.as_array().unwrap().iter().find(|node|node["id"]=="mapped-local").unwrap();assert_eq!(record["parent_id"],"local-folder");
+    }
+    #[test]fn drive_restore_keeps_folder_path_and_rolls_back_cycle(){
+        let mut store=super::Store::memory().unwrap();let record=transcription("restored-tree",TranscriptionStatus::Completed);
+        let mut manifest=serde_json::json!({"original_recording_id":"original","device_id":"device","revision":"one","organization":[{"id":"folder","kind":"folder","parent_id":"folder","name":"Folder","position":0},{"id":"original","kind":"recording","parent_id":"folder","position":2}]});
+        assert!(store.restore_snapshot_organized("remote-tree",&record,&[],&manifest).is_err());assert!(store.get(&record.id).unwrap().is_none());
+        manifest["organization"][0]["parent_id"]=serde_json::Value::Null;
+        store.restore_snapshot_organized("remote-tree",&record,&[],&manifest).unwrap();
+        let nodes=store.load_organization().unwrap();let nodes=nodes.as_array().unwrap();let folder=nodes.iter().find(|node|node["name"]=="Folder").unwrap();let placement=nodes.iter().find(|node|node["id"]==record.id).unwrap();assert_eq!(placement["parent_id"],folder["id"]);assert_eq!(placement["position"],2);
+    }
+    #[test]fn drive_restore_reuses_snapshot_folder_without_overwriting_local_rename(){
+        let mut store=super::Store::memory().unwrap();
+        let manifest=serde_json::json!({"original_recording_id":"original","device_id":"device","revision":"one","organization":[{"id":"folder","kind":"folder","parent_id":null,"name":"Folder","position":0},{"id":"original","kind":"recording","parent_id":"folder","position":0}]});
+        let first=transcription("restore-first",TranscriptionStatus::Completed);
+        store.restore_snapshot_organized("remote-first",&first,&[],&manifest).unwrap();
+        store.connection.execute("UPDATE recording_folders SET name='Local rename'",[]).unwrap();
+        let second=transcription("restore-second",TranscriptionStatus::Completed);
+        let mut next_manifest=manifest.clone();next_manifest["revision"]="two".into();
+        store.restore_snapshot_organized("remote-second",&second,&[],&next_manifest).unwrap();
+        let nodes=store.load_organization().unwrap();let nodes=nodes.as_array().unwrap();
+        let folders:Vec<_>=nodes.iter().filter(|node|node["kind"]=="folder").collect();assert_eq!(folders.len(),1);assert_eq!(folders[0]["name"],"Local rename");
+        let placements:Vec<_>=nodes.iter().filter(|node|node["kind"]=="recording").collect();assert_eq!(placements.len(),2);assert_eq!(placements[0]["parent_id"],placements[1]["parent_id"]);
+    }
+    #[test]fn drive_restore_preserves_empty_nested_folders(){
+        let mut store=super::Store::memory().unwrap();let record=transcription("restore-empty",TranscriptionStatus::Completed);
+        let manifest=serde_json::json!({"device_id":"device","organization":[{"id":"child","kind":"folder","parent_id":"parent","name":"Empty child","position":0},{"id":"parent","kind":"folder","parent_id":null,"name":"Empty parent","position":0}]});
+        store.restore_snapshot_organized("empty-remote",&record,&[],&manifest).unwrap();let nodes=store.load_organization().unwrap();let nodes=nodes.as_array().unwrap();let parent=nodes.iter().find(|node|node["name"]=="Empty parent").unwrap();let child=nodes.iter().find(|node|node["name"]=="Empty child").unwrap();assert_eq!(child["parent_id"],parent["id"]);
+    }
+    #[test]fn drive_remote_rename_updates_only_unchanged_local_folder(){
+        let mut store=super::Store::memory().unwrap();let mut manifest=serde_json::json!({"device_id":"device","organization":[{"id":"folder","kind":"folder","parent_id":null,"name":"Before","position":0}]});
+        store.restore_snapshot_organized("rename-one",&transcription("rename-one",TranscriptionStatus::Completed),&[],&manifest).unwrap();
+        manifest["organization"][0]["name"]="Remote rename".into();store.restore_snapshot_organized("rename-two",&transcription("rename-two",TranscriptionStatus::Completed),&[],&manifest).unwrap();
+        assert_eq!(store.list_folders().unwrap()[0].2,"Remote rename");
+        store.connection.execute("UPDATE recording_folders SET name='Local edit'",[]).unwrap();manifest["organization"][0]["name"]="Other remote edit".into();
+        store.restore_snapshot_organized("rename-three",&transcription("rename-three",TranscriptionStatus::Completed),&[],&manifest).unwrap();assert_eq!(store.list_folders().unwrap()[0].2,"Local edit");
+    }
+    #[test]fn drive_remote_move_preserves_concurrent_local_position(){
+        let mut store=super::Store::memory().unwrap();let mut manifest=serde_json::json!({"device_id":"device","organization":[{"id":"a","kind":"folder","parent_id":null,"name":"A","position":0},{"id":"b","kind":"folder","parent_id":null,"name":"B","position":1}]});
+        store.restore_snapshot_organized("move-one",&transcription("move-one",TranscriptionStatus::Completed),&[],&manifest).unwrap();
+        manifest["organization"][1]["parent_id"]="a".into();manifest["organization"][1]["position"]=3.into();
+        store.restore_snapshot_organized("move-two",&transcription("move-two",TranscriptionStatus::Completed),&[],&manifest).unwrap();let folders=store.list_folders().unwrap();let b=folders.iter().find(|f|f.2=="B").unwrap();assert!(b.1.is_some());assert_eq!(b.3,3);
+        store.connection.execute("UPDATE recording_folders SET parent_id=NULL,position=9 WHERE name='B'",[]).unwrap();manifest["organization"][1]["position"]=4.into();
+        store.restore_snapshot_organized("move-three",&transcription("move-three",TranscriptionStatus::Completed),&[],&manifest).unwrap();let folders=store.list_folders().unwrap();let b=folders.iter().find(|f|f.2=="B").unwrap();assert!(b.1.is_none());assert_eq!(b.3,9);
+    }
+    #[test]fn drive_folder_identity_survives_second_device_roundtrip(){
+        let mut store=super::Store::memory().unwrap();let first=serde_json::json!({"device_id":"device-a","organization":[{"id":"folder","kind":"folder","parent_id":null,"name":"Folder","position":0}]});
+        store.restore_snapshot_organized("roundtrip-a",&transcription("roundtrip-a",TranscriptionStatus::Completed),&[],&first).unwrap();
+        let organization=store.load_organization().unwrap();let second=serde_json::json!({"device_id":"device-b","organization":organization});
+        store.restore_snapshot_organized("roundtrip-b",&transcription("roundtrip-b",TranscriptionStatus::Completed),&[],&second).unwrap();assert_eq!(store.list_folders().unwrap().len(),1);
+    }
+    #[test]fn drive_restore_is_atomic_and_idempotent(){
+        let mut store=super::Store::memory().unwrap();let record=transcription("restored",TranscriptionStatus::Completed);
+        let segment=TranscriptSegment::new("restored",0,0.0,1.0,"text".into(),SourceTrack::File,SegmentState::Final).unwrap();
+        let mut invalid=segment.clone();invalid.transcription_id="wrong".into();
+        assert!(store.restore_snapshot("remote",&record,&[invalid]).is_err());assert!(store.get("restored").unwrap().is_none());
+        assert_eq!(store.restore_snapshot("remote",&record,&[segment.clone()]).unwrap(),"restored");
+        let another=transcription("duplicate",TranscriptionStatus::Completed);
+        assert_eq!(store.restore_snapshot("remote",&another,&[]).unwrap(),"restored");assert!(store.get("duplicate").unwrap().is_none());assert_eq!(store.segments("restored").unwrap(),vec![segment]);
+    }
+    #[test]
+    fn clearing_transcript_keeps_recording_and_audio() {
+        let mut store = super::Store::memory().unwrap();
+        let mut recording = transcription("clear-text", TranscriptionStatus::Completed);
+        recording.audio_path = Some("archive.ogg".into());
+        store.enqueue(&recording).unwrap();
+        store.append_segment(&TranscriptSegment::new("clear-text", 0, 0.0, 1.0, "text".into(), SourceTrack::File, SegmentState::Final).unwrap()).unwrap();
+        store.clear_transcript("clear-text").unwrap();
+        assert!(store.segments("clear-text").unwrap().is_empty());
+        assert_eq!(store.get("clear-text").unwrap().unwrap().audio_path, recording.audio_path);
+    }
+    #[test]
+    fn organization_stale_writer_cannot_overwrite_new_folder() {
+        let mut store = super::Store::memory().unwrap();
+        let previous = store.load_organization().unwrap();
+        let next = serde_json::json!([{"id":"new","kind":"folder","parent_id":null,"name":"New","position":0}]);
+        store.save_organization_if_unchanged(previous.clone(), next.clone()).unwrap();
+        assert!(store.save_organization_if_unchanged(previous, serde_json::json!([])).is_err());
+        assert_eq!(store.load_organization().unwrap(), next);
+    }
+    #[test]
+    fn organization_migration_and_moves_preserve_recordings_segments_and_queue() {
+        let mut store = super::Store::memory().unwrap();
+        let mut original = transcription("recording", TranscriptionStatus::Queued);
+        original.audio_path = Some("preserved.ogg".into());
+        store.enqueue(&original).unwrap();
+        let segment = TranscriptSegment::new("recording", 0, 0.0, 1.0, "original text".into(), SourceTrack::File, SegmentState::Final).unwrap();
+        store.append_segment(&segment).unwrap();
+        let queue = store.list_queue().unwrap();
+        store.migrate().unwrap();
+        let nodes = store.load_organization().unwrap();
+        assert_eq!(nodes[0]["id"], "recording");
+        assert!(nodes[0]["parent_id"].is_null());
+        let organized = serde_json::json!([
+            {"id":"folder","kind":"folder","parent_id":null,"name":"Folder","position":0},
+            {"id":"recording","kind":"recording","parent_id":"folder","name":"recording.wav","position":0}
+        ]);
+        store.save_organization(organized).unwrap();
+        let saved = store.get("recording").unwrap().unwrap();
+        assert_eq!(saved.audio_path, original.audio_path);
+        assert_eq!(saved.source_path, original.source_path);
+        assert_eq!(store.segments("recording").unwrap(), [segment]);
+        assert_eq!(store.list_queue().unwrap().iter().map(|row| &row.id).collect::<Vec<_>>(), queue.iter().map(|row| &row.id).collect::<Vec<_>>());
+        // A filtered/stale snapshot must not silently remove this recording's placement.
+        assert!(store.save_organization(serde_json::json!([])).is_err());
+        assert_eq!(store.load_organization().unwrap()[1]["parent_id"], "folder");
+    }
+    #[test]
+    fn folder_identity_survives_database_reopen_and_repeated_migration() {
+        let path = std::env::temp_dir().join(format!("gigaam-organization-{}-{}.sqlite", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        {
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            let mut store = super::Store { connection };
+            store.migrate().unwrap();
+            store.save_organization(serde_json::json!([{"id":"folder","kind":"folder","parent_id":null,"name":"Folder","position":0}])).unwrap();
+        }
+        {
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            let mut store = super::Store { connection };
+            store.migrate().unwrap();
+            let nodes = store.load_organization().unwrap();
+            assert_eq!(nodes[0]["id"], "folder");
+            assert_eq!(nodes[0]["name"], "Folder");
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn organization_rejects_cycles_and_rolls_back_invalid_recordings() {
+        let mut store = super::Store::memory().unwrap();
+        let valid = serde_json::json!([
+            {"id":"parent","kind":"folder","parent_id":null,"name":"Parent","position":0},
+            {"id":"child","kind":"folder","parent_id":"parent","name":"Child","position":0}
+        ]);
+        store.save_organization(valid.clone()).unwrap();
+        let saved = store.load_organization().unwrap();
+        assert_eq!(saved.as_array().unwrap().len(), 2);
+        let cycle = serde_json::json!([
+            {"id":"parent","kind":"folder","parent_id":"child","name":"Parent","position":0},
+            {"id":"child","kind":"folder","parent_id":"parent","name":"Child","position":0}
+        ]);
+        assert!(store.save_organization(cycle).is_err());
+        let invalid = serde_json::json!([{"id":"missing","kind":"recording","parent_id":null,"name":"Missing","position":0}]);
+        assert!(store.save_organization(invalid).is_err());
+        assert_eq!(store.load_organization().unwrap(), saved);
+    }
     use super::*;
     use crate::domain::TranscriptionKind;
 
@@ -711,6 +1152,87 @@ mod tests {
         assert_eq!(store.search("после").unwrap()[0].id, "tx");
         assert!(store.update_segment_text("tx", 7, "мимо").is_err());
         assert!(store.update_segment_text("нет", 0, "мимо").is_err());
+    }
+
+    #[test]
+    fn live_archive_metadata_rolls_back_on_injected_write_failure() {
+        let mut store = Store::memory().unwrap();
+        store
+            .enqueue(&transcription("tx", TranscriptionStatus::Queued))
+            .unwrap();
+        store
+            .transition("tx", TranscriptionStatus::Preparing, 1, None)
+            .unwrap();
+        store
+            .transition("tx", TranscriptionStatus::Transcribing, 2, None)
+            .unwrap();
+        store
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER injected_disk_failure BEFORE UPDATE OF audio_path ON transcriptions
+             BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END;",
+            )
+            .unwrap();
+        assert!(
+            store
+                .complete_live_archive("tx", 12.0, Some("preserved.wav"), 3)
+                .is_err()
+        );
+        let item = store.get("tx").unwrap().unwrap();
+        assert_eq!(item.status, TranscriptionStatus::Transcribing);
+        assert!(item.audio_path.is_none());
+        assert!(item.duration_seconds.is_none());
+    }
+
+    #[test]
+    fn live_archive_completion_is_atomic_and_honors_cancellation() {
+        let mut store = Store::memory().unwrap();
+        store
+            .enqueue(&transcription("tx", TranscriptionStatus::Queued))
+            .unwrap();
+        store
+            .transition("tx", TranscriptionStatus::Preparing, 1, None)
+            .unwrap();
+        store
+            .transition("tx", TranscriptionStatus::Transcribing, 2, None)
+            .unwrap();
+        store.request_cancel("tx", 2).unwrap();
+        assert!(
+            store
+                .complete_live_archive("tx", 3.0, Some("audio.wav"), 3)
+                .is_err()
+        );
+        let item = store.get("tx").unwrap().unwrap();
+        assert_eq!(item.status, TranscriptionStatus::Transcribing);
+        assert!(item.audio_path.is_none());
+    }
+
+    #[test]
+    fn finalization_state_survives_and_is_failed_on_recovery() {
+        let mut store = Store::memory().unwrap();
+        store
+            .enqueue(&transcription("tx", TranscriptionStatus::Queued))
+            .unwrap();
+        store.begin_live_finalization("tx", 1).unwrap();
+        let state: String = store
+            .connection
+            .query_row(
+                "SELECT state FROM live_finalizations WHERE transcription_id='tx'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "finalizing");
+        store.recover_interrupted(2).unwrap();
+        let state: String = store
+            .connection
+            .query_row(
+                "SELECT state FROM live_finalizations WHERE transcription_id='tx'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "failed");
     }
 
     #[test]

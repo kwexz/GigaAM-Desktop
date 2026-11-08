@@ -1,0 +1,10 @@
+   Compiling gigaam-desktop v0.1.2 (C:\Source\GigaAM-UI\src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 33.82s
+     Running tests\long_archive.rs (src-tauri\target\debug\deps\long_archive-6dd058ea0ee560e8.exe)
+
+running 1 test
+synthetic_duration_s=1800 orchestration_ack_ms=0 archive_ms=18626 total_ms=23643
+test thirty_minute_archive_preserves_duration ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 23.71s
+

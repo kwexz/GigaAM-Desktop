@@ -1,0 +1,11 @@
+   Compiling gigaam-desktop v0.1.2 (C:\Source\GigaAM-UI\src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.90s
+     Running tests\live_model.rs (src-tauri\target\debug\deps\live_model-aac9b906925a5c83.exe)
+
+running 1 test
+track=Microphone snapshot_samples=24000 file_live_cer=0.0132
+track=System snapshot_samples=48000 file_live_cer=0.0132
+test chunk_fed_live_retains_three_phrase_anchors_on_each_track ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 49.94s
+

@@ -1,0 +1,12 @@
+{
+  "phrases": [
+    "Сегодня мы проверяем запись русского голоса.",
+    "Вторая реплика начинается после короткой паузы.",
+    "Все звуковые дорожки должны сохраниться полностью."
+  ],
+  "provenance": "Original CC0 text, eSpeak-NG 1.52.0 Russian formant synthesis; no private recordings",
+  "generator_license": "GPL-3.0-or-later (generator only)",
+  "generator_url": "https://github.com/espeak-ng/espeak-ng/releases/tag/1.52.0",
+  "sha256": "1c1a8f67a4a94c2794e616d3b033f056624db16a290d667f1e5216493a909b47",
+  "asr_status": "failed: formant speech not reliably recognized; do not substitute degraded output for expected phrases"
+}

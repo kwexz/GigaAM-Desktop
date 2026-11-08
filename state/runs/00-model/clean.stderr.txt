@@ -1,0 +1,2 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.70s
+     Running `src-tauri\target\debug\inference-spike.exe tests/fixtures/besarab-clean.wav C:\Users\User\AppData\Roaming\ru.gigaam.desktop\models\v3_e2e_ctc.int8.onnx C:\Users\User\AppData\Roaming\ru.gigaam.desktop\models\v3_e2e_ctc_vocab.txt C:\Users\User\AppData\Roaming\ru.gigaam.desktop\models\silero_vad.onnx`

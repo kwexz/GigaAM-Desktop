@@ -1,0 +1,19 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.72s
+     Running tests\live_model.rs (src-tauri\target\debug\deps\live_model-aac9b906925a5c83.exe)
+
+running 1 test
+track=Microphone snapshot_samples=24000 file_live_cer=0.0132
+track=System snapshot_samples=48000 file_live_cer=0.0132
+test chunk_fed_live_retains_three_phrase_anchors_on_each_track ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 28.39s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.72s
+     Running tests\long_archive.rs (src-tauri\target\debug\deps\long_archive-6dd058ea0ee560e8.exe)
+
+running 1 test
+synthetic_duration_s=1800 orchestration_ack_ms=0 archive_ms=10937 total_ms=13872
+test thirty_minute_archive_preserves_duration ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.95s
+

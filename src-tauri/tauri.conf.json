@@ -15,9 +15,10 @@
         "title": "GigaAM Desktop",
         "width": 960,
         "height": 640,
-        "minWidth": 960,
+        "minWidth": 1010,
         "minHeight": 640,
         "resizable": true,
+        "dragDropEnabled": true,
         "fullscreen": false
       }
     ],

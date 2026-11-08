@@ -1,0 +1,23 @@
+phase: 01
+outcome: passed
+code_commit_sha: 7c50dae2d8b568ea3dc4e011e426cebf777550d2
+verified_utc: 2026-10-27T17:02:57Z
+logs:
+  - state/runs/00-baseline/results.json
+  - state/runs/01/final-live-model-and-long-archive.txt
+  - state/runs/01/live-file-comparison.txt
+  - state/runs/01/long-archive.txt
+matrix:
+  baseline: verified (6 commands exit 0; 79 Rust lib tests; 7 frontend tests)
+  vad_cursor_regression: verified (red failure 3072 vs 1024, then green; absolute/relative cursor split)
+  live_finalizer: verified (async command, single-flight claim, panic supervision, persisted failed state, cancellable FLAC/WAV/MP3 with staged .partial outputs, raw audio retained until archive metadata commit, multi-track rollback)
+  stop_acknowledgement: verified (production ordering seam; <500 ms assertion with 30-min archive, measured 0 ms; marker-write failure no longer blocks UI)
+  stop_ui_transport: verified (component test keeps UI responsive while stop IPC promise is pending)
+  recovery_fault_injection: verified (shared production supervisor; device-add no restart, invalidation backoff+resume, exhaustion failure, selected-mic no fallback, unrelated error terminal, stop-during-backoff, healthy peer continues)
+  real_models: verified (both labels, concurrent scanners, CER 0.0132 each, anchors exactly once, timestamps in bounds)
+  lifecycle_persistence: verified (2 sequential sessions; pause gap, playback gating, edits, rename, TXT/SRT/VTT/JSON export, raw cleanup after commit)
+  thirty_minute_capture: verified (synthetic 1800 s production archive, exact duration)
+  physical_hotplug: not-run (no safe spare device)
+  physical_capture_stop_latency: not-run (would require recording real device audio)
+  macos_gui_and_capture: not-run
+  independent_review: blocked_external (review models unavailable after model switch; self-review only)

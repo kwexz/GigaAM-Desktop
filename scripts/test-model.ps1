@@ -1,0 +1,50 @@
+param(
+    [string]$AudioPath = 'tests/fixtures/besarab-clean.wav',
+    [string]$ModelDirectory = "$env:APPDATA/ru.gigaam.desktop/models",
+    [string]$ManifestPath = '',
+    [string]$EvidenceDirectory = 'artifacts/verification/00/model'
+)
+$ErrorActionPreference = 'Stop'
+New-Item -ItemType Directory -Force $EvidenceDirectory | Out-Null
+@{ status = 'in_progress'; started_utc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $EvidenceDirectory 'summary.json')
+try {
+& "$PSScriptRoot/verify-models.ps1" -ModelDirectory $ModelDirectory
+$stdout = Join-Path $EvidenceDirectory 'stdout.txt'
+$stderr = Join-Path $EvidenceDirectory 'stderr.txt'
+$watch = [Diagnostics.Stopwatch]::StartNew()
+$previousEncoding = [Console]::OutputEncoding
+$null = Get-Command cargo -ErrorAction Stop
+$LASTEXITCODE = 127
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$ErrorActionPreference = 'Continue'
+& cargo run --locked --manifest-path src-tauri/Cargo.toml --features inference-spike --bin inference-spike -- $AudioPath (Join-Path $ModelDirectory 'v3_e2e_ctc.int8.onnx') (Join-Path $ModelDirectory 'v3_e2e_ctc_vocab.txt') (Join-Path $ModelDirectory 'silero_vad.onnx') 1> $stdout 2> $stderr
+$code = $LASTEXITCODE
+[Console]::OutputEncoding = $previousEncoding
+$ErrorActionPreference = 'Stop'
+$watch.Stop()
+if ($code -ne 0) { throw "Inference failed: exit=$code; see $stderr" }
+$text = Get-Content -Raw -Encoding $(if ($PSVersionTable.PSVersion.Major -le 5) { 'Unicode' } else { 'utf8' }) $stdout
+$position = $text.IndexOf('segments=')
+if ($position -lt 0) { throw 'Inference output has no segments' }
+$segments = $text.Substring($position + 9) | ConvertFrom-Json
+if (-not $ManifestPath) {
+    $ManifestPath = if ((Split-Path $AudioPath -Leaf) -like 'besarab-*') { Join-Path (Split-Path $AudioPath) 'besarab.json' } else { Join-Path (Split-Path $AudioPath) 'manifest.json' }
+}
+$manifest = Get-Content -Raw -Encoding UTF8 $ManifestPath | ConvertFrom-Json
+if (@($manifest.phrases).Count -lt 3) { throw 'At least three expected phrases are required' }
+if (@($segments).Count -eq 0) { throw 'Expected nonempty speech segments' }
+$transcript = ($segments | ForEach-Object { $_.text }) -join ' '
+foreach ($phrase in $manifest.phrases) {
+    if ($transcript.IndexOf([string]$phrase, [StringComparison]::OrdinalIgnoreCase) -lt 0) { throw "Expected phrase missing: $phrase" }
+}
+$previousEnd = 0.0
+foreach ($segment in $segments) {
+    if ($segment.start_seconds -lt $previousEnd -or $segment.end_seconds -le $segment.start_seconds) { throw 'Invalid segment timeline' }
+    $previousEnd = $segment.end_seconds
+}
+[ordered]@{ status = 'verified'; exit_code = $code; elapsed_ms = $watch.ElapsedMilliseconds; phrases_matched = @($manifest.phrases).Count; segments = @($segments).Count; model = 'pinned GigaAM v3 int8 + Silero'; scope = 'file inference, not live E2E' } | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $EvidenceDirectory 'summary.json')
+Write-Output "Verified $(@($manifest.phrases).Count) phrases; evidence: $EvidenceDirectory"
+} catch {
+    @{ status = 'failed'; error = $_.Exception.Message; finished_utc = [DateTime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $EvidenceDirectory 'summary.json')
+    throw
+}

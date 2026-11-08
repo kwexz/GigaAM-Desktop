@@ -1,0 +1,34 @@
+{
+  "scope": "clean versus low-noise file inference, boundary tolerance 250 ms; not Live",
+  "clean": {
+    "source_duration_s": 34.514,
+    "audio_duration_s": 34.514,
+    "speech_regions": 14,
+    "asr_chunks": 2,
+    "model_load_ms": 1251,
+    "vad_ms": 185,
+    "preprocess_ms": 3181,
+    "inference_ms": 2194,
+    "rtf": 0.1614,
+    "rss_baseline_mib": 9.5,
+    "rss_model_loaded_mib": 282.1,
+    "rss_after_inference_mib": 313.4
+  },
+  "noisy": {
+    "source_duration_s": 34.514,
+    "audio_duration_s": 34.514,
+    "speech_regions": 14,
+    "asr_chunks": 2,
+    "model_load_ms": 1224,
+    "vad_ms": 190,
+    "preprocess_ms": 3166,
+    "inference_ms": 2016,
+    "rtf": 0.1559,
+    "rss_baseline_mib": 9.5,
+    "rss_model_loaded_mib": 281.9,
+    "rss_after_inference_mib": 313.1
+  },
+  "phrase_coverage": "3/3 each (asserted by model runner)",
+  "segment_mismatches": [],
+  "status": "verified"
+}

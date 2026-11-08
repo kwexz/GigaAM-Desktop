@@ -1,0 +1,36 @@
+{
+  "author": "Siarhei Besarab",
+  "source": "https://commons.wikimedia.org/wiki/File:Voice_introduction_of_Siarhei_Besarab_(Russian).ogg",
+  "license": "CC-BY-SA-4.0",
+  "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+  "changes": "Original Ogg converted to mono 16 kHz PCM; noisy derivative adds deterministic white noise. Derivatives remain CC-BY-SA-4.0. Public licensed recording, not private user audio.",
+  "phrases": [
+    "Меня зовут",
+    "Технологическая журналистика",
+    "науку и технологии"
+  ],
+  "noise": {
+    "amplitude": 0.002,
+    "seed": 42,
+    "sample_rate": 16000
+  },
+  "files": [
+    {
+      "name": "besarab-ru.ogg",
+      "sha256": "8cfcacb9a94d41059e2bc4e00ebc14ccabfd8e37b0db83646c17f8ef8f95efea"
+    },
+    {
+      "name": "besarab-clean.wav",
+      "sha256": "80bacbd74d815c87c88356aad532355e94277357f25422e7c2d5a83c79adafd3"
+    },
+    {
+      "name": "besarab-noisy.wav",
+      "sha256": "7146bbbe8e35f245484ebd21f18012850ef3c16d07b84037fb10b90c0dd4b5e4"
+    },
+    {
+      "name": "besarab-dual.wav",
+      "sha256": "04a532b1bc8f9f5c753f3e111041af26b97d046f3597ed01e7a8bb261075aef5"
+    }
+  ],
+  "dual": "Stereo derivative: original left, same speech right delayed by 1000 ms; not independent speakers"
+}

@@ -1,0 +1,27 @@
+{
+  "provenance": "Original deterministic mathematical signals; no recorded voices or private audio",
+  "license": "CC0-1.0",
+  "sampleRate": 16000,
+  "files": [
+    {
+      "name": "dual-tones.wav",
+      "bytes": 384044,
+      "sha256": "14f0ba2c688df59bad7e4b1e0f6acbe193cddcfac3d9b6198503d04b78189563",
+      "description": "Stereo 440/660 Hz signals with one-second pauses; not speech"
+    },
+    {
+      "name": "corrupt.wav",
+      "bytes": 22,
+      "sha256": "f50547f55ae8919ce00512678ee9a68064038bf9c154a48590af836793716480",
+      "description": "Intentionally invalid audio"
+    }
+  ],
+  "long_generated": {
+    "name": "long-tones.wav",
+    "duration_seconds": 600,
+    "channels": 1,
+    "sample_rate": 16000,
+    "command": "node scripts/generate-signal-fixtures.mjs --long",
+    "sha256": "c486e8525d879f5f01420822673a8409a848f681911df92fadfa069588f5cfcc"
+  }
+}

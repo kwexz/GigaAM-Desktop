@@ -1,0 +1,18 @@
+﻿phase: 06
+outcome: passed
+code_commit_sha: 6ab2b3d14ded910f97601783d717495787d2ae46
+verified_utc: 2026-10-27T20:49:59Z
+logs:
+  - state/runs/00-baseline/results.json
+  - state/runs/06/sqrthost-inventory.txt
+  - state/EVIDENCE.md
+matrix:
+  remote_engine: verified (bounded queue, reconnect replay, per-track cursors, checksums)
+  websocket_server: verified (auth, spool sync_data, checksum, gap reject, duplicate ACK)
+  frontend_tests: verified (11 tests)
+  rust_tests: verified (86 unit tests; full integration baseline)
+  baseline: verified (six commands exit 0)
+  real_dual_track_remote_asr: blocked_external (no Rust toolchain reported on staging host; no unsafe installation)
+  network_fault_e2e: not-run (requires real server/ONNX staging)
+  physical_capture: not-run
+  macos: not-run

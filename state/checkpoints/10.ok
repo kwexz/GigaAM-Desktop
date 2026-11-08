@@ -1,0 +1,13 @@
+phase: 10
+outcome: external-oauth-blocked
+code_commit_sha: 9cdc1d3a6502196a2cfae0850137a7ff6c37bec6
+verified_utc: 2026-10-27T21:02:09Z
+logs:
+  - state/EVIDENCE.md
+matrix:
+  logical_sync: verified (mock provider, cursor/revision/tombstone tests)
+  google_provider_shape: verified (mock PKCE state)
+  yandex_provider_shape: verified (mock PKCE state)
+  real_oauth: blocked_external (client IDs/redirects/consent unavailable)
+  real_cloud_files: not-run
+  sqlite_whole_file_sync: verified absent

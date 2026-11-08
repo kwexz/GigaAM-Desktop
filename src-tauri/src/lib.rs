@@ -1,10 +1,18 @@
+pub mod capture_recovery;
 pub mod domain;
 pub mod export;
+pub mod google_drive;
+pub mod drive_outbox;
+pub mod finalization;
 pub mod live;
 pub mod model_manager;
 pub mod pipeline;
 pub mod queue;
+pub mod server;
 pub mod storage;
+pub mod streaming;
+pub mod summarization;
+pub mod gguf_runtime;
 
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
@@ -28,12 +36,245 @@ use pipeline::{LiveScanner, NativeFileProcessor};
 use queue::process_next;
 use storage::Store;
 use tauri::Manager;
+use tauri::Emitter;
 
 static ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[tauri::command]
+async fn download_summary_model(app:tauri::AppHandle)->Result<String,String>{let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;tauri::async_runtime::spawn_blocking(move||gguf_runtime::download_model(&root,|downloaded,total|{let _=app.emit("summary-model-progress",serde_json::json!({"downloaded":downloaded,"total":total}));})).await.map_err(|_|"Model download failed")?}
+
+#[tauri::command]
+async fn installed_summary_model(app:tauri::AppHandle)->Result<Option<String>,String>{let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;tauri::async_runtime::spawn_blocking(move||gguf_runtime::managed_model(&root)).await.map_err(|_|"Model check failed".into())}
+
+#[tauri::command]
+async fn summarize_gguf(id:String,model_path:String,app:tauri::AppHandle,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
+    let text=lock_store(&state)?.segments(&id).map_err(|_|"Расшифровка недоступна")?.into_iter().map(|s|s.text).collect::<Vec<_>>().join("\n");
+    let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;
+    tauri::async_runtime::spawn_blocking(move||gguf_runtime::summarize(&root,std::path::Path::new(&model_path),&text)).await.map_err(|_|"GGUF task failed")?
+}
+
+#[tauri::command]
+async fn install_summary_runtime(app:tauri::AppHandle)->Result<(),String>{let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;tauri::async_runtime::spawn_blocking(move||gguf_runtime::install(&root)).await.map_err(|_|"Runtime install task failed")?}
+
+#[tauri::command]
+fn set_summary_api_key(key:String,endpoint:String)->Result<(),String>{
+    let url=summarization::api_url(&endpoint)?;
+    let account=format!("summary-api:{}",url.origin().ascii_serialization());
+    let entry=keyring::Entry::new("GigaAM Desktop",&account).map_err(|_|"Хранилище ключей недоступно")?;
+    if key.is_empty(){match entry.delete_credential(){Ok(())|Err(keyring::Error::NoEntry)=>Ok(()),Err(_)=>Err("Не удалось удалить ключ".into())}}else{entry.set_password(&key).map_err(|_|"Не удалось сохранить ключ".into())}
+}
+#[tauri::command]
+async fn summarize_api(id:String,endpoint:String,model:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
+    let text=lock_store(&state)?.segments(&id).map_err(|_|"Расшифровка недоступна")?.into_iter().map(|s|s.text).collect::<Vec<_>>().join("\n");
+    tauri::async_runtime::spawn_blocking(move||summarization::summarize_openai(&text,&endpoint,&model)).await.map_err(|_|"Ошибка API задачи")?
+}
+
+#[tauri::command]
+async fn list_summary_api_models(endpoint:String,key:String)->Result<Vec<String>,String>{
+    tauri::async_runtime::spawn_blocking(move||summarization::list_api_models(&endpoint,&key)).await.map_err(|_|"Ошибка проверки API")?
+}
+
+#[tauri::command]
+fn load_summary(id:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{lock_store(&state)?.load_summary(&id).map_err(|e|e.to_string())}
+#[tauri::command]
+fn save_summary(id:String,text:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<(),String>{lock_store(&state)?.save_summary(&id,&text).map_err(|e|e.to_string())}
+#[tauri::command]
+fn save_summary_export(id:String,path:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<(),String>{let text=lock_store(&state)?.load_summary(&id).map_err(|e|e.to_string())?;std::fs::write(path,text).map_err(|e|e.to_string())}
+
+#[tauri::command]
+async fn summarize_ollama(id:String,model:Option<String>,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
+    let text=lock_store(&state)?.segments(&id).map_err(|_|"Не удалось прочитать расшифровку")?
+        .into_iter().map(|segment|segment.text).collect::<Vec<_>>().join("\n");
+    tauri::async_runtime::spawn_blocking(move||summarization::summarize_with_ollama_model(&text,model.as_deref().unwrap_or("qwen3.5:4b"))).await.map_err(|_|"Ошибка задачи суммаризации")?
+}
+
+#[tauri::command]
+async fn list_summary_models()->Result<Vec<String>,String>{
+    tauri::async_runtime::spawn_blocking(summarization::local_ollama_models).await.map_err(|_|"Ошибка списка моделей")?
+}
+
+#[tauri::command]
+async fn google_drive_connect(app: tauri::AppHandle) -> Result<(),String> {
+    let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;
+    tauri::async_runtime::spawn_blocking(move || { google_drive::connect(|url| {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener().open_url(url, None::<String>).map_err(|_| "Could not open system browser".into())
+    })?; drive_outbox::resume(&root) }).await.map_err(|_| "Google connection task failed")?
+}
+#[tauri::command]
+async fn google_drive_disconnect() -> Result<(),String> {
+    tauri::async_runtime::spawn_blocking(google_drive::disconnect).await.map_err(|_| "Google disconnect task failed")?
+}
+#[tauri::command]
+fn google_drive_connected() -> bool { google_drive::connected() }
+
+#[tauri::command]
+async fn google_drive_queue_status(app:tauri::AppHandle)->Result<drive_outbox::QueueStatus,String>{
+    let path=app.path().app_data_dir().map_err(|_|"App data unavailable")?.join("drive-outbox.sqlite");
+    tauri::async_runtime::spawn_blocking(move||drive_outbox::Outbox::open(&path).and_then(|queue|queue.status()).map_err(|_|"Drive queue status unavailable".into())).await.map_err(|_|"Drive status worker failed")?
+}
+
+#[tauri::command]
+async fn google_drive_prepare_folder() -> Result<String,String> {
+    tauri::async_runtime::spawn_blocking(google_drive::ensure_folder).await.map_err(|_| "Google folder task failed")?
+}
+
+#[tauri::command]
+async fn google_drive_upload(id: String, app: tauri::AppHandle, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(),String> {
+    // Prepare the same timeline-aligned mix used by Desktop playback.
+    if lock_store(&state)?.get(&id).map_err(|e|e.to_string())?.is_some_and(|record|matches!(record.kind,TranscriptionKind::Live)) {
+        mixed_session_audio(id.clone(),app.clone())?;
+    }
+    queue_drive_snapshot(id,None,app,state).await
+}
+
+#[tauri::command]
+async fn google_drive_resolve(id:String,parents:Vec<String>,app:tauri::AppHandle,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<(),String>{
+    if parents.len()<2||parents.len()>32{return Err("Select two or more conflicting revisions".into());}
+    queue_drive_snapshot(id,Some(parents),app,state).await
+}
+
+async fn queue_drive_snapshot(id:String,merge_parents:Option<Vec<String>>,app:tauri::AppHandle,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<(),String>{
+    if id.is_empty() || id.contains(['/', '\\']) || id.contains("..") { return Err("Invalid recording ID".into()); }
+    let (record, segments, organization) = {
+        let store = lock_store(&state)?;
+        (store.get(&id).map_err(|e|e.to_string())?.ok_or("Recording not found")?, store.segments(&id).map_err(|e|e.to_string())?, store.load_organization().map_err(|e|e.to_string())?)
+    };
+    if matches!(record.status, TranscriptionStatus::Transcribing | TranscriptionStatus::Preparing) { return Err("Wait until recording/recognition completes".into()); }
+    let root = app.path().app_data_dir().map_err(|_|"App data unavailable")?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<(),String> {
+        let mut paths=Vec::new();
+        if let Ok(entries)=std::fs::read_dir(root.join("live").join(&id)) {
+            for entry in entries.flatten(){let path=entry.path();if matches!(path.extension().and_then(|s|s.to_str()),Some("ogg"|"wav"|"flac"|"mp3"|"webm"|"m4a")){paths.push(path);}}
+        }
+        paths.sort();
+        if paths.is_empty(){let path=PathBuf::from(record.audio_path.as_ref().unwrap_or(&record.source_path));if path.is_file(){paths.push(path);}}
+        let offsets=std::fs::read(root.join("live").join(&id).join("tracks.json")).ok().and_then(|bytes|serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        let mut manifest=serde_json::json!({"version":1,"recording":record,"segments":segments,"tracks":offsets,"organization":organization});
+        if let Some(parents)=merge_parents{
+            let lineage=drive_outbox::snapshot_lineage(&root,&id)?.ok_or("Restore a conflict version before resolving")?;
+            let branches=google_drive::discover_branches()?;
+            google_drive::validate_merge_selection(&lineage.original_id,&parents,&branches)?;
+            manifest["merge_parents"]=serde_json::to_value(parents).map_err(|_|"Merge parents invalid")?;
+        }
+        drive_outbox::enqueue_recording(&root,&id,manifest,&paths)
+    }).await.map_err(|_|"Drive backup worker failed")?
+}
+
+#[tauri::command]
+async fn google_drive_snapshots() -> Result<Vec<google_drive::RemoteFile>,String> {
+    tauri::async_runtime::spawn_blocking(google_drive::list_snapshots).await.map_err(|_|"Drive discovery worker failed")?
+}
+
+#[tauri::command]
+async fn google_drive_branches()->Result<Vec<google_drive::SnapshotBranch>,String>{
+    tauri::async_runtime::spawn_blocking(google_drive::discover_branches).await.map_err(|_|"Drive branch discovery failed")?
+}
+
+#[tauri::command]
+async fn google_drive_tree()->Result<google_drive::SnapshotTree,String>{
+    tauri::async_runtime::spawn_blocking(google_drive::discover_snapshot_tree).await.map_err(|_|"Drive tree discovery failed")?
+}
+
+#[tauri::command]
+fn google_drive_selection(state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<serde_json::Value,String>{
+    let value=lock_store(&state)?.drive_selection().map_err(|_|"Drive selection unavailable")?;
+    serde_json::from_str(&value).map_err(|_|"Drive selection invalid".into())
+}
+
+#[tauri::command]
+fn google_drive_save_selection(local:Vec<String>,remote:Vec<String>,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<(),String>{
+    if local.len()>10000||remote.len()>10000||local.iter().chain(remote.iter()).any(|id|id.is_empty()||id.len()>512){return Err("Invalid Drive selection".into());}
+    let value=serde_json::json!({"local":local,"remote":remote}).to_string();
+    lock_store(&state)?.save_drive_selection(&value).map_err(|_|"Could not save Drive selection".into())
+}
+
+#[tauri::command]
+async fn google_drive_trash_snapshot(file_id:String)->Result<(),String>{
+    tauri::async_runtime::spawn_blocking(move||google_drive::trash_snapshot(&file_id)).await.map_err(|_|"Drive trash worker failed")?
+}
+
+#[tauri::command]
+fn google_drive_restored_ids(file_ids:Vec<String>,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<std::collections::HashMap<String,String>,String>{
+    if file_ids.len()>10000{return Err("Too many snapshots".into());}
+    let store=lock_store(&state)?;let mut result=std::collections::HashMap::new();
+    for file_id in file_ids{if let Some(local_id)=store.restored_snapshot(&file_id).map_err(|_|"Restore lookup failed")?{result.insert(file_id,local_id);}}
+    Ok(result)
+}
+
+#[tauri::command]
+async fn google_drive_local_lineage(ids:Vec<String>,app:tauri::AppHandle)->Result<std::collections::HashMap<String,serde_json::Value>,String>{
+    if ids.len()>10000{return Err("Too many recordings".into());}
+    let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;
+    tauri::async_runtime::spawn_blocking(move||{
+        let mut result=std::collections::HashMap::new();
+        for id in ids{if let Some(lineage)=drive_outbox::snapshot_lineage(&root,&id)?{result.insert(id,serde_json::json!({"original_id":lineage.original_id,"revision":lineage.revision}));}}
+        Ok(result)
+    }).await.map_err(|_|"Lineage lookup failed")?
+}
+
+#[tauri::command]
+async fn google_drive_restore(file_id:String, app:tauri::AppHandle, state:tauri::State<'_,Arc<Mutex<Store>>>) -> Result<String,String> {
+    let store=state.inner().clone();
+    let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<String,String> {
+        if let Some(id)=store.lock().map_err(|_|"Store unavailable")?.restored_snapshot(&file_id).map_err(|_|"Restore lookup failed")? {return Ok(id);}
+        // Always restore as a separate stable local copy; never overwrite edits.
+        let id=new_id(); let directory=root.join("live").join(&id);
+        std::fs::create_dir_all(&directory).map_err(|_|"Restore directory unavailable")?;
+        let manifest=directory.join("manifest.json");
+        google_drive::download_file(&file_id,&manifest,8*1024*1024)?;
+        let mut value:serde_json::Value=serde_json::from_slice(&std::fs::read(&manifest).map_err(|_|"Manifest unavailable")?).map_err(|_|"Invalid backup manifest")?;
+        let mappings=drive_outbox::local_folder_mappings(&root)?;
+        value["local_folder_mappings"]=serde_json::to_value(mappings).map_err(|_|"Folder mapping serialization failed")?;
+        google_drive::validate_manifest(&value)?;
+        if value["version"]!=1{return Err("Unsupported backup version".into());}
+        let mut recording:Transcription=serde_json::from_value(value["recording"].clone()).map_err(|_|"Invalid recording metadata")?;
+        let segments:Vec<TranscriptSegment>=serde_json::from_value(value["segments"].clone()).map_err(|_|"Invalid transcript")?;
+        let audio=value["audio"].as_array().ok_or("Backup audio missing")?;
+        if audio.is_empty()||audio.len()>8{return Err("Invalid backup track count".into());}
+        let mut paths=Vec::new();
+        for (index,track) in audio.iter().enumerate(){
+            let name=track["original_filename"].as_str().ok_or("Track filename missing")?;
+            if name.contains(['/', '\\'])||name.contains("..")||name.len()>240{return Err("Unsafe backup filename".into());}
+            let extension=Path::new(name).extension().and_then(|s|s.to_str()).ok_or("Track extension missing")?;
+            if !["ogg","wav","flac","mp3","webm","m4a"].contains(&extension){return Err("Unsupported backup audio".into());}
+            let path=directory.join(format!("restored-{index}.{extension}"));
+             google_drive::download_file_with_progress(track["file_id"].as_str().ok_or("Track ID missing")?,&path,512*1024*1024,|downloaded,total|{let _=app.emit("drive-download-progress",serde_json::json!({"snapshot":file_id,"track":index,"tracks":audio.len(),"downloaded":downloaded,"total":total,"phase":"downloading"}));})?;
+            use sha2::{Digest,Sha256};use std::io::Read;
+            let expected=track["sha256"].as_str().ok_or("Legacy backup has no integrity hash; cannot safely restore")?;
+            let mut file=std::fs::File::open(&path).map_err(|_|"Downloaded audio unavailable")?;let mut hash=Sha256::new();let mut buffer=[0u8;65536];let mut size=0u64;
+            loop{let n=file.read(&mut buffer).map_err(|_|"Restore checksum failed")?;if n==0{break;}size+=n as u64;hash.update(&buffer[..n]);}
+             let integrity_ok=track["bytes"].as_u64()==Some(size)&&format!("{:x}",hash.finalize())==expected;
+             let _=app.emit("drive-download-progress",serde_json::json!({"snapshot":file_id,"track":index,"tracks":audio.len(),"downloaded":size,"total":size,"phase":"verifying"}));
+             if !integrity_ok{return Err("Restored audio integrity mismatch".into());}
+             let _=app.emit("drive-download-progress",serde_json::json!({"snapshot":file_id,"track":index,"tracks":audio.len(),"downloaded":size,"total":size,"phase":"verified"}));
+            paths.push(path);
+        }
+        if let Some(tracks)=value["tracks"].as_array(){
+            let mut restored=Vec::new();
+            for track in tracks {
+                let name=track["file"].as_str().ok_or("Invalid track offset filename")?;
+                let offset=track["offset_seconds"].as_f64().ok_or("Invalid track offset")?;
+                if !offset.is_finite()||offset<0.0{return Err("Invalid track offset".into());}
+                let index=audio.iter().position(|item|item["original_filename"].as_str()==Some(name)).ok_or("Offset references missing track")?;
+                restored.push(serde_json::json!({"file":paths[index].file_name().and_then(|s|s.to_str()),"offset_seconds":offset}));
+            }
+            std::fs::write(directory.join("tracks.json"),serde_json::to_vec(&restored).map_err(|_|"Offset serialization failed")?).map_err(|_|"Offset restore failed")?;
+        }
+        recording.id=id.clone();recording.source_filename=format!("{} (Drive)",recording.source_filename);
+        recording.source_path=paths[0].to_string_lossy().into();recording.audio_path=Some(recording.source_path.clone());
+        recording.status=TranscriptionStatus::Completed;recording.queue_visible=false;
+        let mut store=store.lock().map_err(|_|"Store unavailable")?;
+        let segments:Vec<_>=segments.into_iter().enumerate().map(|(index,mut segment)|{segment.transcription_id=id.clone();segment.id=format!("{id}:{index}");segment.index=index;segment}).collect();
+        store.restore_snapshot_organized(&file_id,&recording,&segments,&value).map_err(|_|"Could not atomically restore recording".into())
+    }).await.map_err(|_|"Drive restore worker failed")?
+}
 
 struct WorkerHandle(Sender<()>);
 
 struct LiveState {
+    lifecycle: Mutex<()>,
     capture: Arc<Mutex<Option<Arc<Mutex<LiveCapture>>>>>,
     handle: Arc<Mutex<Option<live::platform::CaptureHandle>>>,
     inference_stop: Arc<Mutex<Option<Sender<()>>>>,
@@ -42,11 +283,14 @@ struct LiveState {
     model_ready: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
     paused: Arc<AtomicBool>,
+    finalizing: AtomicBool,
+    finalization_cancel: Mutex<Option<(String, Arc<AtomicBool>)>>,
 }
 
 impl LiveState {
     fn new() -> Self {
         Self {
+            lifecycle: Mutex::new(()),
             capture: Arc::new(Mutex::new(None)),
             handle: Arc::new(Mutex::new(None)),
             inference_stop: Arc::new(Mutex::new(None)),
@@ -55,6 +299,8 @@ impl LiveState {
             model_ready: Arc::new(AtomicBool::new(false)),
             generation: Arc::new(AtomicU64::new(0)),
             paused: Arc::new(AtomicBool::new(false)),
+            finalizing: AtomicBool::new(false),
+            finalization_cancel: Mutex::new(None),
         }
     }
 }
@@ -271,6 +517,17 @@ fn list_queue(state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<Vec<Transcri
 }
 
 #[tauri::command]
+fn load_organization(state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<serde_json::Value, String> {
+    lock_store(&state)?.load_organization().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_organization(nodes: serde_json::Value, previous: serde_json::Value, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(), String> {
+    let mut store = lock_store(&state)?;
+    store.save_organization_if_unchanged(previous, nodes)
+}
+
+#[tauri::command]
 fn list_history(state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<Vec<Transcription>, String> {
     lock_store(&state)?
         .list_history()
@@ -299,24 +556,26 @@ fn get_segments(
 }
 
 #[tauri::command]
-fn cancel_transcription(
+async fn cancel_transcription(
     id: String,
     state: tauri::State<'_, Arc<Mutex<Store>>>,
     live: tauri::State<'_, LiveState>,
-    worker: tauri::State<'_, WorkerHandle>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     lock_store(&state)?
         .request_cancel(&id, now_ms())
         .map_err(|error| error.to_string())?;
-    let active_live = live
-        .capture
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|capture| capture.lock().unwrap().id == id);
+    if let Some((session, cancel)) = live.finalization_cancel.lock().unwrap().as_ref() {
+        if session == &id {
+            cancel.store(true, Ordering::Release);
+        }
+    }
+    let active_capture = live.capture.lock().unwrap().as_ref().cloned();
+    let active_live = active_capture.is_some_and(|capture| capture.lock().unwrap().id == id);
     if active_live {
-        let _ = stop_live(state, live, worker, app)?;
+        if !live.finalizing.load(Ordering::SeqCst) {
+            let _ = stop_live(app).await?;
+        }
     }
     Ok(())
 }
@@ -437,7 +696,7 @@ fn session_audio_files(
                 let path = entry.path();
                 if matches!(
                     path.extension().and_then(|ext| ext.to_str()),
-                    Some("flac" | "wav" | "mp3")
+                    Some("flac" | "wav" | "mp3" | "ogg")
                 ) && path.file_stem().and_then(|stem| stem.to_str()) != Some("mixed")
                 {
                     files.push(path.to_string_lossy().into_owned());
@@ -456,6 +715,11 @@ fn session_audio_files(
         files.push(record.source_path);
     }
     Ok(files)
+}
+
+#[tauri::command]
+fn clear_transcript(id: String, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(), String> {
+    lock_store(&state)?.clear_transcript(&id).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -514,7 +778,7 @@ fn mixed_session_audio(id: String, app: tauri::AppHandle) -> Result<String, Stri
         .filter(|path| {
             matches!(
                 path.extension().and_then(|ext| ext.to_str()),
-                Some("flac" | "wav" | "mp3")
+                Some("flac" | "wav" | "mp3" | "ogg")
             ) && path.file_stem().and_then(|stem| stem.to_str()) != Some("mixed")
         })
         .collect();
@@ -575,10 +839,13 @@ fn mixed_session_audio(id: String, app: tauri::AppHandle) -> Result<String, Stri
         let format = match extension.as_str() {
             "flac" => ArchiveFormat::Flac,
             "mp3" => ArchiveFormat::Mp3,
+            "ogg" => ArchiveFormat::Ogg,
             _ => ArchiveFormat::Wav,
         };
-        let result = pipeline::mix_mono_48k(&tracks)
-            .and_then(|samples| live::encode_mono_48k(&samples, &output, format));
+        let raw = output.with_extension("mix.raw.partial");
+        let result = pipeline::mix_mono_48k_to_raw(&tracks, &raw)
+            .and_then(|_| live::encode_raw_48k(&raw, &output, format));
+        let _ = std::fs::remove_file(&raw);
         if let Err(error) = result {
             log(&format!("mixed_session_audio failed for {id}: {error}"));
             return Err(error.to_string());
@@ -591,6 +858,22 @@ fn mixed_session_audio(id: String, app: tauri::AppHandle) -> Result<String, Stri
 #[tauri::command]
 fn model_status(models: tauri::State<'_, ModelManager>) -> ModelStatus {
     models.status()
+}
+
+#[tauri::command]
+fn model_directory(models:tauri::State<'_,ModelManager>)->String{models.directory().to_string_lossy().into_owned()}
+
+#[tauri::command]
+fn load_summary_settings(state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<Option<serde_json::Value>,String>{
+    lock_store(&state)?.summary_settings().map_err(|_|"Settings unavailable")?.map(|value|serde_json::from_str(&value).map_err(|_|"Settings invalid".to_owned())).transpose()
+}
+
+#[tauri::command]
+fn save_summary_settings(settings:serde_json::Value,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<(),String>{
+    let allowed=["source","endpoint","model","ollama","gguf"];
+    let object=settings.as_object().ok_or("Settings invalid")?;
+    if object.keys().any(|key|!allowed.contains(&key.as_str()))||object.values().any(|value|!value.is_string())||settings.to_string().len()>16384{return Err("Settings invalid".into());}
+    lock_store(&state)?.save_summary_settings(&settings.to_string()).map_err(|_|"Could not save settings".into())
 }
 
 #[tauri::command]
@@ -627,6 +910,13 @@ fn start_live(
     live: tauri::State<'_, LiveState>,
     app: tauri::AppHandle,
 ) -> Result<LiveStatus, String> {
+    let _lifecycle = live
+        .lifecycle
+        .try_lock()
+        .map_err(|_| "live lifecycle transition in progress")?;
+    if live.finalizing.load(Ordering::SeqCst) {
+        return Err("previous recording is finalizing".into());
+    }
     if live.capture.lock().unwrap().is_some() {
         return Err("recording already active".into());
     }
@@ -829,7 +1119,7 @@ fn start_live(
                 *live_error.lock().unwrap() = Some(error.to_string());
                 return;
             }
-            let fed = (mic_scanner.fed_48k(), system_scanner.fed_48k());
+            let fed = (mic_scanner.fed_input(), system_scanner.fed_input());
             if stopping {
                 if let Err(error) = mic_scanner.finish().and_then(|()| system_scanner.finish()) {
                     *live_error.lock().unwrap() = Some(error.to_string());
@@ -934,13 +1224,18 @@ fn set_mic_gain(mic_gain: f32, live: tauri::State<'_, LiveState>) -> Result<(), 
 
 #[tauri::command]
 fn pause_live(live: tauri::State<'_, LiveState>) -> Result<(), String> {
+    let _lifecycle = live
+        .lifecycle
+        .try_lock()
+        .map_err(|_| "live lifecycle transition in progress")?;
+    if live.finalizing.load(Ordering::SeqCst) {
+        return Err("recording is finalizing".into());
+    }
     if live.capture.lock().unwrap().is_none() {
         return Err("no active recording".into());
     }
-    if live.handle.lock().unwrap().is_some() {
-        if let Some(handle) = live.handle.lock().unwrap().take() {
-            handle.stop();
-        }
+    if let Some(handle) = live.handle.lock().unwrap().take() {
+        handle.stop();
         live.paused.store(true, Ordering::Relaxed);
     }
     Ok(())
@@ -948,6 +1243,13 @@ fn pause_live(live: tauri::State<'_, LiveState>) -> Result<(), String> {
 
 #[tauri::command]
 fn resume_live(live: tauri::State<'_, LiveState>) -> Result<(), String> {
+    let _lifecycle = live
+        .lifecycle
+        .try_lock()
+        .map_err(|_| "live lifecycle transition in progress")?;
+    if live.finalizing.load(Ordering::SeqCst) {
+        return Err("recording is finalizing".into());
+    }
     if live.handle.lock().unwrap().is_some() {
         return Ok(());
     }
@@ -966,12 +1268,8 @@ fn resume_live(live: tauri::State<'_, LiveState>) -> Result<(), String> {
 
 #[tauri::command]
 fn live_status(live: tauri::State<'_, LiveState>) -> Option<LiveStatus> {
-    let mut status = live
-        .capture
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|capture| capture.lock().unwrap().status())?;
+    let capture = live.capture.lock().unwrap().as_ref().cloned()?;
+    let mut status = capture.lock().unwrap().status();
     if let Some(error) = live.error.lock().unwrap().clone() {
         status.error = Some(error);
     }
@@ -981,12 +1279,167 @@ fn live_status(live: tauri::State<'_, LiveState>) -> Option<LiveStatus> {
 }
 
 #[tauri::command]
-fn stop_live(
+fn live_finalizing(live: tauri::State<'_, LiveState>) -> bool {
+    live.finalizing.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+async fn stop_live(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let stop_requested = std::time::Instant::now();
+    // Native joins and archive encoding must never execute on the webview
+    // command thread. The session remains guarded until durable completion.
+    let (acknowledge, acknowledgement) = tokio::sync::oneshot::channel();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut acknowledge = Some(acknowledge);
+        let result = (|| -> Result<Vec<String>, String> {
+            let live = app.state::<LiveState>();
+            let lifecycle = live
+                .lifecycle
+                .try_lock()
+                .map_err(|_| "live lifecycle transition in progress")?;
+            let _guard = finalization::FinalizationClaim::acquire(&live.finalizing)
+                .ok_or("recording is already finalizing")?;
+            let capture = live
+                .capture
+                .lock()
+                .map_err(|_| "capture lock poisoned")?
+                .as_ref()
+                .cloned()
+                .ok_or("no active recording")?;
+            let id = capture
+                .lock()
+                .map_err(|_| "capture lock poisoned")?
+                .id
+                .clone();
+            let cancel = capture
+                .lock()
+                .map_err(|_| "capture lock poisoned")?
+                .finalization_cancel
+                .clone();
+            *live.finalization_cancel.lock().unwrap() = Some((id.clone(), cancel.clone()));
+            if app
+                .state::<Arc<Mutex<Store>>>()
+                .lock()
+                .map_err(|_| "store lock poisoned")?
+                .is_cancelled(&id)
+                .map_err(|error| error.to_string())?
+            {
+                cancel.store(true, Ordering::Release);
+            }
+            drop(lifecycle);
+            // Stop device ingress even if writing finalization metadata fails.
+            // Otherwise an error could leave an invisible recording running.
+            if let Some(handle) = live.handle.lock().unwrap().as_ref() {
+                handle.request_stop();
+            }
+            let persistence_start = app
+                .state::<Arc<Mutex<Store>>>()
+                .lock()
+                .map_err(|_| "store lock poisoned")?
+                .begin_live_finalization(&id, now_ms())
+                .map_err(|error| error.to_string());
+            let result = finalization::finish_after_acknowledgement(
+                || {
+                    if let Some(path) = debug_log_path(&app) {
+                        debug_log(
+                            &path,
+                            &format!(
+                                "stop_ack_ms={} session={id} persistence_started={}",
+                                stop_requested.elapsed().as_millis(),
+                                persistence_start.is_ok()
+                            ),
+                        );
+                    }
+                    // Device ingress is already stopping, so the UI may regain control even
+                    // when the finalization marker could not be written. The background
+                    // finalizer still attempts the archive and reports/persists its error.
+                    if let Some(sender) = acknowledge.take() {
+                        let _ = sender.send(Ok(Vec::new()));
+                    }
+                },
+                || {
+                    stop_live_blocking(
+                        app.state::<Arc<Mutex<Store>>>(),
+                        app.state::<LiveState>(),
+                        app.state::<WorkerHandle>(),
+                        app.clone(),
+                    )
+                },
+            );
+            if let Err(error) = &result {
+                // No new session can start while this claim is held. Clear only
+                // the failed session, recovering a poisoned slot for future use.
+                {
+                    let mut slot = live
+                        .capture
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if slot.as_ref().is_some_and(|capture| {
+                        capture
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .id
+                            == id
+                    }) {
+                        slot.take();
+                    }
+                }
+                live.capture.clear_poison();
+                *live
+                    .error
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.clone());
+                if let Ok(mut store) = app.state::<Arc<Mutex<Store>>>().lock() {
+                    let _ = store.fail_if_not_cancelled(&id, error, now_ms());
+                }
+            }
+            let status_result = app
+                .state::<Arc<Mutex<Store>>>()
+                .lock()
+                .map_err(|_| "store lock poisoned")?
+                .finish_live_finalization(&id, result.is_ok(), now_ms())
+                .map_err(|error| error.to_string());
+            *live.finalization_cancel.lock().unwrap() = None;
+            status_result?;
+            if let Some(path) = debug_log_path(&app) {
+                debug_log(
+                    &path,
+                    &format!(
+                        "stop_finalization_ms={} session={id}",
+                        stop_requested.elapsed().as_millis()
+                    ),
+                );
+            }
+            persistence_start?;
+            result
+        })();
+        if let Some(sender) = acknowledge.take() {
+            let _ = sender.send(result.clone());
+        }
+        if let Err(error) = result {
+            if let Some(path) = debug_log_path(&app) {
+                debug_log(&path, &format!("Live finalization failed: {error}"));
+            }
+        }
+    });
+    acknowledgement
+        .await
+        .map_err(|_| "Live finalizer stopped before acknowledging capture shutdown".to_string())?
+}
+
+fn stop_live_blocking(
     state: tauri::State<'_, Arc<Mutex<Store>>>,
     live: tauri::State<'_, LiveState>,
     worker: tauri::State<'_, WorkerHandle>,
     app: tauri::AppHandle,
 ) -> Result<Vec<String>, String> {
+    struct NotifyWorkerOnExit(Sender<()>);
+    impl Drop for NotifyWorkerOnExit {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+    let _notify = NotifyWorkerOnExit(worker.0.clone());
     let log_path = debug_log_path(&app);
     let log = |message: &str| {
         if let Some(path) = log_path.as_ref() {
@@ -1006,7 +1459,10 @@ fn stop_live(
         // Completion is reported only after the final inference flush. The
         // previous three-second detach left live records visibly incomplete.
         let waited = std::time::Instant::now();
-        let _ = thread.join();
+        if thread.join().is_err() {
+            *live.error.lock().unwrap() =
+                Some("Live inference worker panicked; audio archive preserved".into());
+        }
         log(&format!(
             "inference final flush joined in {}ms",
             waited.elapsed().as_millis()
@@ -1017,8 +1473,7 @@ fn stop_live(
         .capture
         .lock()
         .unwrap()
-        .as_ref()
-        .cloned()
+        .take()
         .ok_or("no active recording")?;
     let mut capture = capture.lock().map_err(|_| "capture lock is poisoned")?;
     let id = capture.id.clone();
@@ -1033,11 +1488,8 @@ fn stop_live(
             } else {
                 let _ = store.fail_if_not_cancelled(&id, &error.to_string(), now_ms());
             }
-            for extension in ["flac", "wav", "mp3"] {
-                let _ =
-                    std::fs::remove_file(capture.directory.join(format!("microphone.{extension}")));
-                let _ = std::fs::remove_file(capture.directory.join(format!("system.{extension}")));
-            }
+            // LiveCapture owns exact staged-output rollback. Do not delete
+            // legacy filenames here: they may be valid recovery archives.
             drop(capture);
             *live.capture.lock().unwrap() = None;
             let _ = worker.0.send(());
@@ -1066,15 +1518,17 @@ fn stop_live(
         let _ = worker.0.send(());
         return Ok(files);
     }
-    store
-        .set_duration(&id, duration)
-        .map_err(|error| error.to_string())?;
-    store
-        .set_audio_path(&id, files.first().map(String::as_str))
-        .map_err(|error| error.to_string())?;
-    store
-        .transition(&id, TranscriptionStatus::Completed, now_ms(), None)
-        .map_err(|error| error.to_string())?;
+    if let Err(error) =
+        store.complete_live_archive(&id, duration, files.first().map(String::as_str), now_ms())
+    {
+        let message = format!("Audio archive saved but final metadata commit failed: {error}");
+        let _ = store.fail_if_not_cancelled(&id, &message, now_ms());
+        let _ = worker.0.send(());
+        return Err(message);
+    }
+    if let Err(error) = capture.cleanup_committed_raw() {
+        log(&format!("committed archive raw cleanup deferred: {error}"));
+    }
     drop(capture);
     *live.capture.lock().unwrap() = None;
     let _ = worker.0.send(());
@@ -1094,6 +1548,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            if let Ok(root)=app.path().app_data_dir() { drive_outbox::start_worker(root,app.handle().clone()); }
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let mut store = Store::open(data_dir.join("gigaam.sqlite3"))?;
@@ -1117,6 +1572,36 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            summarize_ollama,
+            list_summary_models,
+            install_summary_runtime,
+            download_summary_model,
+            installed_summary_model,
+            summarize_gguf,
+            summarize_api,
+            list_summary_api_models,
+            set_summary_api_key,
+            load_summary,
+            save_summary,
+            save_summary_export,
+            google_drive_connect,
+            google_drive_disconnect,
+            google_drive_connected,
+            google_drive_queue_status,
+            google_drive_prepare_folder,
+            google_drive_upload,
+            google_drive_resolve,
+            google_drive_snapshots,
+            google_drive_branches,
+            google_drive_tree,
+            google_drive_selection,
+            google_drive_save_selection,
+            google_drive_trash_snapshot,
+            google_drive_restored_ids,
+            google_drive_local_lineage,
+            google_drive_restore,
+            load_organization,
+            save_organization,
             enqueue_files,
             start_transcription,
             list_queue,
@@ -1132,6 +1617,7 @@ pub fn run() {
             session_audio_files,
             mixed_session_audio,
             update_segment_text,
+            clear_transcript,
             rename_transcription,
             start_live,
             set_mic_gain,
@@ -1140,7 +1626,11 @@ pub fn run() {
             list_microphones,
             live_status,
             stop_live,
+            live_finalizing,
             model_status,
+            model_directory,
+            load_summary_settings,
+            save_summary_settings,
             download_model,
             cancel_model_download,
         ])
