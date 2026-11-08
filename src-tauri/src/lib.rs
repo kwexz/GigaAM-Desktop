@@ -441,6 +441,45 @@ fn enqueue_files(
 }
 
 #[tauri::command]
+async fn download_diarization_model(app: tauri::AppHandle) -> Result<String, String> {
+    let directory = app.path().app_data_dir().map_err(|_| "App data unavailable")?.join("diarization");
+    tauri::async_runtime::spawn_blocking(move || diarization::download_speaker_model(&directory).map(|path| path.to_string_lossy().into_owned()).map_err(|error| error.to_string()))
+        .await.map_err(|_| "Model download failed".to_owned())?
+}
+
+#[tauri::command]
+async fn diarize_recording(id: String, model_path: String, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(), String> {
+    let store = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        diarization::verify_speaker_model(Path::new(&model_path)).map_err(|_| "Модель говорящих не прошла проверку; загрузите поддерживаемую модель".to_owned())?;
+        let (record, segments) = {
+            let db = store.lock().map_err(|_| "database unavailable")?;
+            let record = db.get(&id).map_err(|_| "recording unavailable")?.ok_or("recording not found")?;
+            if record.status != TranscriptionStatus::Completed { return Err("Дождитесь завершения распознавания".to_owned()); }
+            let segments = db.segments(&id).map_err(|_| "transcript unavailable")?;
+            (record, segments)
+        };
+        let path = record.audio_path.as_deref().unwrap_or(&record.source_path);
+        let speakers = diarization::analyze_file(Path::new(path), Path::new(&model_path), &segments).map_err(|error| format!("Диаризация не выполнена: {error}"))?;
+        let mut db = store.lock().map_err(|_| "database unavailable")?;
+        if !db.set_speakers_if_unchanged(&segments, &speakers).map_err(|_| "could not save speaker labels")? {
+            return Err("Транскрипт изменился во время обработки; повторите попытку".to_owned());
+        }
+        Ok(())
+    }).await.map_err(|_| "diarization worker failed".to_owned())?
+}
+
+#[tauri::command]
+fn set_phrase_recognition(enabled: bool, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(), String> {
+    lock_store(&state)?.set_phrase_recognition(enabled).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_phrase_recognition(state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<bool, String> {
+    lock_store(&state)?.phrase_recognition().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn start_transcription(
     id: String,
     state: tauri::State<'_, Arc<Mutex<Store>>>,
@@ -1604,6 +1643,10 @@ pub fn run() {
             save_organization,
             enqueue_files,
             start_transcription,
+            set_phrase_recognition,
+            get_phrase_recognition,
+            diarize_recording,
+            download_diarization_model,
             list_queue,
             list_history,
             search_history,
@@ -1654,3 +1697,5 @@ mod tests {
         assert_eq!(super::live_timestamp(1_700_000_000_000), "20231114-221320");
     }
 }
+mod speaker_features;
+mod diarization;

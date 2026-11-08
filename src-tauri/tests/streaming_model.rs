@@ -12,10 +12,12 @@ use gigaam_desktop_lib::{
         SourceTrack, TranscriptSegment, Transcription, TranscriptionKind, TranscriptionStatus,
     },
     pipeline::NativeFileProcessor,
-    queue::FileProcessor,
+    queue::{FileProcessor, process_next},
+    storage::Store,
 };
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 const FIXTURES: &[(&str, &[&str])] = &[
     (
@@ -100,6 +102,25 @@ fn transcribe(processor: &mut NativeFileProcessor, path: &Path) -> (Vec<Transcri
     (segments, duration)
 }
 
+#[test]
+#[ignore = "requires pinned models via GIGAAM_TEST_MODELS"]
+fn phrase_queue_persists_real_model_output() {
+    let model = PathBuf::from(std::env::var_os("GIGAAM_TEST_MODELS").expect("set GIGAAM_TEST_MODELS"));
+    let mut processor = NativeFileProcessor::load(&model).unwrap();
+    let mut task = job(&fixture_path("besarab-clean.wav"));
+    task.status = TranscriptionStatus::Queued;
+    task.queue_visible = true;
+    let store = Arc::new(Mutex::new(Store::memory().unwrap()));
+    store.lock().unwrap().enqueue(&task).unwrap();
+    store.lock().unwrap().request_start(&task.id).unwrap();
+    assert!(process_next(&store, &mut processor, 1).unwrap());
+    let segments = store.lock().unwrap().segments(&task.id).unwrap();
+    assert!(!segments.is_empty());
+    assert!(segments.windows(2).all(|pair| pair[0].end_seconds <= pair[1].start_seconds));
+    let text = segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ").to_lowercase();
+    for anchor in ["меня зовут", "журналистика", "науку и технологии"] { assert_eq!(text.matches(anchor).count(), 1, "{anchor}: {text}"); }
+}
+
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../tests/fixtures")
@@ -120,6 +141,7 @@ fn streaming_file_transcription_matches_frozen_batch_baseline() {
     for (name, anchors) in FIXTURES {
         let path = fixture_path(name);
         let (segments, duration) = transcribe(&mut processor, &path);
+        assert!(segments.iter().enumerate().all(|(index, segment)| segment.index == index && segment.id == format!("streaming-fixture:{index}")), "{name}: unstable segment identity");
         let text = segments
             .iter()
             .map(|segment| segment.text.as_str())
@@ -194,9 +216,8 @@ fn streaming_file_transcription_matches_frozen_batch_baseline() {
             "{name} streaming CER {cer} exceeds 25% vs batch"
         );
 
-        // Boundaries are allowed to move with the streaming VAD window, but
-        // every batch boundary must have a streaming boundary nearby and the
-        // segment count may not collapse or explode.
+        // Sentence splitting can add boundaries within each VAD window, but
+        // the original window starts must still be represented nearby.
         let expected_starts: Vec<f64> = expected["segments"]
             .as_array()
             .unwrap()
@@ -218,10 +239,5 @@ fn streaming_file_transcription_matches_frozen_batch_baseline() {
                 "{name} lost boundary at {start:.3}s (streaming={actual_starts:?})"
             );
         }
-        let ratio = actual_starts.len() as f64 / expected_starts.len().max(1) as f64;
-        assert!(
-            (0.5..=2.0).contains(&ratio),
-            "{name} segment count ratio {ratio} outside [0.5, 2.0]"
-        );
     }
 }

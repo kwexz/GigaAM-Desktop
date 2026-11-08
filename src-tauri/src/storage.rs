@@ -11,6 +11,15 @@ pub struct Store {
 }
 
 impl Store {
+    pub fn phrase_recognition(&self) -> rusqlite::Result<bool> {
+        self.connection.execute_batch("CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)")?;
+        Ok(self.connection.query_row("SELECT value FROM app_settings WHERE key='phrase_recognition'", [], |row| row.get::<_, String>(0)).optional()?.as_deref() != Some("false"))
+    }
+    pub fn set_phrase_recognition(&self, enabled: bool) -> rusqlite::Result<()> {
+        self.phrase_recognition()?;
+        self.connection.execute("INSERT INTO app_settings(key,value) VALUES('phrase_recognition',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [enabled.to_string()])?;
+        Ok(())
+    }
     pub fn summary_settings(&self)->rusqlite::Result<Option<String>> {
         self.connection.execute_batch("CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)")?;
         self.connection.query_row("SELECT value FROM app_settings WHERE key='summary'",[],|row|row.get(0)).optional()
@@ -752,6 +761,30 @@ impl Store {
         transaction.commit()
     }
 
+    /// Extend a previously persisted fragment only if it has not been edited.
+    pub fn extend_segment_if_unchanged(&mut self, previous: &TranscriptSegment, next: &TranscriptSegment) -> rusqlite::Result<bool> {
+        let text = format!("{} {}", previous.text.trim_end(), next.text.trim_start());
+        let changed = self.connection.execute(
+            "UPDATE transcript_segments SET text = ?1, end_seconds = ?2 WHERE transcription_id = ?3 AND segment_index = ?4 AND text = ?5 AND end_seconds = ?6",
+            params![text, next.end_seconds, previous.transcription_id, previous.index, previous.text, previous.end_seconds],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub fn set_speakers_if_unchanged(&mut self, segments: &[TranscriptSegment], speakers: &[Option<String>]) -> rusqlite::Result<bool> {
+        if segments.len() != speakers.len() { return Err(rusqlite::Error::InvalidQuery); }
+        let transaction = self.connection.transaction()?;
+        for (segment, speaker) in segments.iter().zip(speakers) {
+            let changed = transaction.execute(
+                "UPDATE transcript_segments SET speaker_id=?1 WHERE id=?2 AND transcription_id=?3 AND text=?4 AND start_seconds=?5 AND end_seconds=?6 AND speaker_id IS ?7",
+                params![speaker, segment.id, segment.transcription_id, segment.text, segment.start_seconds, segment.end_seconds, segment.speaker_id],
+            )?;
+            if changed != 1 { return Ok(false); }
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
+
     pub fn segments(&self, transcription_id: &str) -> rusqlite::Result<Vec<TranscriptSegment>> {
         let mut statement = self.connection.prepare(
             "SELECT id, transcription_id, segment_index, start_seconds, end_seconds, text,
@@ -911,6 +944,39 @@ fn map_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptSegment> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn speaker_update_is_atomic_and_preserves_text_edits() {
+        let mut store = super::Store::memory().unwrap();
+        let job = transcription("speaker-test", TranscriptionStatus::Completed);
+        store.enqueue_batch(&[job.clone()]).unwrap();
+        let first = TranscriptSegment::new(&job.id, 0, 0.0, 1.0, "one".into(), SourceTrack::File, SegmentState::Final).unwrap();
+        let second = TranscriptSegment::new(&job.id, 1, 1.0, 2.0, "two".into(), SourceTrack::File, SegmentState::Final).unwrap();
+        store.append_segment(&first).unwrap();
+        store.append_segment(&second).unwrap();
+        store.update_segment_text(&job.id, 1, "edited").unwrap();
+        assert!(!store.set_speakers_if_unchanged(&[first.clone(), second.clone()], &[Some("A".into()), Some("B".into())]).unwrap());
+        let segments = store.segments(&job.id).unwrap();
+        assert_eq!(segments[0].speaker_id, None);
+        assert_eq!(segments[1].text, "edited");
+        assert!(store.set_speakers_if_unchanged(&segments, &[Some("A".into()), Some("B".into())]).unwrap());
+        assert_eq!(store.segments(&job.id).unwrap()[1].speaker_id.as_deref(), Some("B"));
+    }
+    #[test]
+    fn phrase_extension_preserves_user_edits() {
+        let mut store = super::Store::memory().unwrap();
+        let job = transcription("phrase-extension", TranscriptionStatus::Completed);
+        store.enqueue_batch(&[job.clone()]).unwrap();
+        let first = TranscriptSegment::new(&job.id, 0, 0.0, 1.0, "начало".into(), SourceTrack::File, SegmentState::Final).unwrap();
+        let next = TranscriptSegment::new(&job.id, 1, 1.0, 2.0, "окончание.".into(), SourceTrack::File, SegmentState::Final).unwrap();
+        store.append_segment(&first).unwrap();
+        assert!(store.extend_segment_if_unchanged(&first, &next).unwrap());
+        assert_eq!(store.segments(&job.id).unwrap()[0].text, "начало окончание.");
+        store.update_segment_text(&job.id, 0, "исправлено").unwrap();
+        assert!(!store.extend_segment_if_unchanged(&first, &next).unwrap());
+        store.append_segment(&next).unwrap();
+        let segments = store.segments(&job.id).unwrap();
+        assert_eq!(segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(), vec!["исправлено", "окончание."]);
+    }
     #[test]fn conflicting_drive_versions_remain_independent_after_edit_clear_and_delete(){
         let mut store=super::Store::memory().unwrap();
         let left=transcription("conflict-left",TranscriptionStatus::Completed);let right=transcription("conflict-right",TranscriptionStatus::Completed);

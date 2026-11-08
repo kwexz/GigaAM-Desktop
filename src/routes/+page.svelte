@@ -38,6 +38,19 @@
 	let selectedId = $state('');
 	let segments = $state<Segment[]>([]);
 	let sentenceView = $state(true);
+	let diarizationEnabled = $state(false);
+	let diarizationBusy = $state(false);
+	let diarizationModel = $state('');
+	async function downloadDiarizationModel() {
+		if (diarizationBusy || browserMode) return;
+		diarizationBusy = true;
+		try {
+			diarizationModel = await invoke<string>('download_diarization_model');
+			localStorage.setItem('gigaam-diarization-model', diarizationModel);
+			notify(locale === 'ru' ? 'Модель говорящих загружена.' : 'Speaker model downloaded.');
+		} catch (cause) { error = String(cause); }
+		finally { diarizationBusy = false; }
+	}
 	let savedSentenceView = true;
 	let sentenceGroups = $derived(groupSentenceSegments(segments));
 	let query = $state('');
@@ -99,6 +112,8 @@
 			if (!browserMode) await invoke('save_summary_settings', { settings });
 			localStorage.setItem('gigaam-summary-settings', JSON.stringify(settings));
 			localStorage.setItem('gigaam-sentence-view', String(sentenceView));
+			localStorage.setItem('gigaam-diarization-enabled', String(diarizationEnabled));
+			if (!browserMode) await invoke('set_phrase_recognition', { enabled: sentenceView });
 			summaryApiKey = ''; summarySettingsOpen = false;
 		} catch { error = locale === 'ru' ? 'Не удалось сохранить настройки' : 'Could not save settings'; }
 	}
@@ -743,6 +758,21 @@
 		}
 	}
 
+	async function diarizeSelected() {
+		if (!selected || browserMode || diarizationBusy) return;
+		const id = selected.id;
+		try {
+			const path = diarizationModel || await open({ multiple: false, filters: [{ name: 'ONNX', extensions: ['onnx'] }] });
+			if (typeof path !== 'string') return;
+			diarizationBusy = true;
+			await invoke('diarize_recording', { id, modelPath: path });
+			const updated = await invoke<Segment[]>('get_segments', { id });
+			if (selected?.id === id) segments = updated;
+			notify(locale === 'ru' ? 'Диаризация завершена; проверьте метки.' : 'Diarization finished; review the labels.');
+		} catch (cause) { error = String(cause); }
+		finally { diarizationBusy = false; }
+	}
+
 	function togglePlay(segment: Segment) {
 		if (!audio) return;
 		const active = !audioPaused && playhead >= segment.start_seconds && playhead < segment.end_seconds;
@@ -941,11 +971,14 @@
 	}
 
 	onMount(() => {
+		try { diarizationModel = localStorage.getItem('gigaam-diarization-model') ?? ''; } catch { /* Keep empty. */ }
+		try { diarizationEnabled = localStorage.getItem('gigaam-diarization-enabled') === 'true'; } catch { /* Keep disabled. */ }
 		try { sentenceView = localStorage.getItem('gigaam-sentence-view') !== 'false'; } catch { /* Keep default. */ }
 		archiveFormat = savedRecordingFormat(localStorage) ?? DEFAULT_RECORDING_FORMAT;
 		try { const selected = JSON.parse(localStorage.getItem('gigaam-drive-selection') ?? '[]'); if (Array.isArray(selected)) driveSelected = selected.filter((value): value is string => typeof value === 'string'); } catch { /* Ignore invalid selection. */ }
 		try { const selected = JSON.parse(localStorage.getItem('gigaam-drive-remote-selection') ?? '[]'); if (Array.isArray(selected)) driveSelectedRemote = selected.filter((value): value is string => typeof value === 'string'); } catch { /* Ignore invalid selection. */ }
 		if ('__TAURI_INTERNALS__' in window) {
+			void invoke<boolean>('get_phrase_recognition').then((value) => { if (typeof value === 'boolean') sentenceView = value; }).catch(() => {});
 			const hasLocalSelection = localStorage.getItem('gigaam-drive-selection') !== null || localStorage.getItem('gigaam-drive-remote-selection') !== null;
 			if (!hasLocalSelection) void invoke<{ local?: string[]; remote?: string[] }>('google_drive_selection').then((saved) => { if (Array.isArray(saved?.local)) driveSelected = saved.local.filter((value): value is string => typeof value === 'string'); if (Array.isArray(saved?.remote)) driveSelectedRemote = saved.remote.filter((value): value is string => typeof value === 'string'); }).catch((cause) => { error = String(cause); });
 		}
@@ -1085,11 +1118,12 @@
 				{#if browserMode && browserTracks.length > 1}<label>{locale === 'ru' ? 'Аудиодорожка' : 'Audio track'}<select onchange={(event) => void chooseBrowserTrack(event.currentTarget.value)}><option value="mix">{locale === 'ru' ? 'Все дорожки вместе' : 'All tracks mixed'}</option>{#each [...browserTracks].sort((a,b) => Number(b.track === 'system') - Number(a.track === 'system')) as track}<option value={track.path}>{track.track === 'system' ? (locale === 'ru' ? 'Система' : 'System') : (locale === 'ru' ? 'Микрофон' : 'Microphone')}</option>{/each}</select></label>{/if}
 				{#if browserMode}<button onclick={() => void resumeRemoteUpload(selected.id)}>{locale === 'ru' ? 'Повторить отправку из архива' : 'Resume archive upload'}</button>{/if}
 				{#if browserMode && mixedSrc}<button class="ghost" onclick={() => void downloadCompactAudio()}>Скачать аудио · Opus</button>{/if}
+				{#if !browserMode && diarizationEnabled && selected.status === 'completed'}<button class="ghost" disabled={diarizationBusy || !segments.length} onclick={() => void diarizeSelected()}>{diarizationBusy ? (locale === 'ru' ? 'Диаризация…' : 'Diarizing…') : (locale === 'ru' ? 'Разделить говорящих' : 'Identify speakers')}</button>{/if}
 				
 				{#if sentenceView}
 					{#each sentenceGroups as group (group[0].key)}
 						<div class="segment sentence-group"><button class="seg-play" aria-label={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} onclick={() => togglePlay(group[0].segment)}>▶</button><time>{time(group[0].segment.start_seconds)}</time><div class="seg-body">
-							{#if group[0].segment.source_track !== 'file'}<b>{group[0].segment.speaker_id ?? (group[0].segment.source_track === 'microphone' ? (locale === 'ru' ? 'Я' : 'Me') : (locale === 'ru' ? 'Система' : 'System'))}</b>{/if}
+							{#if group[0].segment.speaker_id || group[0].segment.source_track !== 'file'}<b>{group[0].segment.speaker_id ?? (group[0].segment.source_track === 'microphone' ? (locale === 'ru' ? 'Я' : 'Me') : (locale === 'ru' ? 'Система' : 'System'))}</b>{/if}
 							{#each group as fragment (fragment.key)}
 								{@const segment = fragment.segment}
 								{#if editingId === segment.id}<textarea bind:value={editText} rows={3} onkeydown={(event) => editKeys(event, segment)}></textarea><div class="edit-actions"><button class="primary" onclick={() => void saveEdit(segment)}>{locale === 'ru' ? 'Сохранить' : 'Save'}</button><button class="ghost" onclick={() => editingId = null}>{t.cancel}</button></div>{:else}<button class="seg-text" title={locale === 'ru' ? 'Редактировать исходный сегмент' : 'Edit original segment'} onclick={() => startEdit(segment)}>{fragment.text}</button>{' '}{/if}
@@ -1098,7 +1132,7 @@
 					{/each}
 				{:else}
 				{#each segments as segment (segment.id)}
-					<div class="segment" class:playing={playhead >= segment.start_seconds && playhead < segment.end_seconds}><button class="seg-play" title={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} aria-label={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} onclick={() => togglePlay(segment)}>{#if !audioPaused && playhead >= segment.start_seconds && playhead < segment.end_seconds}<span class="pause-bars" aria-hidden="true"><i></i><i></i></span>{:else}<span class="play-triangle" aria-hidden="true">▶</span>{/if}</button><time>{time(segment.start_seconds)}</time><div class="seg-body">{#if segment.source_track !== 'file'}<b>{segment.speaker_id ?? (segment.source_track === 'microphone' ? (locale === 'ru' ? 'Я' : 'Me') : (locale === 'ru' ? 'Система' : 'System'))}</b>{/if}{#if editingId === segment.id}<textarea bind:value={editText} rows={3} onkeydown={(event) => editKeys(event, segment)}></textarea><div class="edit-actions"><button class="primary" onclick={() => void saveEdit(segment)}>{locale === 'ru' ? 'Сохранить' : 'Save'}</button><button class="ghost" onclick={() => editingId = null}>{t.cancel}</button></div>{:else}<button class="seg-text" title={locale === 'ru' ? 'Нажмите, чтобы редактировать' : 'Click to edit'} onclick={() => startEdit(segment)} onkeydown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); startEdit(segment); } }}>{segment.text}</button>{/if}</div></div>
+					<div class="segment" class:playing={playhead >= segment.start_seconds && playhead < segment.end_seconds}><button class="seg-play" title={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} aria-label={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} onclick={() => togglePlay(segment)}>{#if !audioPaused && playhead >= segment.start_seconds && playhead < segment.end_seconds}<span class="pause-bars" aria-hidden="true"><i></i><i></i></span>{:else}<span class="play-triangle" aria-hidden="true">▶</span>{/if}</button><time>{time(segment.start_seconds)}</time><div class="seg-body">{#if segment.speaker_id || segment.source_track !== 'file'}<b>{segment.speaker_id ?? (segment.source_track === 'microphone' ? (locale === 'ru' ? 'Я' : 'Me') : (locale === 'ru' ? 'Система' : 'System'))}</b>{/if}{#if editingId === segment.id}<textarea bind:value={editText} rows={3} onkeydown={(event) => editKeys(event, segment)}></textarea><div class="edit-actions"><button class="primary" onclick={() => void saveEdit(segment)}>{locale === 'ru' ? 'Сохранить' : 'Save'}</button><button class="ghost" onclick={() => editingId = null}>{t.cancel}</button></div>{:else}<button class="seg-text" title={locale === 'ru' ? 'Нажмите, чтобы редактировать' : 'Click to edit'} onclick={() => startEdit(segment)} onkeydown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); startEdit(segment); } }}>{segment.text}</button>{/if}</div></div>
 				{/each}
 				{/if}
 				{#if !segments.length}{#if selected.status === 'completed'}<div class="empty-transcript"><p>{locale === 'ru' ? 'В записи не найдена речь: сегментов нет. Если аудио не пустое, нажмите «Повторить» для перезапуска распознавания.' : 'No speech found in this recording. If the audio is not empty, press Retry to re-run recognition.'}</p></div>{:else}<div class="processing"><span></span><p>{statuses[locale][selected.status]}</p></div>{/if}{/if}
@@ -1151,7 +1185,7 @@
 	</section>
 {/if}
 
-{#if summarySettingsOpen}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={cancelSettings}></button><div class="modal summary-settings-dialog" role="dialog" aria-modal="true" tabindex="-1" aria-label={locale === 'ru' ? 'Настройки суммаризации' : 'Summary settings'}><h2>{locale === 'ru' ? 'Настройки суммаризации' : 'Summary settings'}</h2><div class="settings-tabs"><button class="ghost" aria-pressed={settingsTab === 'recognition'} onclick={() => settingsTab = 'recognition'}>{locale === 'ru' ? 'Распознавание' : 'Recognition'}</button><button class="ghost" aria-pressed={settingsTab === 'summary'} onclick={() => settingsTab = 'summary'}>{locale === 'ru' ? 'Суммаризация' : 'Summarization'}</button></div>{#if settingsTab === 'recognition'}<div class="summary-settings"><label class="sentence-setting"><input type="checkbox" bind:checked={sentenceView} /> {locale === 'ru' ? 'Объединять фрагменты фраз' : 'Join phrase fragments'}</label><small>{locale === 'ru' ? 'Меняет отображение текста, не исходные сегменты распознавания.' : 'Changes the display, not the underlying recognition segments.'}</small>{#if modelDirectory}<p class="model-location">{locale === 'ru' ? 'Папка модели GigaAM' : 'GigaAM model folder'}: <code>{modelDirectory}</code></p>{/if}<label>{locale === 'ru' ? 'Модель распознавания' : 'Recognition model'}<select disabled><option>GigaAM v3 E2E CTC int8 + Silero VAD</option></select></label><small>{locale === 'ru' ? 'Поддерживается только этот проверенный комплект ONNX и словаря. GGUF и модели Ollama предназначены для суммаризации и не совместимы с распознаванием.' : 'Only this validated ONNX and vocabulary set is supported. GGUF and Ollama models are not compatible with recognition.'}</small><span>{model.installed ? (locale === 'ru' ? 'Установлена' : 'Installed') : (locale === 'ru' ? 'Не установлена' : 'Not installed')}</span>{#if !model.installed && !browserMode}<button class="ghost" disabled={model.downloading} onclick={() => invoke('download_model')}>{locale === 'ru' ? 'Скачать модель' : 'Download model'}</button>{/if}</div>{:else}<div class="summary-settings">
+{#if summarySettingsOpen}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={cancelSettings}></button><div class="modal summary-settings-dialog" role="dialog" aria-modal="true" tabindex="-1" aria-label={locale === 'ru' ? 'Настройки суммаризации' : 'Summary settings'}><h2>{locale === 'ru' ? 'Настройки суммаризации' : 'Summary settings'}</h2><div class="settings-tabs"><button class="ghost" aria-pressed={settingsTab === 'recognition'} onclick={() => settingsTab = 'recognition'}>{locale === 'ru' ? 'Распознавание' : 'Recognition'}</button><button class="ghost" aria-pressed={settingsTab === 'summary'} onclick={() => settingsTab = 'summary'}>{locale === 'ru' ? 'Суммаризация' : 'Summarization'}</button></div>{#if settingsTab === 'recognition'}<div class="summary-settings">{#if !browserMode && diarizationEnabled}<button class="ghost" disabled={diarizationBusy} onclick={() => void downloadDiarizationModel()}>{diarizationBusy ? (locale === 'ru' ? 'Загрузка…' : 'Downloading…') : (locale === 'ru' ? 'Загрузить модель говорящих · 27 МБ' : 'Download speaker model · 27 MB')}</button>{/if}<label class="sentence-setting"><input type="checkbox" bind:checked={diarizationEnabled} /> {locale === 'ru' ? 'Диаризация (экспериментально)' : 'Diarization (experimental)'}</label><small>{locale === 'ru' ? 'Для завершённой записи; потребуется локальная ONNX-модель WeSpeaker.' : 'For completed recordings; requires a local WeSpeaker ONNX model.'}</small><label class="sentence-setting"><input type="checkbox" bind:checked={sentenceView} /> {locale === 'ru' ? 'Объединять фрагменты фраз' : 'Join phrase fragments'}</label><small>{locale === 'ru' ? 'Применяется к новым заданиям; существующие записи не изменяются.' : 'Applies to new jobs; existing recordings are unchanged.'}</small>{#if modelDirectory}<p class="model-location">{locale === 'ru' ? 'Папка модели GigaAM' : 'GigaAM model folder'}: <code>{modelDirectory}</code></p>{/if}<label>{locale === 'ru' ? 'Модель распознавания' : 'Recognition model'}<select disabled><option>GigaAM v3 E2E CTC int8 + Silero VAD</option></select></label><small>{locale === 'ru' ? 'Поддерживается только этот проверенный комплект ONNX и словаря. GGUF и модели Ollama предназначены для суммаризации и не совместимы с распознаванием.' : 'Only this validated ONNX and vocabulary set is supported. GGUF and Ollama models are not compatible with recognition.'}</small><span>{model.installed ? (locale === 'ru' ? 'Установлена' : 'Installed') : (locale === 'ru' ? 'Не установлена' : 'Not installed')}</span>{#if !model.installed && !browserMode}<button class="ghost" disabled={model.downloading} onclick={() => invoke('download_model')}>{locale === 'ru' ? 'Скачать модель' : 'Download model'}</button>{/if}</div>{:else}<div class="summary-settings">
 <label>{locale === 'ru' ? 'Источник' : 'Provider'}<select bind:value={summarySource} onchange={() => { if (summarySource === 'ollama') void refreshOllamaModels(); }}><option value="ollama">Ollama · local</option><option value="gguf">GGUF · local</option><option value="api">OpenAI-compatible API</option></select></label>
 {#if summarySource === 'ollama'}<div class="summary-settings-row"><label>{locale === 'ru' ? 'Модель Ollama' : 'Ollama model'}<input type="search" bind:value={summaryModelSearch} placeholder={locale === 'ru' ? 'Поиск модели' : 'Search models'} /><select aria-label={locale === 'ru' ? 'Модель Ollama' : 'Ollama model'} bind:value={ollamaModel}>{#if ollamaModel && !ollamaModels.includes(ollamaModel)}<option value={ollamaModel}>{ollamaModel}</option>{/if}{#each ollamaModels.filter((model) => model.toLowerCase().includes(summaryModelSearch.toLowerCase()) || model === ollamaModel) as model}<option value={model}>{model}</option>{/each}</select></label><button class="ghost" onclick={() => void refreshOllamaModels()}>{locale === 'ru' ? 'Обновить' : 'Refresh'}</button></div>{/if}
 {#if summarySource === 'gguf'}<div class="summary-settings-row"><label>{locale === 'ru' ? 'Файл модели' : 'Model file'}<input readonly value={ggufPath} placeholder=".gguf" /></label><button class="ghost" onclick={() => void pickGguf()}>{locale === 'ru' ? 'Выбрать' : 'Choose'}</button></div><div class="summary-settings-row"><span>{locale === 'ru' ? 'Локальный движок llama.cpp' : 'Local llama.cpp engine'}</span><button class="ghost" disabled={runtimeInstalling} onclick={() => void installGgufRuntime()}>{locale === 'ru' ? 'Установить runtime' : 'Install runtime'}</button></div><small>{locale === 'ru' ? 'Runtime запускает выбранную GGUF-модель локально; устанавливается отдельно и не нужен для Ollama.' : 'The runtime runs the chosen GGUF model locally; it is not needed for Ollama.'}</small>{#if managedGgufPath}<div class="summary-settings-row"><span>{locale === 'ru' ? 'Qwen3-4B установлена' : 'Qwen3-4B installed'}</span><button class="ghost" onclick={() => ggufPath = managedGgufPath ?? ''}>{locale === 'ru' ? 'Выбрать' : 'Use'}</button></div>{:else}<button class="ghost" disabled={runtimeInstalling} onclick={() => void downloadGgufModel()}>{locale === 'ru' ? 'Скачать Qwen3-4B · 2,5 ГБ' : 'Download Qwen3-4B · 2.5 GB'}</button>{/if}{#if modelProgress}<div role="status"><progress max={modelProgress.total} value={modelProgress.downloaded}></progress> {Math.floor(100 * modelProgress.downloaded / modelProgress.total)}%</div>{/if}{/if}
@@ -1161,6 +1195,8 @@
 {#if confirmClear}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={() => confirmClear = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label={locale === 'ru' ? 'Очистить текст' : 'Clear transcript'}><h2>{locale === 'ru' ? 'Очистить весь текст?' : 'Clear the entire transcript?'}</h2><p>{locale === 'ru' ? 'Аудиозапись останется. Удалённый текст нельзя восстановить отменой.' : 'Audio will remain. Deleted text cannot be undone.'}</p><div class="modal-actions"><button class="ghost" onclick={() => confirmClear = false}>{t.cancel}</button><button class="danger-solid" onclick={() => void clearCurrentTranscript()}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button></div></div></div>{/if}
 
 <style>
+	.summary-settings .sentence-setting { display:flex; flex-direction:row; align-items:center; gap:8px; }
+	.summary-settings .sentence-setting input { width:auto; margin:0; flex:none; }
 	.sentence-group .seg-text { display: inline; width: auto; margin: 0; }
 	.header-actions .header-menu > summary { display:flex; align-items:center; justify-content:center; width:36px; height:34px; padding:0; box-sizing:border-box; border:1px solid #d5d7d0; border-radius:8px; font-size:16px; line-height:1; }
 	.header-actions .header-menu .drive-menu-content { top:calc(100% + 6px); bottom:auto; left:auto; right:0; min-width:160px; gap:4px; padding:6px; }
@@ -1189,6 +1225,7 @@
 		height: 34px; min-height: 34px; padding: 7px 12px; border-radius: 8px;
 		font: inherit; font-size: 13px; line-height: 18px; box-sizing: border-box;
 	}
+
 	.transport > button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 	.transport .transport-large { font-size: 14px; line-height: 1; }
 	.item-meta { display: flex; justify-content: space-between; gap: 8px; width: 100%; }
