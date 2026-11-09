@@ -611,7 +611,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn rename_speaker(&mut self, transcription_id: &str, track: SourceTrack, old: Option<&str>, new: &str) -> rusqlite::Result<()> {
+    pub fn rename_speaker(&mut self, transcription_id: &str, track: SourceTrack, old: Option<&str>, new: Option<&str>) -> rusqlite::Result<()> {
         self.connection.execute(
             "UPDATE transcript_segments SET speaker_id=?1 WHERE transcription_id=?2 AND source_track=?3 AND speaker_id IS ?4",
             params![new, transcription_id, source_track_value(track), old],
@@ -962,11 +962,13 @@ mod tests {
             segment.speaker_id = Some("Speaker 1".into());
             store.append_segment(&segment).unwrap();
         }
-        store.rename_speaker(&job.id, SourceTrack::Microphone, Some("Speaker 1"), "Анна").unwrap();
+        store.rename_speaker(&job.id, SourceTrack::Microphone, Some("Speaker 1"), Some("Анна")).unwrap();
         let segments = store.segments(&job.id).unwrap();
         assert_eq!(segments[0].speaker_id.as_deref(), Some("Анна"));
         assert_eq!(segments[1].speaker_id.as_deref(), Some("Speaker 1"));
         assert!(segments.iter().all(|segment| segment.text == "text"));
+        store.rename_speaker(&job.id, SourceTrack::Microphone, Some("Анна"), None).unwrap();
+        assert_eq!(store.segments(&job.id).unwrap()[0].speaker_id, None);
     }
     #[test]
     fn speaker_update_is_atomic_and_preserves_text_edits() {

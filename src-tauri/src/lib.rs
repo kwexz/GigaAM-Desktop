@@ -441,6 +441,13 @@ fn enqueue_files(
 }
 
 #[tauri::command]
+async fn installed_diarization_model(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let path = app.path().app_data_dir().map_err(|_| "App data unavailable")?.join("diarization").join("wespeaker-resnet34.onnx");
+    tauri::async_runtime::spawn_blocking(move || if diarization::verify_speaker_model(&path).is_ok() { Some(path.to_string_lossy().into_owned()) } else { None })
+        .await.map_err(|_| "Model check failed".to_owned())
+}
+
+#[tauri::command]
 async fn download_diarization_model(app: tauri::AppHandle) -> Result<String, String> {
     let directory = app.path().app_data_dir().map_err(|_| "App data unavailable")?.join("diarization");
     tauri::async_runtime::spawn_blocking(move || diarization::download_speaker_model(&directory).map(|path| path.to_string_lossy().into_owned()).map_err(|error| error.to_string()))
@@ -764,8 +771,8 @@ fn clear_transcript(id: String, state: tauri::State<'_, Arc<Mutex<Store>>>) -> R
 #[tauri::command]
 fn rename_speaker(transcription_id: String, track: domain::SourceTrack, old: Option<String>, name: String, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(), String> {
     let name = name.trim();
-    if name.is_empty() || name.chars().count() > 100 { return Err("Некорректное имя говорящего".into()); }
-    lock_store(&state)?.rename_speaker(&transcription_id, track, old.as_deref(), name).map_err(|error| error.to_string())
+    if name.chars().count() > 100 { return Err("Некорректное имя говорящего".into()); }
+    lock_store(&state)?.rename_speaker(&transcription_id, track, old.as_deref(), (!name.is_empty()).then_some(name)).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1654,6 +1661,7 @@ pub fn run() {
             get_phrase_recognition,
             diarize_recording,
             download_diarization_model,
+            installed_diarization_model,
             list_queue,
             list_history,
             search_history,

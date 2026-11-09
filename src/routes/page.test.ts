@@ -79,8 +79,8 @@ describe('GigaAM page', () => {
 		] : backend(command, ...args));
 		render(Page);
 		await fireEvent.click(await screen.findByText('meeting.wav'));
-		expect(await screen.findByText('Микрофон · Speaker 1')).toBeTruthy();
-		expect(screen.getByText('Система · Speaker 2')).toBeTruthy();
+		expect(await screen.findByText('Speaker 1')).toBeTruthy();
+		expect(screen.getByText('Speaker 2')).toBeTruthy();
 	});
 	it('shows speaker labels on imported files', async () => {
 		mockBackend({ items: [historyItem] });

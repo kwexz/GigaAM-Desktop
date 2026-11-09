@@ -778,19 +778,21 @@
 	}
 	async function transcribeWithDiarization() {
 		if (!selected || browserMode) return;
+		try { diarizationModel = await invoke<string | null>('installed_diarization_model') ?? ''; }
+		catch { error = locale === 'ru' ? 'Не удалось проверить модель говорящих.' : 'Could not check the speaker model.'; return; }
 		if (!diarizationModel) { settingsTab = 'recognition'; openSettings(); return; }
 		const id = selected.id;
 		pendingDiarization = id;
 		await action(selected.status === 'queued' ? 'start_transcription' : 'retry_transcription', id);
 	}
 	function speakerKey(segment: Segment) { return `${segment.source_track}:${segment.speaker_id ?? ''}`; }
-	function speakerLabel(segment: Segment) { const track = segment.source_track === 'microphone' ? (locale === 'ru' ? 'Микрофон' : 'Microphone') : segment.source_track === 'system' ? (locale === 'ru' ? 'Система' : 'System') : ''; return track && segment.speaker_id ? `${track} · ${segment.speaker_id}` : segment.speaker_id || track; }
+	function speakerLabel(segment: Segment) { return segment.speaker_id || (segment.source_track === 'microphone' ? (locale === 'ru' ? 'Микрофон' : 'Microphone') : segment.source_track === 'system' ? (locale === 'ru' ? 'Система' : 'System') : ''); }
 	async function saveSpeaker(segment: Segment) {
-		if (!selected || !speakerDraft.trim()) return;
+		if (!selected) return;
 		const id = selected.id, old = segment.speaker_id ?? null, track = segment.source_track, name = speakerDraft.trim();
 		try {
 			await invoke('rename_speaker', { transcriptionId: id, track, old, name });
-			if (selected?.id === id) segments = segments.map((item) => item.source_track === track && (item.speaker_id ?? null) === old ? { ...item, speaker_id: name } : item);
+			if (selected?.id === id) segments = segments.map((item) => item.source_track === track && (item.speaker_id ?? null) === old ? { ...item, speaker_id: name || undefined } : item);
 			speakerEditing = '';
 		} catch { error = locale === 'ru' ? 'Не удалось переименовать говорящего.' : 'Could not rename speaker.'; }
 	}
@@ -1075,7 +1077,7 @@
 {#snippet speakerMeta(segment: Segment)}
 	<div class="speaker-meta"><time>{time(segment.start_seconds)}</time>
 		{#if segment.speaker_id || segment.source_track !== 'file'}
-			{#if speakerEditing === speakerKey(segment)}<input aria-label={locale === 'ru' ? 'Имя говорящего' : 'Speaker name'} bind:value={speakerDraft} /><div class="speaker-actions"><button class="speaker-accept" aria-label={locale === 'ru' ? 'Сохранить имя' : 'Save name'} onclick={() => void saveSpeaker(segment)}>✓</button><button class="speaker-cancel" aria-label={locale === 'ru' ? 'Отменить изменение имени' : 'Cancel name edit'} onclick={() => speakerEditing = ''}>✕</button></div>
+			{#if speakerEditing === speakerKey(segment)}<input aria-label={locale === 'ru' ? 'Имя говорящего' : 'Speaker name'} bind:value={speakerDraft} onkeydown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void saveSpeaker(segment); } else if (event.key === 'Escape') { event.preventDefault(); speakerEditing = ''; } }} /><div class="speaker-actions"><button class="speaker-accept" aria-label={locale === 'ru' ? 'Сохранить имя' : 'Save name'} onclick={() => void saveSpeaker(segment)}>✓</button><button class="speaker-cancel" aria-label={locale === 'ru' ? 'Отменить изменение имени' : 'Cancel name edit'} onclick={() => speakerEditing = ''}>✕</button></div>
 			{:else if !browserMode}<button class="speaker-name" onclick={() => { speakerEditing = speakerKey(segment); speakerDraft = segment.speaker_id || speakerLabel(segment); }}>{speakerLabel(segment)}</button>
 			{:else}<span class="speaker-name">{speakerLabel(segment)}</span>{/if}
 		{/if}
@@ -1225,7 +1227,7 @@
 
 <style>
 	.speaker-meta { display:flex; flex-direction:column; align-items:flex-start; gap:4px; min-width:0; }
-	.speaker-meta .speaker-name { border:0; background:transparent; padding:0; text-align:left; font:600 11px/1.3 inherit; color:inherit; overflow-wrap:anywhere; cursor:pointer; }
+	.speaker-meta .speaker-name { border:0; background:transparent; padding:0; text-align:left; font-family:inherit; font-size:10px; font-weight:600; line-height:1.3; color:inherit; overflow-wrap:anywhere; cursor:pointer; }
 	.speaker-meta input { width:100%; min-width:65px; max-width:120px; padding:4px; border:1px solid #cfd3ca; border-radius:6px; font:inherit; }
 	.speaker-actions { display:flex; gap:4px; }
 	.speaker-actions button { border:0; border-radius:6px; width:26px; height:26px; color:white; cursor:pointer; }
