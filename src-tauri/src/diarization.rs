@@ -185,7 +185,9 @@ pub fn cluster_two(vectors: &[Vec<f32>]) -> Result<Vec<usize>, &'static str> {
         within[label] += dot(vector, &centers[label]);
         counts[label] += 1;
     }
-    if counts.iter().any(|count| *count < 2) || cross > 0.5 || within.iter().enumerate().any(|(group, score)| score / counts[group] as f32 - cross < 0.2) {
+    #[cfg(test)]
+    eprintln!("speaker clustering: counts={counts:?}, center_similarity={cross:.3}, within={:.3}/{:.3}", within[0] / counts[0] as f32, within[1] / counts[1] as f32);
+    if counts.iter().any(|count| *count < 2) || cross > 0.5 || within.iter().enumerate().any(|(group, score)| score / counts[group] as f32 - cross < 0.13) {
         return Err("Недостаточно уверенное разделение двух голосов. Попробуйте запись с более длинными отдельными репликами; результат не сохранён.");
     }
     Ok(labels)
@@ -284,5 +286,19 @@ mod tests {
         let score = correct.max(labels.len() - correct) as f64 / labels.len() as f64;
         println!("non-overlapping turns={}, permutation-invariant accuracy={score:.3}", labels.len());
         assert!(labels.len() >= 4 && score >= 0.75);
+    }
+
+    #[test]
+    #[ignore = "requires explicitly selected local recording and database"]
+    fn diagnostic_local_recording() {
+        let model = std::env::var_os("GIGAAM_SPEAKER_MODEL").unwrap();
+        let db = std::env::var_os("GIGAAM_DIARIZATION_DB").unwrap();
+        let id = std::env::var("GIGAAM_DIARIZATION_ID").unwrap();
+        let store = crate::storage::Store::open(Path::new(&db)).unwrap();
+        let record = store.get(&id).unwrap().unwrap();
+        let segments = store.segments(&id).unwrap();
+        let result = analyze_file(Path::new(record.audio_path.as_deref().unwrap_or(&record.source_path)), Path::new(&model), &segments);
+        println!("segments={}, outcome={}", segments.len(), if result.is_ok() { "assigned" } else { "rejected" });
+        assert!(result.is_ok(), "{}", result.unwrap_err());
     }
 }

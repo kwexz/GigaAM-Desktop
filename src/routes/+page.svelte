@@ -7,6 +7,7 @@
 	import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 	import { isTauriRuntime } from '#lib/runtime.ts';
 	import { groupSentenceSegments } from '#lib/sentence-groups.ts';
+	import { newerStableVersion } from '#lib/update-check.ts';
 	import { WebSession } from '#lib/web-session.ts';
 	import { listBrowserMetadata, putBrowserRecording, readOpfsArchive, loadBrowserOrganization, updateBrowserOrganization, browserSegments, appendOpfsChunk, putArchiveMeta } from '#lib/browser-storage.ts';
 	import { moveNode, deleteFolder, compareNodes, type OrganizationNode } from '#lib/organization.ts';
@@ -40,6 +41,7 @@
 	let sentenceView = $state(true);
 	let diarizationBusy = $state(false);
 	let diarizationModel = $state('');
+	let updateAvailable = $state(false);
 	let pendingDiarization = $state('');
 	let speakerEditing = $state('');
 	let speakerDraft = $state('');
@@ -1008,6 +1010,7 @@
 	}
 
 	onMount(() => {
+		void fetch('https://api.github.com/repos/kwexz/GigaAM-Desktop/releases/latest', { signal: AbortSignal.timeout(5000) }).then((response) => response.ok ? response.json() : null).then((release) => { if (release && !release.prerelease && !release.draft && typeof release.tag_name === 'string') updateAvailable = newerStableVersion(__APP_VERSION__, release.tag_name); }).catch(() => {});
 		try { diarizationModel = localStorage.getItem('gigaam-diarization-model') ?? ''; } catch { /* Keep empty. */ }
 		try { sentenceView = localStorage.getItem('gigaam-sentence-view') !== 'false'; } catch { /* Keep default. */ }
 		archiveFormat = savedRecordingFormat(localStorage) ?? DEFAULT_RECORDING_FORMAT;
@@ -1107,7 +1110,7 @@
 	{#if !model.installed && !browserMode}<div class="model-banner"><div><strong>{locale === 'ru' ? 'Требуется модель распознавания' : 'Recognition model required'}</strong><span>{(model.total_bytes / 1024 / 1024).toFixed(0)} MB</span>{#if model.downloading}<progress max={model.total_bytes} value={model.downloaded_bytes}></progress>{/if}</div>{#if model.downloading}<button onclick={() => invoke('cancel_model_download')}>{t.cancel}</button>{:else}<button onclick={() => invoke('download_model')}>{model.error ? t.retry : locale === 'ru' ? 'Загрузить' : 'Download'}</button>{/if}</div>{/if}
 	<header>
 		{#if browserMode}<span class="header-web-status" data-testid="web-mode-banner">{locale === 'ru' ? 'Web · аудио локально · ASR на сервере' : 'Web · local audio · server ASR'}</span>{/if}
-		<div class="brand"><span class="mark">G</span><strong>GigaAM</strong><span>Desktop</span><button class="version-link" title="GitHub" onclick={() => { if (browserMode) window.open('https://github.com/kwexz/GigaAM-Desktop', '_blank', 'noopener,noreferrer'); else void openUrl('https://github.com/kwexz/GigaAM-Desktop'); }}>{locale === 'ru' ? 'Версия' : 'Version'} {__APP_VERSION__} b{__BUILD_ID__}</button></div>
+		<div class="brand"><span class="mark">G</span><strong>GigaAM</strong><span>Desktop</span><button class="version-link" title="GitHub" onclick={() => { if (browserMode) window.open('https://github.com/kwexz/GigaAM-Desktop', '_blank', 'noopener,noreferrer'); else void openUrl('https://github.com/kwexz/GigaAM-Desktop'); }}>{locale === 'ru' ? 'Версия' : 'Version'} {__APP_VERSION__} b{__BUILD_ID__}</button>{#if updateAvailable}<button class="version-link update-link" onclick={() => { if (browserMode) window.open('https://github.com/kwexz/GigaAM-Desktop/releases/latest', '_blank', 'noopener,noreferrer'); else void openUrl('https://github.com/kwexz/GigaAM-Desktop/releases/latest'); }}>{locale === 'ru' ? 'Есть новая версия' : 'New version available'}</button>{/if}</div>
 		<div class="header-actions">{#if !browserMode}<button class="ghost drive-icon" title="Google Drive" aria-label="Google Drive" aria-pressed={driveBrowserOpen} onclick={() => void openDriveBackups()}><svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><path fill="#34a853" d="M8.1 3h5.1l-8 14H.1z"/><path fill="#4285f4" d="M13.2 3 21 16.5l-2.5 4.4L10.7 7.4z"/><path fill="#fbbc04" d="M5.2 16.5H21l-2.5 4.4H2.7z"/></svg></button>{/if}<button class="ghost settings-button" aria-label={locale === 'ru' ? 'Настройки' : 'Settings'} title={locale === 'ru' ? 'Настройки' : 'Settings'} onclick={openSettings}>⚙</button><details class="drive-menu header-menu"><summary aria-label={locale === 'ru' ? 'Тема' : 'Theme'} title={locale === 'ru' ? 'Тема' : 'Theme'}>{theme === 'system' ? '◐' : theme === 'light' ? '☀' : '☾'}</summary><div class="drive-menu-content"><button onclick={(event) => { setTheme('system'); event.currentTarget.closest('details')!.open = false; }}>◐ {locale === 'ru' ? 'Системная' : 'System'}</button><button onclick={(event) => { setTheme('light'); event.currentTarget.closest('details')!.open = false; }}>☀ {locale === 'ru' ? 'Светлая' : 'Light'}</button><button onclick={(event) => { setTheme('dark'); event.currentTarget.closest('details')!.open = false; }}>☾ {locale === 'ru' ? 'Тёмная' : 'Dark'}</button></div></details><details class="drive-menu header-menu"><summary aria-label={locale === 'ru' ? 'Язык' : 'Language'} title={locale === 'ru' ? 'Язык' : 'Language'}>{locale === 'ru' ? '🇷🇺' : '🇬🇧'}</summary><div class="drive-menu-content"><button onclick={(event) => { locale = 'ru'; event.currentTarget.closest('details')!.open = false; }}>🇷🇺 Русский</button><button onclick={(event) => { locale = 'en'; event.currentTarget.closest('details')!.open = false; }}>🇬🇧 English</button></div></details></div>
 	</header>
 
