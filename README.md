@@ -13,24 +13,27 @@ Release assets include a Windows x64 installer and portable executable. A signed
 ## What is implemented
 
 - Import WAV, MP3, FLAC, OGG, M4A, MP4, MKV, AVI, and MOV files or drag them into the app.
-- Record the microphone, system audio, or both as separate tracks; pause/resume, adjust microphone gain, and archive audio as FLAC, WAV, or MP3.
+- Record the microphone, system audio, or both as separate tracks; pause/resume, adjust microphone gain, and archive audio as Ogg/Opus, FLAC, WAV, or MP3.
 - Run Silero VAD, chunking, and int8 GigaAM v3 E2E CTC locally through ONNX Runtime, with punctuation and text normalization.
 - Keep a durable SQLite queue and searchable history; interrupted jobs are marked and can be retried.
-- Play from any transcript timestamp, edit individual segments, copy the full transcript, and re-run recognition.
+- Play from transcript timestamps, group adjacent phrases, edit a group or individual segment, copy the transcript, and re-run recognition. Phrase timestamps are approximate model-frame boundaries; grouping and editing do not alter source audio.
 - Export TXT, SRT, WebVTT, or JSON while preserving microphone/system track labels.
 - Historical audio codec comparisons and their limitations: [Ogg/Opus measurements](docs/OGG_MEASUREMENTS.md).
-- Experimental speaker diarization and its measured limitations: [diarization research](docs/DIARIZATION_RESEARCH.md).
+- Optionally run **experimental two-speaker diarization** on a completed Desktop recording. Download the separate ~27 MB WeSpeaker model explicitly in recognition settings, then choose **Transcribe with diarization**. Speaker names can be edited. It may refuse uncertain results or assign speakers incorrectly; overlapping speech and real-meeting accuracy remain unverified. [Experiment details](docs/DIARIZATION_RESEARCH.md).
 - Switch the application UI between Russian and English.
 - Generate summaries with a locally configured Ollama or GGUF backend, or an explicitly configured OpenAI-compatible API. API summarization sends transcript text to the selected endpoint; local transcription does not require it.
 - Optionally queue Google Drive snapshots and restore them as separate local copies. A discovered snapshot is not proof that subsequent local edits are synchronized.
+- Check for a newer stable GitHub release in the background at startup; the notification links to the release and does not install anything automatically. Offline use is unaffected.
+
+The repository also contains an **experimental browser mode** with local OPFS audio and IndexedDB metadata; device capture and remote recognition have additional limitations. See [current Web support](docs/WEB_CURRENT_SUPPORT.md).
 
 ## 60-second demo
 
 1. Start the app and click **Download** once to install the pinned models (~227 MB).
-2. Click **Open** or drop a media file. The item moves through the queue and appears in history with timestamped segments.
-3. Click a segment timestamp to play from that point; edit a segment inline and search the history by filename or transcript text.
+2. Click **Open** or drop a media file, then choose **Transcribe**. The item moves through the queue and appears in history with timestamped segments.
+3. Use a segment's play button to play from its timestamp; edit text inline and search the history by filename or transcript text.
 4. Click **Record**, select microphone, system audio, or both, and then stop the recording. A dual-source session keeps separate tracks labelled **Me** and **System**.
-5. Select TXT, SRT, WebVTT, or JSON and click **Export**.
+5. Use **Export** to save TXT, SRT, WebVTT, or JSON, or copy the text.
 
 The screenshot above is the repository's real application visual. The steps above are also a reproducible hands-on evaluation path; no mock screens or benchmark claims are used.
 
