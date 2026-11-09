@@ -1,6 +1,6 @@
 # Architecture
 
-This document preserves the detailed engineering notes previously kept in the root README. The application is a static SvelteKit UI inside Tauri 2; Rust owns media decoding, capture, inference, persistence, and export. No Python service or application server is involved.
+The desktop application is a static SvelteKit UI inside Tauri 2; Rust owns media decoding, capture, inference, persistence, and export. No Python service is involved. An experimental browser mode and optional Rust server also exist; see [WEB_CURRENT_SUPPORT.md](WEB_CURRENT_SUPPORT.md) for their boundaries.
 
 ## File transcription: queue to segments
 

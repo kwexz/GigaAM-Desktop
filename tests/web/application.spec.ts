@@ -320,7 +320,7 @@ test('main web application records, reloads and exports local audio without Taur
 	const download = page.waitForEvent('download');
 	await page.getByRole('button', { name: /Скачать аудио/ }).click();
 	expect((await download).suggestedFilename()).toMatch(/\.(ogg|webm|wav|flac|mp3)$/);
-	await page.getByRole('button', { name: '＋ Папка' }).click();
+	await page.getByRole('button', { name: 'Создать папку' }).click();
 	await page.getByRole('textbox', { name: 'Название папки' }).fill('Archive');
 	await page.getByRole('button', { name: 'Создать', exact: true }).click();
 	await expect(page.getByRole('button', { name: '📁 Archive', exact: true })).toBeVisible();
@@ -330,7 +330,7 @@ test('main web application records, reloads and exports local audio without Taur
 	await page.getByRole('button', { name: 'Expand folder' }).click();
 	await expect(page.getByTestId('recording-item')).toHaveCount(1);
 	await page.getByRole('button', { name: '📁 Archive', exact: true }).click();
-	await page.getByRole('button', { name: '＋ Папка' }).click();
+	await page.getByRole('button', { name: 'Создать папку' }).click();
 	await page.getByRole('textbox', { name: 'Название папки' }).fill('Nested');
 	await page.getByRole('button', { name: 'Создать', exact: true }).click();
 	await page.getByTestId('recording-item').dragTo(page.getByRole('button', { name: '📁 Nested', exact: true }));

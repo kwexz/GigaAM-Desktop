@@ -62,6 +62,59 @@ function mockBackend(options: { installed?: boolean; items?: Item[] } = {}) {
 }
 
 describe('GigaAM page', () => {
+	it('highlights a grouped transcript while its audio is playing', async () => {
+		mockBackend({ items: [historyItem] });
+		render(Page);
+		await fireEvent.click(await screen.findByText('meeting.wav'));
+		const text = await screen.findByRole('button', { name: 'Проверочный текст' });
+		const audio = document.querySelector('audio')!;
+		Object.defineProperty(audio, 'currentTime', { value: 1.5, configurable: true });
+		await fireEvent.timeUpdate(audio);
+		expect(text.closest('.segment')).toHaveClass('playing');
+	});
+	it('opens model settings when transcription with diarization has no model', async () => {
+		mockBackend({ items: [historyItem] });
+		render(Page);
+		await fireEvent.click(await screen.findByText('meeting.wav'));
+		await fireEvent.click(screen.getByText('Распознать с диаризацией', { selector: 'button' }));
+		expect(await screen.findByRole('button', { name: /Загрузить модель говорящих/ })).toBeTruthy();
+		expect(invoke).not.toHaveBeenCalledWith('retry_transcription', expect.anything());
+	});
+	it('keeps microphone and system labels alongside speaker labels', async () => {
+		mockBackend({ items: [historyItem] });
+		const backend = invoke.getMockImplementation()!;
+		invoke.mockImplementation(async (command: string, ...args: unknown[]) => command === 'get_segments' ? [
+			{ id: 'm', index: 0, start_seconds: 0, end_seconds: 1, text: 'Привет.', source_track: 'microphone', speaker_id: 'Speaker 1' },
+			{ id: 's', index: 1, start_seconds: 1, end_seconds: 2, text: 'Здравствуйте.', source_track: 'system', speaker_id: 'Speaker 2' }
+		] : backend(command, ...args));
+		render(Page);
+		await fireEvent.click(await screen.findByText('meeting.wav'));
+		expect(await screen.findByText('Speaker 1')).toBeTruthy();
+		expect(screen.getByText('Speaker 2')).toBeTruthy();
+	});
+	it('shows speaker labels on imported files', async () => {
+		mockBackend({ items: [historyItem] });
+		const backend = invoke.getMockImplementation()!;
+		invoke.mockImplementation(async (command: string, ...args: unknown[]) => command === 'get_segments' ? [
+			{ id: 'a', index: 0, start_seconds: 0, end_seconds: 1, text: 'Привет.', source_track: 'file', speaker_id: 'Speaker 1' }
+		] : backend(command, ...args));
+		render(Page);
+		await fireEvent.click(await screen.findByText('meeting.wav'));
+		expect(await screen.findByText('Speaker 1')).toBeTruthy();
+	});
+	it('groups phrase fragments without changing their editable segments', async () => {
+		mockBackend({ items: [historyItem] });
+		const backend = invoke.getMockImplementation()!;
+		invoke.mockImplementation(async (command: string, ...args: unknown[]) => command === 'get_segments' ? [
+			{ id: 'a', index: 0, start_seconds: 1, end_seconds: 2, text: 'Начало фразы', source_track: 'file' },
+			{ id: 'b', index: 1, start_seconds: 2, end_seconds: 3, text: 'её окончание.', source_track: 'file' },
+			{ id: 'c', index: 2, start_seconds: 3, end_seconds: 4, text: 'Другая фраза.', source_track: 'file' }
+		] : backend(command, ...args));
+		render(Page);
+		await fireEvent.click(await screen.findByText('meeting.wav'));
+		await fireEvent.click(await screen.findByRole('button', { name: 'Начало фразы её окончание. Другая фраза.' }));
+		expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Начало фразы её окончание. Другая фраза.');
+	});
 	it('does not show one recording’s summary duration on another recording', async () => {
 		const second = { ...historyItem, id: 'tx-2', source_filename: 'second.wav' };
 		mockBackend({ items: [historyItem, second] }); const backend = invoke.getMockImplementation()!;
@@ -442,17 +495,18 @@ describe('GigaAM page', () => {
 
 	it('switches the visible UI language', async () => {
 		render(Page);
-		await screen.findByText('Записи');
+		await screen.findByPlaceholderText('Поиск');
 
-		await fireEvent.change(screen.getByRole('combobox', { name: 'Язык' }), { target: { value: 'en' } });
-		expect(screen.getByText('Recordings')).toBeInTheDocument();
+		await fireEvent.click(screen.getByLabelText('Язык'));
+		await fireEvent.click(screen.getByRole('button', { name: '🇬🇧 English' }));
+		expect(screen.getByRole('tree', { name: 'Recordings and folders' })).toBeInTheDocument();
 		expect(screen.getByPlaceholderText('Search')).toBeInTheDocument();
 	});
 
 	it('creates a folder through the desktop organization contract', async () => {
 		render(Page);
-		await screen.findByText('Записи');
-		await fireEvent.click(screen.getByRole('button', { name: '＋ Папка' }));
+		await screen.findByPlaceholderText('Поиск');
+		await fireEvent.click(screen.getByRole('button', { name: 'Создать папку' }));
 		await fireEvent.input(screen.getByRole('textbox', { name: 'Название папки' }), { target: { value: 'Folder' } });
 		await fireEvent.click(screen.getByRole('button', { name: /^Создать$/ }));
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('save_organization', {
@@ -573,8 +627,9 @@ describe('GigaAM page', () => {
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('stop_live'));
 		expect(stop).toBeDisabled();
 		// A pending native acknowledgement must not freeze unrelated UI controls.
-		await fireEvent.change(screen.getByRole('combobox', { name: 'Язык' }), { target: { value: 'en' } });
-		expect(screen.getByRole('combobox', { name: 'Language' })).toHaveValue('en');
+		await fireEvent.click(screen.getByLabelText('Язык'));
+		await fireEvent.click(screen.getByRole('button', { name: '🇬🇧 English' }));
+		expect(screen.getByLabelText('Language').textContent).toContain('🇬🇧');
 		resolveStop();
 	});
 });

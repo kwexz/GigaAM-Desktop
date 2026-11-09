@@ -30,7 +30,7 @@ npm ci
 npm run tauri dev
 ```
 
-`npm run tauri dev` запускает Vite HMR и пересборку Rust backend. Одного `npm run dev` в браузере недостаточно: UI вызывает команды Tauri.
+`npm run tauri dev` запускает Vite HMR и пересборку Rust backend. `npm run dev` также запускает экспериментальный браузерный режим; его ограничения описаны в [WEB_CURRENT_SUPPORT.md](WEB_CURRENT_SUPPORT.md).
 
 При первом старте нажмите **Загрузить** в баннере модели. Точные файлы, путь и подготовка к офлайн-работе описаны в [MODEL.md](MODEL.md).
 

@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; media-src 'self' asset: http://asset.localhost",
+      "csp": "default-src 'self' asset: http://asset.localhost; connect-src 'self' https://api.github.com; style-src 'self' 'unsafe-inline'; media-src 'self' asset: http://asset.localhost",
       "assetProtocol": { "enable": true, "scope": ["**"] }
     }
   },

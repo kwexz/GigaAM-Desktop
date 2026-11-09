@@ -873,6 +873,41 @@ fn decode_ctc(log_probs: ndarray::ArrayView2<'_, f32>, vocab: &[String]) -> Resu
     Ok(text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
+/// Decode sentence boundaries from CTC emission frames. Boundaries are
+/// approximate model-frame times, not forced-aligned word timestamps.
+fn decode_ctc_phrases(log_probs: ndarray::ArrayView2<'_, f32>, vocab: &[String], duration: f64) -> Result<Vec<(f64, f64, String)>> {
+    anyhow::ensure!(duration.is_finite() && duration > 0.0, "invalid ASR window duration");
+    let blank = vocab.iter().position(|token| token == "<blk>").context("vocabulary has no CTC blank token")?;
+    let frames = log_probs.len_of(Axis(0));
+    if frames == 0 { return Ok(Vec::new()); }
+    let mut previous = blank;
+    let mut pieces = Vec::new();
+    for (index, frame) in log_probs.axis_iter(Axis(0)).enumerate() {
+        let token = frame.iter().enumerate().max_by(|(_, a), (_, b)| a.total_cmp(b)).map(|(i, _)| i).unwrap_or(blank);
+        if token != blank && token != previous {
+            pieces.push((index, vocab.get(token).context("model output token exceeds vocabulary")?.as_str()));
+        }
+        previous = token;
+    }
+    let mut result = Vec::new();
+    let mut text = String::new();
+    let mut start = 0.0;
+    for (position, (frame, token)) in pieces.iter().enumerate() {
+        text.push_str(token);
+        let next = pieces.get(position + 1).map(|(frame, _)| *frame).unwrap_or(frames);
+        if token.trim_end().ends_with(['.', '?', '!', '…']) && next > *frame {
+            let end = ((frame + 1 + next) as f64 / 2.0 / frames as f64 * duration).clamp(start, duration);
+            let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !normalized.is_empty() && end > start { result.push((start, end, normalized)); }
+            text.clear();
+            start = end;
+        }
+    }
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !normalized.is_empty() { result.push((start, duration, normalized)); }
+    Ok(result)
+}
+
 const LIVE_SCAN_INPUT_RATE: usize = 48_000;
 const LIVE_SCAN_MAX_16K_SAMPLES: usize = SAMPLE_RATE * 40;
 const LIVE_SCAN_MIN_FRESH_48K: usize = 480;
@@ -1365,6 +1400,7 @@ pub struct NativeFileProcessor {
     asr: Session,
     vad: Session,
     vocab: Vec<String>,
+    phrase_recognition: bool,
 }
 
 impl NativeFileProcessor {
@@ -1407,10 +1443,11 @@ impl NativeFileProcessor {
             asr: asr_builder.commit_from_file(model_dir.join("v3_e2e_ctc.int8.onnx"))?,
             vad: vad_builder.commit_from_file(vad_path)?,
             vocab,
+            phrase_recognition: true,
         })
     }
 
-    fn transcribe_chunk(&mut self, audio: &[f32]) -> Result<String> {
+    fn transcribe_chunk(&mut self, audio: &[f32]) -> Result<Vec<(f64, f64, String)>> {
         let features = log_mel_features(audio)?;
         let feature_frames = features.len_of(Axis(2));
         let feature_length =
@@ -1426,12 +1463,10 @@ impl NativeFileProcessor {
         if log_probs.ndim() != 3 || log_probs.shape()[2] != self.vocab.len() {
             anyhow::bail!("ASR model output does not match the vocabulary");
         }
-        decode_ctc(
-            log_probs
-                .index_axis(Axis(0), 0)
-                .into_dimensionality::<Ix2>()?,
-            &self.vocab,
-        )
+        let frames = log_probs.index_axis(Axis(0), 0).into_dimensionality::<Ix2>()?;
+        let duration = audio.len() as f64 / SAMPLE_RATE as f64;
+        if self.phrase_recognition { decode_ctc_phrases(frames, &self.vocab, duration) }
+        else { Ok(vec![(0.0, duration, decode_ctc(frames, &self.vocab)?)]) }
     }
 
     /// Streaming file transcription: consumes only newly computed VAD
@@ -1503,19 +1538,19 @@ impl NativeFileProcessor {
             if end <= start || end - start < FFT_SIZE {
                 continue;
             }
-            let text = self.transcribe_chunk(&audio[start - abs16_base..end - abs16_base])?;
-            segments.push(
+            let phrases = self.transcribe_chunk(&audio[start - abs16_base..end - abs16_base])?;
+            for (phrase_start, phrase_end, text) in phrases { segments.push(
                 TranscriptSegment::new(
                     transcription_id,
                     next_index + segments.len(),
-                    start as f64 / SAMPLE_RATE as f64,
-                    end as f64 / SAMPLE_RATE as f64,
+                    start as f64 / SAMPLE_RATE as f64 + phrase_start,
+                    start as f64 / SAMPLE_RATE as f64 + phrase_end,
                     text,
                     SourceTrack::File,
                     SegmentState::Final,
                 )
                 .map_err(anyhow::Error::msg)?,
-            );
+            ); }
         }
 
         // Keep only the unsettled chunk (plus pre-speech padding when idle).
@@ -1570,19 +1605,19 @@ impl NativeFileProcessor {
             if absolute_end <= emitted_seconds || (!flush && !natural_end && !forced_end) {
                 continue;
             }
-            let text = self.transcribe_chunk(&audio[chunk.start..chunk.end])?;
-            segments.push(
+            let phrases = self.transcribe_chunk(&audio[chunk.start..chunk.end])?;
+            for (phrase_start, phrase_end, text) in phrases { segments.push(
                 TranscriptSegment::new(
                     transcription_id,
                     next_index + segments.len(),
-                    absolute_start,
-                    absolute_end,
+                    absolute_start + phrase_start,
+                    absolute_start + phrase_end,
                     text,
                     source_track,
                     SegmentState::Final,
                 )
                 .map_err(anyhow::Error::msg)?,
-            );
+            ); }
             emitted = emitted.max(absolute_end);
         }
         // Keep un-emitted audio until a complete region is produced. Advancing
@@ -1595,6 +1630,7 @@ impl NativeFileProcessor {
 }
 
 impl FileProcessor for NativeFileProcessor {
+    fn set_phrase_recognition(&mut self, enabled: bool) { self.phrase_recognition = enabled; }
     fn process(
         &mut self,
         job: &Transcription,
@@ -1780,6 +1816,48 @@ mod tests {
         .unwrap();
         let vocab = vec!["а".into(), "б".into(), "<blk>".into()];
         assert_eq!(decode_ctc(logits.view(), &vocab).unwrap(), "аб");
+    }
+
+    #[test]
+    fn phrase_decoder_preserves_ctc_text_and_timeline() {
+        let vocab = vec!["<blk>".to_string(), "да".to_string(), ".".to_string(), " нет".to_string(), "?".to_string()];
+        let tokens = [1, 1, 2, 0, 3, 4, 0];
+        let mut logits = ndarray::Array2::from_elem((tokens.len(), vocab.len()), -10.0);
+        for (frame, token) in tokens.into_iter().enumerate() { logits[(frame, token)] = 10.0; }
+        let phrases = decode_ctc_phrases(logits.view(), &vocab, 7.0).unwrap();
+        assert_eq!(phrases.iter().map(|p| p.2.as_str()).collect::<Vec<_>>(), vec!["да.", "нет?"]);
+        assert_eq!(phrases.iter().map(|p| p.2.as_str()).collect::<Vec<_>>().join(" "), decode_ctc(logits.view(), &vocab).unwrap());
+        assert_eq!(phrases[0].0, 0.0);
+        assert_eq!(phrases[0].1, phrases[1].0);
+        assert!(phrases[1].1 <= 7.0);
+    }
+
+    #[test]
+    fn phrase_decoder_handles_empty_and_unfinished_windows() {
+        let vocab = vec!["<blk>".to_owned(), "слово".to_owned(), ".".to_owned()];
+        let blank = ndarray::arr2(&[[1.0, 0.0, 0.0]]);
+        assert!(decode_ctc_phrases(blank.view(), &vocab, 1.0).unwrap().is_empty());
+        let logits = ndarray::arr2(&[[0.0, 1.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]);
+        let phrases = decode_ctc_phrases(logits.view(), &vocab, 3.0).unwrap();
+        assert_eq!(phrases, vec![(0.0, 3.0, "слово".to_owned())]);
+        assert_eq!(phrases[0].2, decode_ctc(logits.view(), &vocab).unwrap());
+        assert!(decode_ctc_phrases(logits.view(), &vocab, 0.0).is_err());
+        assert!(decode_ctc_phrases(logits.view(), &vocab, f64::NAN).is_err());
+    }
+
+    #[test]
+    fn phrase_decoder_assigns_valid_unique_segment_ids() {
+        let vocab = vec!["<blk>".to_owned(), "Да".to_owned(), ".".to_owned(), " Нет".to_owned(), "!".to_owned()];
+        let logits = ndarray::arr2(&[
+            [0., 1., 0., 0., 0.], [0., 0., 1., 0., 0.], [1., 0., 0., 0., 0.],
+            [0., 0., 0., 1., 0.], [0., 0., 0., 0., 1.],
+        ]);
+        let phrases = decode_ctc_phrases(logits.view(), &vocab, 5.0).unwrap();
+        let segments: Vec<_> = phrases.into_iter().enumerate().map(|(i, (start, end, text))|
+            TranscriptSegment::new("session", 7 + i, 10.0 + start, 10.0 + end, text, SourceTrack::File, SegmentState::Final).unwrap()
+        ).collect();
+        assert_eq!(segments.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["session:7", "session:8"]);
+        assert!(segments.windows(2).all(|pair| pair[0].end_seconds <= pair[1].start_seconds));
     }
 
     #[test]

@@ -1,0 +1,14 @@
+{
+  "clean": {
+    "reference_chars": 304,
+    "edit_distance": 0,
+    "cer_relative_to_original": 0,
+    "timestamp_parity": true
+  },
+  "noisy": {
+    "reference_chars": 305,
+    "edit_distance": 3,
+    "cer_relative_to_original": 0.009836065573770493,
+    "timestamp_parity": false
+  }
+}

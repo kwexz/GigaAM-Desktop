@@ -441,6 +441,52 @@ fn enqueue_files(
 }
 
 #[tauri::command]
+async fn installed_diarization_model(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let path = app.path().app_data_dir().map_err(|_| "App data unavailable")?.join("diarization").join("wespeaker-resnet34.onnx");
+    tauri::async_runtime::spawn_blocking(move || if diarization::verify_speaker_model(&path).is_ok() { Some(path.to_string_lossy().into_owned()) } else { None })
+        .await.map_err(|_| "Model check failed".to_owned())
+}
+
+#[tauri::command]
+async fn download_diarization_model(app: tauri::AppHandle) -> Result<String, String> {
+    let directory = app.path().app_data_dir().map_err(|_| "App data unavailable")?.join("diarization");
+    tauri::async_runtime::spawn_blocking(move || diarization::download_speaker_model(&directory).map(|path| path.to_string_lossy().into_owned()).map_err(|error| error.to_string()))
+        .await.map_err(|_| "Model download failed".to_owned())?
+}
+
+#[tauri::command]
+async fn diarize_recording(id: String, model_path: String, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(), String> {
+    let store = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        diarization::verify_speaker_model(Path::new(&model_path)).map_err(|_| "Модель говорящих не прошла проверку; загрузите поддерживаемую модель".to_owned())?;
+        let (record, segments) = {
+            let db = store.lock().map_err(|_| "database unavailable")?;
+            let record = db.get(&id).map_err(|_| "recording unavailable")?.ok_or("recording not found")?;
+            if record.status != TranscriptionStatus::Completed { return Err("Дождитесь завершения распознавания".to_owned()); }
+            let segments = db.segments(&id).map_err(|_| "transcript unavailable")?;
+            (record, segments)
+        };
+        let path = record.audio_path.as_deref().unwrap_or(&record.source_path);
+        let speakers = diarization::analyze_file(Path::new(path), Path::new(&model_path), &segments).map_err(|error| format!("Диаризация не выполнена: {error}"))?;
+        let mut db = store.lock().map_err(|_| "database unavailable")?;
+        if !db.set_speakers_if_unchanged(&segments, &speakers).map_err(|_| "could not save speaker labels")? {
+            return Err("Транскрипт изменился во время обработки; повторите попытку".to_owned());
+        }
+        Ok(())
+    }).await.map_err(|_| "diarization worker failed".to_owned())?
+}
+
+#[tauri::command]
+fn set_phrase_recognition(enabled: bool, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(), String> {
+    lock_store(&state)?.set_phrase_recognition(enabled).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_phrase_recognition(state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<bool, String> {
+    lock_store(&state)?.phrase_recognition().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn start_transcription(
     id: String,
     state: tauri::State<'_, Arc<Mutex<Store>>>,
@@ -720,6 +766,20 @@ fn session_audio_files(
 #[tauri::command]
 fn clear_transcript(id: String, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(), String> {
     lock_store(&state)?.clear_transcript(&id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn update_segment_group(transcription_id: String, segments: Vec<(usize, String)>, text: String, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(), String> {
+    if text.trim().is_empty() { return Err("Текст не может быть пустым".into()); }
+    if !lock_store(&state)?.update_segment_group(&transcription_id, &segments, text.trim()).map_err(|error| error.to_string())? { return Err("Текст изменился, повторите редактирование".into()); }
+    Ok(())
+}
+
+#[tauri::command]
+fn rename_speaker(transcription_id: String, track: domain::SourceTrack, old: Option<String>, name: String, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(), String> {
+    let name = name.trim();
+    if name.chars().count() > 100 { return Err("Некорректное имя говорящего".into()); }
+    lock_store(&state)?.rename_speaker(&transcription_id, track, old.as_deref(), (!name.is_empty()).then_some(name)).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1604,6 +1664,11 @@ pub fn run() {
             save_organization,
             enqueue_files,
             start_transcription,
+            set_phrase_recognition,
+            get_phrase_recognition,
+            diarize_recording,
+            download_diarization_model,
+            installed_diarization_model,
             list_queue,
             list_history,
             search_history,
@@ -1617,6 +1682,8 @@ pub fn run() {
             session_audio_files,
             mixed_session_audio,
             update_segment_text,
+            rename_speaker,
+            update_segment_group,
             clear_transcript,
             rename_transcription,
             start_live,
@@ -1654,3 +1721,5 @@ mod tests {
         assert_eq!(super::live_timestamp(1_700_000_000_000), "20231114-221320");
     }
 }
+mod speaker_features;
+mod diarization;

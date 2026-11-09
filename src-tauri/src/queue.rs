@@ -7,6 +7,7 @@ use crate::{
 };
 
 pub trait FileProcessor {
+    fn set_phrase_recognition(&mut self, _enabled: bool) {}
     fn process(
         &mut self,
         job: &Transcription,
@@ -79,6 +80,8 @@ pub fn process_next(
     else {
         return Ok(false);
     };
+    let phrase_recognition = store.lock().map_err(|_| "database lock is poisoned")?.phrase_recognition().map_err(|error| error.to_string())?;
+    processor.set_phrase_recognition(phrase_recognition);
     store
         .lock()
         .map_err(|_| "database lock is poisoned")?
@@ -92,15 +95,30 @@ pub fn process_next(
             .is_cancelled(&job.id)
             .map_err(|error| error.to_string())
     };
-    let mut emit = |segment: TranscriptSegment| {
+    let mut previous: Option<TranscriptSegment> = None;
+    let mut emit = |mut segment: TranscriptSegment| {
         if is_cancelled()? {
             return Err("transcription cancelled".into());
         }
-        store
-            .lock()
-            .map_err(|_| "database lock is poisoned".to_string())?
-            .append_segment(&segment)
-            .map_err(|error| error.to_string())
+        let mut db = store.lock().map_err(|_| "database lock is poisoned".to_string())?;
+        if let Some(last) = previous.as_ref() {
+            let unfinished = !last.text.trim_end().trim_end_matches(['"', '\'', '»', ')', ']']).ends_with(['.', '!', '?', '…']);
+            if phrase_recognition && unfinished && last.source_track == segment.source_track && last.speaker_id == segment.speaker_id
+                && segment.start_seconds >= last.end_seconds && segment.start_seconds - last.end_seconds <= 1.0
+                && last.text.len() + segment.text.len() <= 8192
+                && db.extend_segment_if_unchanged(last, &segment).map_err(|error| error.to_string())? {
+                let mut merged = last.clone();
+                merged.text = format!("{} {}", last.text.trim_end(), segment.text.trim_start());
+                merged.end_seconds = segment.end_seconds;
+                previous = Some(merged);
+                return Ok(());
+            }
+        }
+        // Keep processor indices unique even when an earlier fragment was merged.
+        segment.id = format!("{}:{}", segment.transcription_id, segment.index);
+        db.append_segment(&segment).map_err(|error| error.to_string())?;
+        previous = Some(segment);
+        Ok(())
     };
     let mut set_total = |total: usize| {
         store
@@ -207,6 +225,39 @@ mod tests {
 
     struct FakeProcessor {
         fail: bool,
+    }
+
+    struct PhraseProcessor { enabled: bool }
+    impl FileProcessor for PhraseProcessor {
+        fn set_phrase_recognition(&mut self, enabled: bool) { self.enabled = enabled; }
+        fn process(&mut self, job: &Transcription, total: &mut dyn FnMut(usize) -> Result<(), String>, emit: &mut dyn FnMut(TranscriptSegment) -> Result<(), String>, _: &dyn Fn() -> Result<bool, String>) -> Result<f64, String> {
+            total(2)?;
+            for (index, text) in ["начало", "конец."].into_iter().enumerate() {
+                emit(TranscriptSegment::new(&job.id, index, index as f64, (index + 1) as f64, text.into(), SourceTrack::File, SegmentState::Final).unwrap())?;
+            }
+            Ok(2.0)
+        }
+    }
+
+    #[test]
+    fn phrase_setting_controls_durable_cross_window_joining() {
+        for enabled in [false, true] {
+            let store = Arc::new(Mutex::new(Store::memory().unwrap()));
+            store.lock().unwrap().set_phrase_recognition(enabled).unwrap();
+            store.lock().unwrap().enqueue(&job("phrase", 1)).unwrap();
+            store.lock().unwrap().request_start("phrase").unwrap();
+            let mut processor = PhraseProcessor { enabled: !enabled };
+            process_next(&store, &mut processor, 10).unwrap();
+            assert_eq!(processor.enabled, enabled);
+            let segments = store.lock().unwrap().segments("phrase").unwrap();
+            if enabled {
+                assert_eq!(segments.len(), 1);
+                assert_eq!(segments[0].text, "начало конец.");
+                assert_eq!(segments[0].end_seconds, 2.0);
+            } else {
+                assert_eq!(segments.len(), 2);
+            }
+        }
     }
 
     impl FileProcessor for FakeProcessor {
