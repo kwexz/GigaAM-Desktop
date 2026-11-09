@@ -62,6 +62,18 @@ function mockBackend(options: { installed?: boolean; items?: Item[] } = {}) {
 }
 
 describe('GigaAM page', () => {
+	it('keeps microphone and system labels alongside speaker labels', async () => {
+		mockBackend({ items: [historyItem] });
+		const backend = invoke.getMockImplementation()!;
+		invoke.mockImplementation(async (command: string, ...args: unknown[]) => command === 'get_segments' ? [
+			{ id: 'm', index: 0, start_seconds: 0, end_seconds: 1, text: 'Привет.', source_track: 'microphone', speaker_id: 'Speaker 1' },
+			{ id: 's', index: 1, start_seconds: 1, end_seconds: 2, text: 'Здравствуйте.', source_track: 'system', speaker_id: 'Speaker 2' }
+		] : backend(command, ...args));
+		render(Page);
+		await fireEvent.click(await screen.findByText('meeting.wav'));
+		expect(await screen.findByText('Микрофон · Speaker 1')).toBeTruthy();
+		expect(screen.getByText('Система · Speaker 2')).toBeTruthy();
+	});
 	it('shows speaker labels on imported files', async () => {
 		mockBackend({ items: [historyItem] });
 		const backend = invoke.getMockImplementation()!;
@@ -86,7 +98,7 @@ describe('GigaAM page', () => {
 		const first = screen.getByRole('button', { name: 'Начало фразы' });
 		const second = screen.getByRole('button', { name: 'её окончание.' });
 		expect(first.closest('.segment')).toBe(second.closest('.segment'));
-		expect(first.closest('.segment')).not.toBe(screen.getByRole('button', { name: 'Другая фраза.' }).closest('.segment'));
+		expect(first.closest('.segment')).toBe(screen.getByRole('button', { name: 'Другая фраза.' }).closest('.segment'));
 		await fireEvent.click(second);
 		expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('её окончание.');
 	});
