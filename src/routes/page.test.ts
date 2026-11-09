@@ -62,6 +62,14 @@ function mockBackend(options: { installed?: boolean; items?: Item[] } = {}) {
 }
 
 describe('GigaAM page', () => {
+	it('opens model settings when transcription with diarization has no model', async () => {
+		mockBackend({ items: [historyItem] });
+		render(Page);
+		await fireEvent.click(await screen.findByText('meeting.wav'));
+		await fireEvent.click(screen.getByText('Распознать с диаризацией', { selector: 'button' }));
+		expect(await screen.findByRole('button', { name: /Загрузить модель говорящих/ })).toBeTruthy();
+		expect(invoke).not.toHaveBeenCalledWith('retry_transcription', expect.anything());
+	});
 	it('keeps microphone and system labels alongside speaker labels', async () => {
 		mockBackend({ items: [historyItem] });
 		const backend = invoke.getMockImplementation()!;

@@ -611,6 +611,14 @@ impl Store {
         Ok(())
     }
 
+    pub fn rename_speaker(&mut self, transcription_id: &str, track: SourceTrack, old: Option<&str>, new: &str) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "UPDATE transcript_segments SET speaker_id=?1 WHERE transcription_id=?2 AND source_track=?3 AND speaker_id IS ?4",
+            params![new, transcription_id, source_track_value(track), old],
+        )?;
+        Ok(())
+    }
+
     pub fn set_total_chunks(&mut self, id: &str, total_chunks: usize) -> rusqlite::Result<()> {
         self.connection.execute(
             "UPDATE transcriptions SET total_chunks = ?2 WHERE id = ?1",
@@ -944,6 +952,22 @@ fn map_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptSegment> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rename_speaker_only_changes_matching_track_and_name() {
+        let mut store = super::Store::memory().unwrap();
+        let job = transcription("speaker-rename", TranscriptionStatus::Completed);
+        store.enqueue_batch(&[job.clone()]).unwrap();
+        for (index, track) in [SourceTrack::Microphone, SourceTrack::System].into_iter().enumerate() {
+            let mut segment = TranscriptSegment::new(&job.id, index, index as f64, index as f64 + 1.0, "text".into(), track, SegmentState::Final).unwrap();
+            segment.speaker_id = Some("Speaker 1".into());
+            store.append_segment(&segment).unwrap();
+        }
+        store.rename_speaker(&job.id, SourceTrack::Microphone, Some("Speaker 1"), "Анна").unwrap();
+        let segments = store.segments(&job.id).unwrap();
+        assert_eq!(segments[0].speaker_id.as_deref(), Some("Анна"));
+        assert_eq!(segments[1].speaker_id.as_deref(), Some("Speaker 1"));
+        assert!(segments.iter().all(|segment| segment.text == "text"));
+    }
     #[test]
     fn speaker_update_is_atomic_and_preserves_text_edits() {
         let mut store = super::Store::memory().unwrap();

@@ -762,6 +762,13 @@ fn clear_transcript(id: String, state: tauri::State<'_, Arc<Mutex<Store>>>) -> R
 }
 
 #[tauri::command]
+fn rename_speaker(transcription_id: String, track: domain::SourceTrack, old: Option<String>, name: String, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 100 { return Err("Некорректное имя говорящего".into()); }
+    lock_store(&state)?.rename_speaker(&transcription_id, track, old.as_deref(), name).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn update_segment_text(
     transcription_id: String,
     index: usize,
@@ -1660,6 +1667,7 @@ pub fn run() {
             session_audio_files,
             mixed_session_audio,
             update_segment_text,
+            rename_speaker,
             clear_transcript,
             rename_transcription,
             start_live,
