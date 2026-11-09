@@ -611,6 +611,17 @@ impl Store {
         Ok(())
     }
 
+    pub fn update_segment_group(&mut self, id: &str, segments: &[(usize, String)], text: &str) -> rusqlite::Result<bool> {
+        if segments.is_empty() { return Err(rusqlite::Error::InvalidQuery); }
+        let transaction = self.connection.transaction()?;
+        for (position, (index, original)) in segments.iter().enumerate() {
+            let changed = transaction.execute("UPDATE transcript_segments SET text=?1 WHERE transcription_id=?2 AND segment_index=?3 AND text=?4", params![if position == 0 { text } else { "" }, id, index, original])?;
+            if changed != 1 { return Ok(false); }
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
+
     pub fn rename_speaker(&mut self, transcription_id: &str, track: SourceTrack, old: Option<&str>, new: Option<&str>) -> rusqlite::Result<()> {
         self.connection.execute(
             "UPDATE transcript_segments SET speaker_id=?1 WHERE transcription_id=?2 AND source_track=?3 AND speaker_id IS ?4",

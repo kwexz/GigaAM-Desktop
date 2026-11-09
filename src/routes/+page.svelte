@@ -809,6 +809,19 @@
 		editText = segment.text;
 	}
 
+	let groupEditKey = $state('');
+	let groupEditText = $state('');
+	async function saveGroup(group: { segment: Segment; text: string; key: string }[]) {
+		if (!selected || !groupEditText.trim()) return;
+		const id = selected.id, text = groupEditText.trim();
+		try {
+			if (browserMode) { error = locale === 'ru' ? 'Групповое редактирование в браузере пока недоступно.' : 'Group editing is not yet available in the browser.'; return; }
+			await invoke('update_segment_group', { transcriptionId: id, segments: group.map(({ segment }) => [segment.index, segment.text]), text });
+			if (selected?.id === id) { const ids = new Set(group.map(({ segment }) => segment.id)); const first = group[0].segment.id; segments = segments.map((segment) => ids.has(segment.id) ? { ...segment, text: segment.id === first ? text : '' } : segment); }
+			groupEditKey = '';
+		} catch { error = locale === 'ru' ? 'Не удалось сохранить группу: текст мог измениться.' : 'Could not save group: text may have changed.'; }
+	}
+
 	async function saveEdit(segment: Segment) {
 		const text = editText.trim();
 		if (!text || !selected) return;
@@ -1100,10 +1113,7 @@
 
 	{#if !driveBrowserOpen}<aside>
 		{#if sidebarMode === 'files'}
-			<div class="tree-heading"><div class="section-title">{t.timeline}</div>
-
-			<div class="tree-toolbar"><button class="ghost" onclick={() => { folderName = ''; folderDialog = 'create'; }}>＋ {locale === 'ru' ? 'Папка' : 'Folder'}</button></div></div>
-			<label class="search"><span>⌕</span><input bind:value={query} oninput={() => void refresh()} placeholder={t.search} /></label>
+			<div class="search-row"><label class="search"><span>⌕</span><input bind:value={query} oninput={() => void refresh()} placeholder={t.search} /></label><button class="ghost folder-add" aria-label={locale === 'ru' ? 'Создать папку' : 'Create folder'} title={locale === 'ru' ? 'Создать папку' : 'Create folder'} onclick={() => { folderName = ''; folderDialog = 'create'; }}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6h7l2 2h9v11H3zM15 10v6m-3-3h6"/></svg></button></div>
 			<div class="list" tabindex="0" role="tree" aria-label={locale === 'ru' ? 'Записи и папки' : 'Recordings and folders'} ondragover={(event) => event.preventDefault()} ondrop={(event) => dropOrganization(event, null)}>
 			{#each treeRows.filter((node) => !query.trim() || node.kind === 'folder' || items.some((item) => item.id === node.id)) as node (node.id)}
 				<div tabindex="-1" role="treeitem" aria-selected={node.kind === 'folder' ? currentFolder === node.id : selectedId === node.id} aria-expanded={node.kind === 'folder' ? !collapsedFolders.has(node.id) : undefined} aria-level={node.depth + 1} class="tree-row" class:drop-before={dropTarget === node.id && dropPosition === 'before'} class:drop-after={dropTarget === node.id && dropPosition === 'after'} class:drop-inside={dropTarget === node.id && dropPosition === 'inside'} style:padding-left={(node.depth * 18 + 6) + "px"} draggable="true" ondragstart={(event) => event.dataTransfer?.setData('application/x-gigaam-item', node.id)} ondragover={(event) => dragOverRow(event, node)} ondragleave={() => dropTarget = ''} ondrop={(event) => dropOnRow(event, node)}>
@@ -1155,10 +1165,7 @@
 				{#if sentenceView}
 					{#each sentenceGroups as group (group[0].key)}
 						<div class="segment sentence-group"><button class="seg-play" aria-label={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} onclick={() => togglePlay(group[0].segment)}>▶</button>{@render speakerMeta(group[0].segment)}<div class="seg-body">
-							{#each group as fragment (fragment.key)}
-								{@const segment = fragment.segment}
-								{#if editingId === segment.id}<textarea bind:value={editText} rows={3} onkeydown={(event) => editKeys(event, segment)}></textarea><div class="edit-actions"><button class="primary" onclick={() => void saveEdit(segment)}>{locale === 'ru' ? 'Сохранить' : 'Save'}</button><button class="ghost" onclick={() => editingId = null}>{t.cancel}</button></div>{:else}<button class="seg-text" title={locale === 'ru' ? 'Редактировать исходный сегмент' : 'Edit original segment'} onclick={() => startEdit(segment)}>{fragment.text}</button>{' '}{/if}
-							{/each}
+							{#if groupEditKey === group[0].key}<textarea bind:value={groupEditText} rows={3} onkeydown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void saveGroup(group); } else if (event.key === 'Escape') groupEditKey = ''; }}></textarea><div class="edit-actions"><button class="primary" onclick={() => void saveGroup(group)}>{locale === 'ru' ? 'Сохранить' : 'Save'}</button><button class="ghost" onclick={() => groupEditKey = ''}>{t.cancel}</button></div>{:else}<button class="seg-text" onclick={() => { groupEditKey = group[0].key; groupEditText = group.map((fragment) => fragment.text).join(' '); }}>{group.map((fragment) => fragment.text).join(' ')}</button>{/if}
 						</div></div>
 					{/each}
 				{:else}
@@ -1226,6 +1233,10 @@
 {#if confirmClear}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={() => confirmClear = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label={locale === 'ru' ? 'Очистить текст' : 'Clear transcript'}><h2>{locale === 'ru' ? 'Очистить весь текст?' : 'Clear the entire transcript?'}</h2><p>{locale === 'ru' ? 'Аудиозапись останется. Удалённый текст нельзя восстановить отменой.' : 'Audio will remain. Deleted text cannot be undone.'}</p><div class="modal-actions"><button class="ghost" onclick={() => confirmClear = false}>{t.cancel}</button><button class="danger-solid" onclick={() => void clearCurrentTranscript()}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button></div></div></div>{/if}
 
 <style>
+	.search-row { display:flex; align-items:center; gap:6px; }.search-row .search { flex:1; min-width:0; }.folder-add { flex:0 0 36px; width:36px; height:36px; display:grid; place-items:center; padding:0; }
+	.item-meta { display:flex; justify-content:space-between; align-items:center; gap:8px; width:100%; }.item-meta span,.item-meta time { font-family:inherit; font-size:10px; font-weight:400; line-height:1.3; }
+	.speaker-meta .speaker-name { font-size:13px; font-weight:600; }
+	.header-actions .header-menu > summary { font-size:20px; }
 	.speaker-meta { display:flex; flex-direction:column; align-items:flex-start; gap:4px; min-width:0; }
 	.speaker-meta .speaker-name { border:0; background:transparent; padding:0; text-align:left; font-family:inherit; font-size:10px; font-weight:600; line-height:1.3; color:inherit; overflow-wrap:anywhere; cursor:pointer; }
 	.speaker-meta input { width:100%; min-width:65px; max-width:120px; padding:4px; border:1px solid #cfd3ca; border-radius:6px; font:inherit; }

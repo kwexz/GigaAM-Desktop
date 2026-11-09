@@ -186,7 +186,7 @@ pub fn cluster_two(vectors: &[Vec<f32>]) -> Result<Vec<usize>, &'static str> {
         counts[label] += 1;
     }
     if counts.iter().any(|count| *count < 2) || cross > 0.5 || within.iter().enumerate().any(|(group, score)| score / counts[group] as f32 - cross < 0.2) {
-        return Err("speaker separation is not sufficiently reliable");
+        return Err("Недостаточно уверенное разделение двух голосов. Попробуйте запись с более длинными отдельными репликами; результат не сохранён.");
     }
     Ok(labels)
 }

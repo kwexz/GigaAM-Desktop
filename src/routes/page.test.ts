@@ -102,13 +102,8 @@ describe('GigaAM page', () => {
 		] : backend(command, ...args));
 		render(Page);
 		await fireEvent.click(await screen.findByText('meeting.wav'));
-		await screen.findByRole('button', { name: 'Начало фразы' });
-		const first = screen.getByRole('button', { name: 'Начало фразы' });
-		const second = screen.getByRole('button', { name: 'её окончание.' });
-		expect(first.closest('.segment')).toBe(second.closest('.segment'));
-		expect(first.closest('.segment')).toBe(screen.getByRole('button', { name: 'Другая фраза.' }).closest('.segment'));
-		await fireEvent.click(second);
-		expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('её окончание.');
+		await fireEvent.click(await screen.findByRole('button', { name: 'Начало фразы её окончание. Другая фраза.' }));
+		expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Начало фразы её окончание. Другая фраза.');
 	});
 	it('does not show one recording’s summary duration on another recording', async () => {
 		const second = { ...historyItem, id: 'tx-2', source_filename: 'second.wav' };
@@ -490,18 +485,18 @@ describe('GigaAM page', () => {
 
 	it('switches the visible UI language', async () => {
 		render(Page);
-		await screen.findByText('Записи');
+		await screen.findByPlaceholderText('Поиск');
 
 		await fireEvent.click(screen.getByLabelText('Язык'));
 		await fireEvent.click(screen.getByRole('button', { name: '🇬🇧 English' }));
-		expect(screen.getByText('Recordings')).toBeInTheDocument();
+		expect(screen.getByRole('tree', { name: 'Recordings and folders' })).toBeInTheDocument();
 		expect(screen.getByPlaceholderText('Search')).toBeInTheDocument();
 	});
 
 	it('creates a folder through the desktop organization contract', async () => {
 		render(Page);
-		await screen.findByText('Записи');
-		await fireEvent.click(screen.getByRole('button', { name: '＋ Папка' }));
+		await screen.findByPlaceholderText('Поиск');
+		await fireEvent.click(screen.getByRole('button', { name: 'Создать папку' }));
 		await fireEvent.input(screen.getByRole('textbox', { name: 'Название папки' }), { target: { value: 'Folder' } });
 		await fireEvent.click(screen.getByRole('button', { name: /^Создать$/ }));
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('save_organization', {
