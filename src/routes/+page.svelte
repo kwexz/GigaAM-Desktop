@@ -1164,7 +1164,7 @@
 				
 				{#if sentenceView}
 					{#each sentenceGroups as group (group[0].key)}
-						<div class="segment sentence-group"><button class="seg-play" aria-label={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} onclick={() => togglePlay(group[0].segment)}>▶</button>{@render speakerMeta(group[0].segment)}<div class="seg-body">
+						<div class="segment sentence-group" class:playing={group.some(({ segment }) => playhead >= segment.start_seconds && playhead < segment.end_seconds)}><button class="seg-play" aria-label={locale === 'ru' ? 'Слушать / пауза' : 'Play / pause'} onclick={() => togglePlay(group[0].segment)}>▶</button>{@render speakerMeta(group[0].segment)}<div class="seg-body">
 							{#if groupEditKey === group[0].key}<textarea bind:value={groupEditText} rows={3} onkeydown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void saveGroup(group); } else if (event.key === 'Escape') groupEditKey = ''; }}></textarea><div class="edit-actions"><button class="primary" onclick={() => void saveGroup(group)}>{locale === 'ru' ? 'Сохранить' : 'Save'}</button><button class="ghost" onclick={() => groupEditKey = ''}>{t.cancel}</button></div>{:else}<button class="seg-text" onclick={() => { groupEditKey = group[0].key; groupEditText = group.map((fragment) => fragment.text).join(' '); }}>{group.map((fragment) => fragment.text).join(' ')}</button>{/if}
 						</div></div>
 					{/each}
@@ -1233,12 +1233,12 @@
 {#if confirmClear}<div class="modal-wrap"><button class="modal-backdrop" aria-label={t.cancel} onclick={() => confirmClear = false}></button><div class="modal" role="dialog" aria-modal="true" tabindex="-1" aria-label={locale === 'ru' ? 'Очистить текст' : 'Clear transcript'}><h2>{locale === 'ru' ? 'Очистить весь текст?' : 'Clear the entire transcript?'}</h2><p>{locale === 'ru' ? 'Аудиозапись останется. Удалённый текст нельзя восстановить отменой.' : 'Audio will remain. Deleted text cannot be undone.'}</p><div class="modal-actions"><button class="ghost" onclick={() => confirmClear = false}>{t.cancel}</button><button class="danger-solid" onclick={() => void clearCurrentTranscript()}>{locale === 'ru' ? 'Очистить' : 'Clear'}</button></div></div></div>{/if}
 
 <style>
+	header { position:relative; z-index:30; overflow:visible; }
+	.header-actions .header-menu .drive-menu-content button { font:inherit; font-size:13px; font-weight:600; color:inherit; text-align:left; }
 	.search-row { display:flex; align-items:center; gap:6px; }.search-row .search { flex:1; min-width:0; }.folder-add { flex:0 0 36px; width:36px; height:36px; display:grid; place-items:center; padding:0; }
 	.item-meta { display:flex; justify-content:space-between; align-items:center; gap:8px; width:100%; }.item-meta span,.item-meta time { font-family:inherit; font-size:10px; font-weight:400; line-height:1.3; }
-	.speaker-meta .speaker-name { font-size:13px; font-weight:600; }
-	.header-actions .header-menu > summary { font-size:20px; }
 	.speaker-meta { display:flex; flex-direction:column; align-items:flex-start; gap:4px; min-width:0; }
-	.speaker-meta .speaker-name { border:0; background:transparent; padding:0; text-align:left; font-family:inherit; font-size:10px; font-weight:600; line-height:1.3; color:inherit; overflow-wrap:anywhere; cursor:pointer; }
+	.speaker-meta .speaker-name { border:0; background:transparent; padding:0; text-align:left; font-family:inherit; font-size:13px; font-weight:600; line-height:1.3; color:inherit; overflow-wrap:anywhere; cursor:pointer; }
 	.speaker-meta input { width:100%; min-width:65px; max-width:120px; padding:4px; border:1px solid #cfd3ca; border-radius:6px; font:inherit; }
 	.speaker-actions { display:flex; gap:4px; }
 	.speaker-actions button { border:0; border-radius:6px; width:26px; height:26px; color:white; cursor:pointer; }
@@ -1247,7 +1247,7 @@
 	.summary-settings .sentence-setting { display:flex; flex-direction:row; align-items:center; gap:8px; }
 	.summary-settings .sentence-setting input { width:auto; margin:0; flex:none; }
 	.sentence-group .seg-text { display: inline; width: auto; margin: 0; }
-	.header-actions .header-menu > summary { display:flex; align-items:center; justify-content:center; width:36px; height:34px; padding:0; box-sizing:border-box; border:1px solid #d5d7d0; border-radius:8px; font-size:16px; line-height:1; }
+	.header-actions .header-menu > summary { display:flex; align-items:center; justify-content:center; width:36px; height:34px; padding:0; box-sizing:border-box; border:1px solid #d5d7d0; border-radius:8px; font-size:20px; line-height:1; }
 	.header-actions .header-menu .drive-menu-content { top:calc(100% + 6px); bottom:auto; left:auto; right:0; min-width:160px; gap:4px; padding:6px; }
 	.header-actions .header-menu .drive-menu-content button { border:0; background:transparent; border-radius:6px; padding:8px 10px; font-size:13px; font-weight:400; }
 	.header-actions .header-menu .drive-menu-content button:hover { background:#edf1eb; }
@@ -1277,7 +1277,7 @@
 
 	.transport > button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 	.transport .transport-large { font-size: 14px; line-height: 1; }
-	.item-meta { display: flex; justify-content: space-between; gap: 8px; width: 100%; }
+	.item .item-meta { display: flex; justify-content: space-between; gap: 8px; width: 100%; }
 	.item-meta time { margin-left: auto; white-space: nowrap; }
 	footer .drive-menu>summary{font-weight:600!important}.summary-settings{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:18px}.summary-settings label{display:grid;gap:5px;font-size:12px}.summary-settings input,.summary-settings select{padding:8px;border:1px solid #c9cdc2;border-radius:8px;background:transparent;color:inherit;font:inherit}
 	footer .drive-menu>summary{font:inherit;font-size:13px;font-weight:400;width:auto;min-width:62px;gap:7px;flex-shrink:0}footer .drive-menu>summary svg{flex-shrink:0;display:block}

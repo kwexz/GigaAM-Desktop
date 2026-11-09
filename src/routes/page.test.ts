@@ -62,6 +62,16 @@ function mockBackend(options: { installed?: boolean; items?: Item[] } = {}) {
 }
 
 describe('GigaAM page', () => {
+	it('highlights a grouped transcript while its audio is playing', async () => {
+		mockBackend({ items: [historyItem] });
+		render(Page);
+		await fireEvent.click(await screen.findByText('meeting.wav'));
+		const text = await screen.findByRole('button', { name: 'Проверочный текст' });
+		const audio = document.querySelector('audio')!;
+		Object.defineProperty(audio, 'currentTime', { value: 1.5, configurable: true });
+		await fireEvent.timeUpdate(audio);
+		expect(text.closest('.segment')).toHaveClass('playing');
+	});
 	it('opens model settings when transcription with diarization has no model', async () => {
 		mockBackend({ items: [historyItem] });
 		render(Page);
