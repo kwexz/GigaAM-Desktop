@@ -1,6 +1,6 @@
 [package]
 name = "gigaam-desktop"
-version = "0.2.0"
+version = "0.2.1"
 description = "Local GigaAM transcription desktop application"
 authors = []
 license = "MIT"
