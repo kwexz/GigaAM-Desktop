@@ -8,11 +8,11 @@ test('saved summary settings survive an actual page reload', async ({ page }) =>
 	await page.reload();
 	await page.getByRole('button', { name: /Настройки|Settings/ }).click();
 	await page.getByRole('button', { name: /Суммаризация|Summarization/ }).click();
-	await expect(page.getByRole('combobox', { name: /Модель Ollama|Ollama model/ })).toHaveValue('saved-local-model');
+	await expect(page.locator('summary[aria-label="Модель Ollama"]')).toContainText('saved-local-model');
 	await page.reload();
 	await page.getByRole('button', { name: /Настройки|Settings/ }).click();
 	await page.getByRole('button', { name: /Суммаризация|Summarization/ }).click();
-	await expect(page.getByRole('combobox', { name: /Модель Ollama|Ollama model/ })).toHaveValue('saved-local-model');
+	await expect(page.locator('summary[aria-label="Модель Ollama"]')).toContainText('saved-local-model');
 });
 
 test('API selection survives reload and does not require a stored browser key', async ({ page }) => {
@@ -22,7 +22,7 @@ test('API selection survives reload and does not require a stored browser key', 
 	await page.getByRole('button', { name: /Настройки|Settings/ }).click();
 	await page.getByRole('button', { name: /Суммаризация|Summarization/ }).click();
 	await expect(page.getByLabel('API URL')).toHaveValue('https://example.invalid/v1');
-	await expect(page.locator('select').filter({ has: page.locator('option[value="saved-api-model"]') })).toHaveValue('saved-api-model');
+	await expect(page.locator('summary[aria-label="Модель API"]')).toContainText('saved-api-model');
 	await expect(page.getByLabel('API key')).toHaveValue('');
 });
 

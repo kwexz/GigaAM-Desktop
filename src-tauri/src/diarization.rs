@@ -75,6 +75,9 @@ impl SpeakerEncoder {
 /// Analyze bounded windows of a completed recording. Short fragments remain
 /// unlabelled rather than being assigned invented speaker identities.
 pub fn analyze_file(path: &Path, model: &Path, segments: &[TranscriptSegment]) -> Result<Vec<Option<String>>> {
+    analyze_file_with_count(path, model, segments, None)
+}
+pub fn analyze_file_with_count(path: &Path, model: &Path, segments: &[TranscriptSegment], speaker_count: Option<usize>) -> Result<Vec<Option<String>>> {
     let mut source = crate::streaming::open_audio_blocks(path)?;
     let rate = source.sample_rate();
     anyhow::ensure!(rate > 0, "invalid sample rate");
@@ -112,10 +115,83 @@ pub fn analyze_file(path: &Path, model: &Path, segments: &[TranscriptSegment]) -
         sample_index = block_end;
     }
     for (index, audio) in active { add_embedding(&mut encoder, rate, index, audio, &mut positions, &mut vectors)?; }
-    let labels = cluster_two(&vectors).map_err(anyhow::Error::msg)?;
+    let labels = cluster_speakers_with_count(&vectors, speaker_count).map_err(anyhow::Error::msg)?;
     let mut result: Vec<_> = segments.iter().map(|segment| segment.speaker_id.clone()).collect();
     for (index, speaker) in positions.into_iter().zip(labels) { result[index] = Some(format!("Speaker {}", speaker + 1)); }
     Ok(result)
+}
+
+/// Agglomerative cosine clustering with a minimum evidence threshold.
+/// A short-lived speaker can form a cluster if represented by multiple windows.
+pub fn cluster_speakers(vectors: &[Vec<f32>]) -> Result<Vec<usize>, &'static str> {
+    cluster_speakers_with_count(vectors, None)
+}
+pub fn cluster_speakers_with_count(vectors: &[Vec<f32>], speaker_count: Option<usize>) -> Result<Vec<usize>, &'static str> {
+    if vectors.is_empty() || vectors[0].is_empty() { return Err("not enough speaker embeddings"); }
+    if speaker_count.is_some_and(|n| !(1..=12).contains(&n) || n > vectors.len()) { return Err("requested speaker count exceeds available speech fragments"); }
+    let width = vectors[0].len();
+    let normalized: Vec<Vec<f32>> = vectors.iter().map(|v| {
+        if v.len() != width || v.iter().any(|x| !x.is_finite()) { return Err("invalid speaker embedding"); }
+        let norm = v.iter().map(|x| x*x).sum::<f32>().sqrt();
+        if norm < 1e-6 { return Err("empty speaker embedding"); }
+        Ok(v.iter().map(|x| x/norm).collect())
+    }).collect::<Result<_,_>>()?;
+    let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x,y)| x*y).sum::<f32>();
+    if let Some(k) = speaker_count {
+        let mean: Vec<f32> = (0..width).map(|d| normalized.iter().map(|v| v[d]).sum::<f32>() / normalized.len() as f32).collect();
+        let centered: Vec<Vec<f32>> = normalized.iter().map(|v| {
+            let mut row: Vec<f32> = v.iter().zip(&mean).map(|(x,m)| x-m).collect();
+            let norm = row.iter().map(|x|x*x).sum::<f32>().sqrt().max(1e-8);
+            for x in &mut row { *x /= norm; } row
+        }).collect();
+        let mut centers = vec![centered[0].clone()];
+        while centers.len() < k {
+            let next = centered.iter().enumerate().max_by(|(_,a),(_,b)| {
+                let nearest = |v: &Vec<f32>| centers.iter().map(|c|dot(v,c)).fold(f32::NEG_INFINITY,f32::max);
+                nearest(b).total_cmp(&nearest(a))
+            }).unwrap().0;
+            centers.push(centered[next].clone());
+        }
+        let mut labels = vec![0; centered.len()];
+        for _ in 0..50 {
+            let mut sums=vec![vec![0f32;width];k]; let mut counts=vec![0usize;k];
+            for (i,v) in centered.iter().enumerate() {
+                let group=(0..k).max_by(|&a,&b|dot(v,&centers[a]).total_cmp(&dot(v,&centers[b]))).unwrap();
+                labels[i]=group; counts[group]+=1; for (sum,x) in sums[group].iter_mut().zip(v) { *sum+=x; }
+            }
+            for group in 0..k { if counts[group] > 0 { let norm=sums[group].iter().map(|x|x*x).sum::<f32>().sqrt().max(1e-8); for x in &mut sums[group] { *x/=norm; } centers[group]=sums[group].clone(); } }
+        }
+        let mut order=Vec::new(); for label in &mut labels { let index=match order.iter().position(|x|x==label){Some(i)=>i,None=>{order.push(*label);order.len()-1}}; *label=index; }
+        if order.len()!=k { return Err("speaker clustering collapsed"); }
+        return Ok(labels);
+    }
+    let mut groups: Vec<Vec<usize>> = (0..vectors.len()).map(|i| vec![i]).collect();
+    // Average linkage discourages chaining unrelated voices through one noisy window.
+    while groups.len() > speaker_count.unwrap_or(1) {
+        let mut best = (0, 0, f32::NEG_INFINITY);
+        for i in 0..groups.len() { for j in i+1..groups.len() {
+            let sum: f32 = groups[i].iter().flat_map(|&a| groups[j].iter().map(move |&b| (a,b))).map(|(a,b)| dot(&normalized[a],&normalized[b])).sum();
+            let score = sum / (groups[i].len()*groups[j].len()) as f32;
+            if score > best.2 { best=(i,j,score); }
+        }}
+        if speaker_count.is_none() && best.2 < 0.58 { break; }
+        let right=groups.remove(best.1); groups[best.0].extend(right);
+    }
+    // A singleton is insufficient evidence for a new identity; attach to its closest established group.
+    if speaker_count.is_none() && groups.iter().any(|group| group.len() >= 2) {
+        while let Some(i)=groups.iter().position(|group| group.len()==1) {
+            let member=groups[i][0];
+            let target=(0..groups.len()).filter(|&j| j!=i && groups[j].len()>=2).max_by(|&a,&b| {
+                let score=|j:usize| groups[j].iter().map(|&k| dot(&normalized[member],&normalized[k])).sum::<f32>()/groups[j].len() as f32;
+                score(a).total_cmp(&score(b))
+            }).unwrap();
+            groups[target].push(member); groups.remove(i);
+        }
+    }
+    groups.sort_by_key(|group| *group.iter().min().unwrap());
+    let mut labels=vec![0;vectors.len()];
+    for (speaker,group) in groups.iter().enumerate() { for &i in group { labels[i]=speaker; } }
+    Ok(labels)
 }
 
 fn add_embedding(encoder: &mut SpeakerEncoder, rate: usize, index: usize, audio: Vec<f32>, positions: &mut Vec<usize>, vectors: &mut Vec<Vec<f32>>) -> Result<()> {
@@ -212,6 +288,25 @@ pub fn match_speakers(segments: &[TranscriptSegment], turns: &[SpeakerTurn]) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clusters_four_speakers_including_a_late_short_speaker() {
+        let vectors = vec![vec![1.,0.,0.,0.], vec![0.99,0.02,0.,0.], vec![0.,1.,0.,0.], vec![0.02,0.99,0.,0.], vec![0.,0.,1.,0.], vec![0.,0.02,0.99,0.], vec![0.,0.,0.,1.], vec![0.,0.,0.02,0.99]];
+        let labels = super::cluster_speakers(&vectors).unwrap();
+        assert_eq!(labels, vec![0,0,1,1,2,2,3,3]);
+    }
+    #[test]
+    fn one_voice_is_not_forced_into_two_groups() {
+        let labels = super::cluster_speakers(&[vec![1.,0.],vec![0.99,0.01],vec![0.98,-0.01]]).unwrap();
+        assert_eq!(labels, vec![0,0,0]);
+    }
+    #[test]
+    fn explicit_count_finds_four_and_checks_input() {
+        let vectors = vec![vec![1.,0.,0.,0.],vec![0.99,0.02,0.,0.],vec![0.,1.,0.,0.],vec![0.02,0.99,0.,0.],vec![0.,0.,1.,0.],vec![0.,0.02,0.99,0.],vec![0.,0.,0.,1.],vec![0.,0.,0.02,0.99]];
+        let labels=super::cluster_speakers_with_count(&vectors,Some(4)).unwrap();
+        assert_eq!(labels,vec![0,0,1,1,2,2,3,3]);
+        assert!(super::cluster_speakers_with_count(&vectors,Some(0)).is_err());
+        assert!(super::cluster_speakers_with_count(&vectors,Some(9)).is_err());
+    }
     use super::*;
     use crate::domain::{SegmentState, SourceTrack};
     #[test]
@@ -297,8 +392,14 @@ mod tests {
         let store = crate::storage::Store::open(Path::new(&db)).unwrap();
         let record = store.get(&id).unwrap().unwrap();
         let segments = store.segments(&id).unwrap();
-        let result = analyze_file(Path::new(record.audio_path.as_deref().unwrap_or(&record.source_path)), Path::new(&model), &segments);
+        let result = analyze_file_with_count(Path::new(record.audio_path.as_deref().unwrap_or(&record.source_path)), Path::new(&model), &segments, Some(4));
         println!("segments={}, outcome={}", segments.len(), if result.is_ok() { "assigned" } else { "rejected" });
+        if let Ok(labels) = &result {
+            let mut counts = std::collections::BTreeMap::new();
+            for label in labels.iter().flatten() { *counts.entry(label).or_insert(0usize) += 1; }
+            println!("speaker_counts={counts:?}");
+            for (segment,label) in segments.iter().zip(labels) { if segment.start_seconds > record.duration_seconds.unwrap_or(0.0) - 90.0 { println!("last_90s: {:.1}-{:.1} {:?}",segment.start_seconds,segment.end_seconds,label); } }
+        }
         assert!(result.is_ok(), "{}", result.unwrap_err());
     }
 }
