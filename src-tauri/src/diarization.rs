@@ -459,4 +459,69 @@ mod tests {
             println!("window {i}/{j}: {:.3}",dot/norm(&vectors[i])/norm(&vectors[j]));
         }}
     }
+    #[test]
+    #[ignore = "local user-authorized diarization window experiment"]
+    fn experiment_window_sizes() {
+        use std::time::Instant;
+        let model=std::env::var_os("GIGAAM_SPEAKER_MODEL").unwrap();
+        let audio=std::env::var_os("GIGAAM_DIARIZATION_AUDIO").unwrap();
+        let mut source=crate::streaming::open_audio_blocks(Path::new(&audio)).unwrap();
+        let rate=source.sample_rate(); let mut cursor=0usize; let mut clip=Vec::new();
+        let start=(3900.0*rate as f64) as usize; let stop=(4035.0*rate as f64) as usize;
+        while let Some(block)=source.next_block().unwrap() {
+            let end=cursor+block.len(); let lo=start.max(cursor); let hi=stop.min(end);
+            if hi>lo {clip.extend_from_slice(&block[lo-cursor..hi-cursor]);}
+            cursor=end; if cursor>=stop {break;}
+        }
+        let mut encoder=SpeakerEncoder::load(Path::new(&model)).unwrap();
+        for (seconds,overlap) in [(1.5,0.0),(2.0,0.0),(3.0,0.0),(5.0,0.0),(3.0,0.5)] {
+            let started=Instant::now(); let size=(seconds*rate as f64) as usize; let hop=(size as f64*(1.0-overlap)) as usize;
+            let mut vectors=Vec::new(); let mut positions=Vec::new(); let mut starts=Vec::new(); let mut offset=0;
+            while offset+size<=clip.len() {
+                add_embedding(&mut encoder,rate,starts.len(),clip[offset..offset+size].to_vec(),&mut positions,&mut vectors).unwrap();
+                starts.push(3900.0+offset as f64/rate as f64); offset+=hop;
+            }
+            let labels=cluster_speakers_with_count(&vectors,Some(4)).unwrap();
+            let mut votes=[std::collections::BTreeMap::<usize,usize>::new(),std::collections::BTreeMap::new()];
+            for (&time,&label) in starts.iter().zip(&labels) {
+                for (i,(a,b)) in [(3935.0,3953.0),(4013.0,4035.0)].iter().enumerate() {
+                    if time>=*a && time+seconds<=*b {*votes[i].entry(label).or_default()+=1;}
+                }
+            }
+            let dominant:Vec<_>=votes.iter().map(|v|v.iter().max_by_key(|(_,n)|*n).map(|(&label,&n)|(label,n,v.values().sum::<usize>()))).collect();
+            println!("window={seconds}s overlap={overlap:.1} windows={} reference={dominant:?} elapsed_s={:.2}",vectors.len(),started.elapsed().as_secs_f64());
+        }
+    }
+    #[test]
+    #[ignore = "local user-authorized full-recording diarization experiment"]
+    fn experiment_full_recording() {
+        use std::time::Instant;
+        let model=std::env::var_os("GIGAAM_SPEAKER_MODEL").unwrap();
+        let audio=std::env::var_os("GIGAAM_DIARIZATION_AUDIO").unwrap();
+        let db=std::env::var_os("GIGAAM_DIARIZATION_DB").unwrap();
+        let id=std::env::var("GIGAAM_DIARIZATION_ID").unwrap();
+        let seconds: f64=std::env::var("GIGAAM_EXPERIMENT_SECONDS").unwrap().parse().unwrap();
+        let overlap: f64=std::env::var("GIGAAM_EXPERIMENT_OVERLAP").unwrap().parse().unwrap();
+        let store=crate::storage::Store::open(Path::new(&db)).unwrap(); let segments=store.segments(&id).unwrap();
+        let mut source=crate::streaming::open_audio_blocks(Path::new(&audio)).unwrap(); let rate=source.sample_rate();
+        let size=(seconds*rate as f64) as usize; let hop=(size as f64*(1.0-overlap)) as usize;
+        let mut windows=Vec::new();
+        for (index,s) in segments.iter().enumerate() {
+            let mut start=(s.start_seconds.max(0.0)*rate as f64) as usize; let end=(s.end_seconds.max(0.0)*rate as f64) as usize;
+            while start<end {let stop=(start+size).min(end); if stop-start>=rate/2 {windows.push((index,start,stop));} if stop==end {break;} start+=hop;}
+        }
+        windows.sort_by_key(|w|w.1); let mut active:Vec<(usize,Vec<f32>)>=Vec::new();let mut cursor=0;let mut sample=0;
+        let mut encoder=SpeakerEncoder::load(Path::new(&model)).unwrap();let mut vectors=Vec::new();let mut positions=Vec::new();let mut times=Vec::new();let started=Instant::now();
+        while let Some(block)=source.next_block().unwrap() {
+            let end=sample+block.len(); while cursor<windows.len()&&windows[cursor].1<end {active.push((cursor,Vec::new()));cursor+=1;}
+            for (i,data) in &mut active {let (_,lo,hi)=windows[*i];let a=lo.max(sample);let b=hi.min(end);if b>a {data.extend_from_slice(&block[a-sample..b-sample]);}}
+            let mut pending=Vec::new(); for (i,data) in active.drain(..) {let (index,start,stop)=windows[i];if stop>end {pending.push((i,data));} else {add_embedding(&mut encoder,rate,index,data,&mut positions,&mut vectors).unwrap(); times.push((start as f64/rate as f64,stop as f64/rate as f64));}} active=pending;sample=end;
+        }
+        for (i,data) in active {let(index,start,stop)=windows[i];add_embedding(&mut encoder,rate,index,data,&mut positions,&mut vectors).unwrap();times.push((start as f64/rate as f64,stop as f64/rate as f64));}
+        let labels=cluster_speakers_with_count(&vectors,Some(4)).unwrap();let dominant=dominant_speakers(segments.len(),&positions,&labels);
+        let mut counts=std::collections::BTreeMap::new();for label in dominant.iter().flatten(){*counts.entry(label).or_insert(0usize)+=1;}
+        let mut votes=[std::collections::BTreeMap::<usize,usize>::new(),std::collections::BTreeMap::new()];
+        for ((start,stop),label) in times.iter().zip(&labels) {for (i,(a,b)) in [(3935.0,3953.0),(4013.0,4035.0)].iter().enumerate(){if *start>=*a&&*stop<=*b {*votes[i].entry(*label).or_default()+=1;}}}
+        println!("window={seconds}s overlap={overlap} windows={} cluster_counts={counts:?} reference={votes:?} elapsed_s={:.2}",vectors.len(),started.elapsed().as_secs_f64());
+    }
 }
