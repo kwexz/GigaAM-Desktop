@@ -401,19 +401,26 @@ impl Store {
     }
 
     pub fn enqueue(&mut self, transcription: &Transcription) -> rusqlite::Result<()> {
-        insert_transcription(&self.connection, transcription)
+        let transaction = self.connection.transaction()?;
+        insert_transcription(&transaction, transcription)?;
+        place_new_recording_first(&transaction, &transcription.id)?;
+        transaction.commit()
     }
 
     pub fn enqueue_batch(&mut self, transcriptions: &[Transcription]) -> rusqlite::Result<()> {
         let transaction = self.connection.transaction()?;
         for transcription in transcriptions {
             insert_transcription(&transaction, transcription)?;
+            place_new_recording_first(&transaction, &transcription.id)?;
         }
         transaction.commit()
     }
 
     pub fn insert_live_session(&mut self, transcription: &Transcription) -> rusqlite::Result<()> {
-        insert_transcription(&self.connection, transcription)
+        let transaction = self.connection.transaction()?;
+        insert_transcription(&transaction, transcription)?;
+        place_new_recording_first(&transaction, &transcription.id)?;
+        transaction.commit()
     }
 
     pub fn claim_next(&mut self, now_ms: i64) -> rusqlite::Result<Option<Transcription>> {
@@ -667,6 +674,14 @@ fn insert_transcription(
             transcription.queue_visible,
         ],
     )?;
+    Ok(())
+}
+
+fn place_new_recording_first(connection: &Connection, id: &str) -> rusqlite::Result<()> {
+    connection.execute("INSERT OR IGNORE INTO recording_positions(recording_id, folder_id, position) SELECT t.id, NULL, ROW_NUMBER() OVER (ORDER BY t.created_ms DESC,t.id)-1 FROM transcriptions t LEFT JOIN recording_positions p ON p.recording_id=t.id WHERE p.recording_id IS NULL AND t.id != ?1", [id])?;
+    connection.execute("UPDATE recording_positions SET position=position+1 WHERE folder_id IS NULL", [])?;
+    connection.execute("UPDATE recording_folders SET position=position+1 WHERE parent_id IS NULL", [])?;
+    connection.execute("INSERT INTO recording_positions(recording_id, folder_id, position) VALUES(?1,NULL,0)", [id])?;
     Ok(())
 }
 
@@ -1210,6 +1225,15 @@ mod tests {
             total_chunks: None,
             queue_visible: true,
         }
+    }
+
+    #[test]
+    fn new_recordings_are_inserted_above_existing_manual_order() {
+        let mut store = Store::memory().unwrap();
+        for id in ["one", "two", "three"] { store.enqueue(&transcription(id, TranscriptionStatus::Queued)).unwrap(); }
+        let mut nodes = store.load_organization().unwrap().as_array().unwrap().clone();
+        nodes.sort_by_key(|node| node["position"].as_i64().unwrap());
+        assert_eq!(nodes.iter().map(|node| node["id"].as_str().unwrap()).collect::<Vec<_>>(), vec!["three", "two", "one"]);
     }
 
     #[test]

@@ -75,48 +75,148 @@ impl SpeakerEncoder {
 /// Analyze bounded windows of a completed recording. Short fragments remain
 /// unlabelled rather than being assigned invented speaker identities.
 pub fn analyze_file(path: &Path, model: &Path, segments: &[TranscriptSegment]) -> Result<Vec<Option<String>>> {
+    analyze_file_with_count(path, model, segments, None)
+}
+pub fn analyze_file_with_count(path: &Path, model: &Path, segments: &[TranscriptSegment], speaker_count: Option<usize>) -> Result<Vec<Option<String>>> {
     let mut source = crate::streaming::open_audio_blocks(path)?;
+    let window_seconds = 3.0;
     let rate = source.sample_rate();
     anyhow::ensure!(rate > 0, "invalid sample rate");
     let mut encoder = SpeakerEncoder::load(model)?;
     let mut vectors = Vec::new();
     let mut positions = Vec::new();
-    let mut order: Vec<usize> = (0..segments.len()).collect();
-    order.sort_by(|&a, &b| segments[a].start_seconds.total_cmp(&segments[b].start_seconds));
+    let windows = segment_windows(segments, rate, (window_seconds*rate as f64) as usize);
     let mut active: Vec<(usize, Vec<f32>)> = Vec::new();
     let mut cursor = 0usize;
     let mut sample_index = 0usize;
     while let Some(block) = source.next_block()? {
         let block_start = sample_index;
         let block_end = block_start + block.len();
-        while cursor < order.len() && (segments[order[cursor]].start_seconds.max(0.0) * rate as f64) < block_end as f64 {
-            active.push((order[cursor], Vec::new()));
+        while cursor < windows.len() && windows[cursor].1 < block_end {
+            active.push((cursor, Vec::new()));
             cursor += 1;
         }
         for (index, window) in &mut active {
-            let segment = &segments[*index];
-            let start = (segment.start_seconds.max(0.0) * rate as f64) as usize;
-            let end = ((segment.end_seconds.min(segment.start_seconds + 3.0)) * rate as f64) as usize;
+            let (_,start,end) = windows[*index];
             let lo = start.max(block_start);
             let hi = end.min(block_end);
             if hi > lo { window.extend_from_slice(&block[lo - block_start..hi - block_start]); }
         }
         let mut pending = Vec::new();
         for (index, audio) in active.drain(..) {
-            let segment = &segments[index];
-            let end = (segment.end_seconds.min(segment.start_seconds + 3.0) * rate as f64) as usize;
+            let (_,_,end) = windows[index];
             if end > block_end { pending.push((index, audio)); continue; }
-            add_embedding(&mut encoder, rate, index, audio, &mut positions, &mut vectors)?;
+            add_embedding(&mut encoder, rate, windows[index].0, audio, &mut positions, &mut vectors)?;
         }
         active = pending;
         sample_index = block_end;
     }
-    for (index, audio) in active { add_embedding(&mut encoder, rate, index, audio, &mut positions, &mut vectors)?; }
-    let labels = cluster_two(&vectors).map_err(anyhow::Error::msg)?;
+    for (index, audio) in active { add_embedding(&mut encoder, rate, windows[index].0, audio, &mut positions, &mut vectors)?; }
+    #[cfg(test)]
+    if let Some(path) = std::env::var_os("GIGAAM_DIARIZATION_EMBEDDINGS") {
+        std::fs::write(path, serde_json::to_vec(&serde_json::json!({"positions":positions,"vectors":vectors}))?)?;
+    }
+    let labels = cluster_speakers_with_count(&vectors, speaker_count).map_err(anyhow::Error::msg)?;
     let mut result: Vec<_> = segments.iter().map(|segment| segment.speaker_id.clone()).collect();
-    for (index, speaker) in positions.into_iter().zip(labels) { result[index] = Some(format!("Speaker {}", speaker + 1)); }
+    for (index,speaker) in dominant_speakers(segments.len(),&positions,&labels).into_iter().enumerate() {
+        if let Some(speaker)=speaker {result[index]=Some(format!("Speaker {}",speaker+1));}
+    }
     Ok(result)
 }
+
+fn segment_windows(segments: &[TranscriptSegment], rate: usize, window: usize) -> Vec<(usize,usize,usize)> {
+    let mut windows=Vec::new();
+    for (index,segment) in segments.iter().enumerate() {
+        let mut start=(segment.start_seconds.max(0.0)*rate as f64) as usize;
+        let end=(segment.end_seconds.max(0.0)*rate as f64) as usize;
+        while start < end {
+            let stop=start.saturating_add(window).min(end);
+            if stop <= start {break;}
+            if stop-start >= rate/2 {windows.push((index,start,stop));}
+            start=stop;
+        }
+    }
+    windows.sort_by_key(|window|window.1); windows
+}
+fn dominant_speakers(count: usize, positions: &[usize], labels: &[usize]) -> Vec<Option<usize>> {
+    let mut votes=vec![std::collections::BTreeMap::<usize,usize>::new();count];
+    for (&index,&speaker) in positions.iter().zip(labels) {if let Some(vote)=votes.get_mut(index) {*vote.entry(speaker).or_default()+=1;}}
+    votes.iter().map(|counts|counts.iter().max_by_key(|(_,count)|*count).map(|(&speaker,_)|speaker)).collect()
+}
+
+/// Agglomerative cosine clustering with a minimum evidence threshold.
+/// A short-lived speaker can form a cluster if represented by multiple windows.
+pub fn cluster_speakers(vectors: &[Vec<f32>]) -> Result<Vec<usize>, &'static str> {
+    cluster_speakers_with_count(vectors, None)
+}
+pub fn cluster_speakers_with_count(vectors: &[Vec<f32>], speaker_count: Option<usize>) -> Result<Vec<usize>, &'static str> {
+    if vectors.is_empty() || vectors[0].is_empty() { return Err("not enough speaker embeddings"); }
+    if speaker_count.is_some_and(|n| !(1..=12).contains(&n) || n > vectors.len()) { return Err("requested speaker count exceeds available speech fragments"); }
+    let width = vectors[0].len();
+    let normalized: Vec<Vec<f32>> = vectors.iter().map(|v| {
+        if v.len() != width || v.iter().any(|x| !x.is_finite()) { return Err("invalid speaker embedding"); }
+        let norm = v.iter().map(|x| x*x).sum::<f32>().sqrt();
+        if norm < 1e-6 { return Err("empty speaker embedding"); }
+        Ok(v.iter().map(|x| x/norm).collect())
+    }).collect::<Result<_,_>>()?;
+    let dot = |a: &[f32], b: &[f32]| a.iter().zip(b).map(|(x,y)| x*y).sum::<f32>();
+    if let Some(k) = speaker_count {
+        let mean: Vec<f32> = (0..width).map(|d| normalized.iter().map(|v| v[d]).sum::<f32>() / normalized.len() as f32).collect();
+        let centered: Vec<Vec<f32>> = normalized.iter().map(|v| {
+            let mut row: Vec<f32> = v.iter().zip(&mean).map(|(x,m)| x-m).collect();
+            let norm = row.iter().map(|x|x*x).sum::<f32>().sqrt().max(1e-8);
+            for x in &mut row { *x /= norm; } row
+        }).collect();
+        let mut centers = vec![centered[0].clone()];
+        while centers.len() < k {
+            let next = centered.iter().enumerate().max_by(|(_,a),(_,b)| {
+                let nearest = |v: &Vec<f32>| centers.iter().map(|c|dot(v,c)).fold(f32::NEG_INFINITY,f32::max);
+                nearest(b).total_cmp(&nearest(a))
+            }).unwrap().0;
+            centers.push(centered[next].clone());
+        }
+        let mut labels = vec![0; centered.len()];
+        for _ in 0..50 {
+            let mut sums=vec![vec![0f32;width];k]; let mut counts=vec![0usize;k];
+            for (i,v) in centered.iter().enumerate() {
+                let group=(0..k).max_by(|&a,&b|dot(v,&centers[a]).total_cmp(&dot(v,&centers[b]))).unwrap();
+                labels[i]=group; counts[group]+=1; for (sum,x) in sums[group].iter_mut().zip(v) { *sum+=x; }
+            }
+            for group in 0..k { if counts[group] > 0 { let norm=sums[group].iter().map(|x|x*x).sum::<f32>().sqrt().max(1e-8); for x in &mut sums[group] { *x/=norm; } centers[group]=sums[group].clone(); } }
+        }
+        let mut order=Vec::new(); for label in &mut labels { let index=match order.iter().position(|x|x==label){Some(i)=>i,None=>{order.push(*label);order.len()-1}}; *label=index; }
+        if order.len()!=k { return Err("speaker clustering collapsed"); }
+        return Ok(labels);
+    }
+    let mut groups: Vec<Vec<usize>> = (0..vectors.len()).map(|i| vec![i]).collect();
+    // Average linkage discourages chaining unrelated voices through one noisy window.
+    while groups.len() > speaker_count.unwrap_or(1) {
+        let mut best = (0, 0, f32::NEG_INFINITY);
+        for i in 0..groups.len() { for j in i+1..groups.len() {
+            let sum: f32 = groups[i].iter().flat_map(|&a| groups[j].iter().map(move |&b| (a,b))).map(|(a,b)| dot(&normalized[a],&normalized[b])).sum();
+            let score = sum / (groups[i].len()*groups[j].len()) as f32;
+            if score > best.2 { best=(i,j,score); }
+        }}
+        if speaker_count.is_none() && best.2 < 0.58 { break; }
+        let right=groups.remove(best.1); groups[best.0].extend(right);
+    }
+    // A singleton is insufficient evidence for a new identity; attach to its closest established group.
+    if speaker_count.is_none() && groups.iter().any(|group| group.len() >= 2) {
+        while let Some(i)=groups.iter().position(|group| group.len()==1) {
+            let member=groups[i][0];
+            let target=(0..groups.len()).filter(|&j| j!=i && groups[j].len()>=2).max_by(|&a,&b| {
+                let score=|j:usize| groups[j].iter().map(|&k| dot(&normalized[member],&normalized[k])).sum::<f32>()/groups[j].len() as f32;
+                score(a).total_cmp(&score(b))
+            }).unwrap();
+            groups[target].push(member); groups.remove(i);
+        }
+    }
+    groups.sort_by_key(|group| *group.iter().min().unwrap());
+    let mut labels=vec![0;vectors.len()];
+    for (speaker,group) in groups.iter().enumerate() { for &i in group { labels[i]=speaker; } }
+    Ok(labels)
+}
+
 
 fn add_embedding(encoder: &mut SpeakerEncoder, rate: usize, index: usize, audio: Vec<f32>, positions: &mut Vec<usize>, vectors: &mut Vec<Vec<f32>>) -> Result<()> {
     if audio.len() < rate / 2 { return Ok(()); }
@@ -212,6 +312,32 @@ pub fn match_speakers(segments: &[TranscriptSegment], turns: &[SpeakerTurn]) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn windows_cover_long_segments_and_vote_by_dominant_voice() {
+        let segment=TranscriptSegment::new("test",0,0.0,10.0,"preserved".into(),SourceTrack::File,SegmentState::Final).unwrap();
+        let windows=super::segment_windows(&[segment],16000,48000);
+        assert_eq!(windows,vec![(0,0,48000),(0,48000,96000),(0,96000,144000),(0,144000,160000)]);
+        assert_eq!(super::dominant_speakers(1,&[0,0,0,0],&[0,1,1,1]),vec![Some(1)]);
+    }
+    #[test]
+    fn clusters_four_speakers_including_a_late_short_speaker() {
+        let vectors = vec![vec![1.,0.,0.,0.], vec![0.99,0.02,0.,0.], vec![0.,1.,0.,0.], vec![0.02,0.99,0.,0.], vec![0.,0.,1.,0.], vec![0.,0.02,0.99,0.], vec![0.,0.,0.,1.], vec![0.,0.,0.02,0.99]];
+        let labels = super::cluster_speakers(&vectors).unwrap();
+        assert_eq!(labels, vec![0,0,1,1,2,2,3,3]);
+    }
+    #[test]
+    fn one_voice_is_not_forced_into_two_groups() {
+        let labels = super::cluster_speakers(&[vec![1.,0.],vec![0.99,0.01],vec![0.98,-0.01]]).unwrap();
+        assert_eq!(labels, vec![0,0,0]);
+    }
+    #[test]
+    fn explicit_count_finds_four_and_checks_input() {
+        let vectors = vec![vec![1.,0.,0.,0.],vec![0.99,0.02,0.,0.],vec![0.,1.,0.,0.],vec![0.02,0.99,0.,0.],vec![0.,0.,1.,0.],vec![0.,0.02,0.99,0.],vec![0.,0.,0.,1.],vec![0.,0.,0.02,0.99]];
+        let labels=super::cluster_speakers_with_count(&vectors,Some(4)).unwrap();
+        assert_eq!(labels,vec![0,0,1,1,2,2,3,3]);
+        assert!(super::cluster_speakers_with_count(&vectors,Some(0)).is_err());
+        assert!(super::cluster_speakers_with_count(&vectors,Some(9)).is_err());
+    }
     use super::*;
     use crate::domain::{SegmentState, SourceTrack};
     #[test]
@@ -297,8 +423,105 @@ mod tests {
         let store = crate::storage::Store::open(Path::new(&db)).unwrap();
         let record = store.get(&id).unwrap().unwrap();
         let segments = store.segments(&id).unwrap();
-        let result = analyze_file(Path::new(record.audio_path.as_deref().unwrap_or(&record.source_path)), Path::new(&model), &segments);
+        let result = analyze_file_with_count(Path::new(record.audio_path.as_deref().unwrap_or(&record.source_path)), Path::new(&model), &segments, Some(4));
         println!("segments={}, outcome={}", segments.len(), if result.is_ok() { "assigned" } else { "rejected" });
+        if let Ok(labels) = &result {
+            let mut counts = std::collections::BTreeMap::new();
+            for label in labels.iter().flatten() { *counts.entry(label).or_insert(0usize) += 1; }
+            println!("speaker_counts={counts:?}");
+            for (segment,label) in segments.iter().zip(labels) { if segment.start_seconds > record.duration_seconds.unwrap_or(0.0) - 90.0 { println!("last_90s: {:.1}-{:.1} {:?}",segment.start_seconds,segment.end_seconds,label); } }
+        }
         assert!(result.is_ok(), "{}", result.unwrap_err());
+    }
+    #[test]
+    #[ignore = "requires local diagnostic audio and speaker model"]
+    fn diagnostic_reference_windows() {
+        let model=std::env::var_os("GIGAAM_SPEAKER_MODEL").unwrap();
+        let audio=std::env::var_os("GIGAAM_DIARIZATION_AUDIO").unwrap();
+        let mut source=crate::streaming::open_audio_blocks(Path::new(&audio)).unwrap();
+        let rate=source.sample_rate(); let mut cursor=0usize;
+        let windows=[(3935.0,3946.0),(3940.0,3946.0),(4013.0,4019.0),(4019.0,4026.0)];
+        let mut clips=vec![Vec::new();windows.len()];
+        while let Some(block)=source.next_block().unwrap() {
+            let end=cursor+block.len();
+            for (i,(start,stop)) in windows.iter().enumerate() {
+                let lo=((*start*rate as f64) as usize).max(cursor); let hi=((*stop*rate as f64) as usize).min(end);
+                if hi>lo {clips[i].extend_from_slice(&block[lo-cursor..hi-cursor]);}
+            }
+            cursor=end; if cursor>(4026.0*rate as f64) as usize {break;}
+        }
+        let mut encoder=SpeakerEncoder::load(Path::new(&model)).unwrap();
+        let mut positions=Vec::new();let mut vectors=Vec::new();
+        for (i,clip) in clips.into_iter().enumerate() { add_embedding(&mut encoder,rate,i,clip,&mut positions,&mut vectors).unwrap(); }
+        for i in 0..vectors.len() {for j in i+1..vectors.len() {
+            let dot:f32=vectors[i].iter().zip(&vectors[j]).map(|(a,b)|a*b).sum();
+            let norm=|v:&Vec<f32>|v.iter().map(|x|x*x).sum::<f32>().sqrt();
+            println!("window {i}/{j}: {:.3}",dot/norm(&vectors[i])/norm(&vectors[j]));
+        }}
+    }
+    #[test]
+    #[ignore = "local user-authorized diarization window experiment"]
+    fn experiment_window_sizes() {
+        use std::time::Instant;
+        let model=std::env::var_os("GIGAAM_SPEAKER_MODEL").unwrap();
+        let audio=std::env::var_os("GIGAAM_DIARIZATION_AUDIO").unwrap();
+        let mut source=crate::streaming::open_audio_blocks(Path::new(&audio)).unwrap();
+        let rate=source.sample_rate(); let mut cursor=0usize; let mut clip=Vec::new();
+        let start=(3900.0*rate as f64) as usize; let stop=(4035.0*rate as f64) as usize;
+        while let Some(block)=source.next_block().unwrap() {
+            let end=cursor+block.len(); let lo=start.max(cursor); let hi=stop.min(end);
+            if hi>lo {clip.extend_from_slice(&block[lo-cursor..hi-cursor]);}
+            cursor=end; if cursor>=stop {break;}
+        }
+        let mut encoder=SpeakerEncoder::load(Path::new(&model)).unwrap();
+        for (seconds,overlap) in [(1.5,0.0),(2.0,0.0),(3.0,0.0),(5.0,0.0),(3.0,0.5)] {
+            let started=Instant::now(); let size=(seconds*rate as f64) as usize; let hop=(size as f64*(1.0-overlap)) as usize;
+            let mut vectors=Vec::new(); let mut positions=Vec::new(); let mut starts=Vec::new(); let mut offset=0;
+            while offset+size<=clip.len() {
+                add_embedding(&mut encoder,rate,starts.len(),clip[offset..offset+size].to_vec(),&mut positions,&mut vectors).unwrap();
+                starts.push(3900.0+offset as f64/rate as f64); offset+=hop;
+            }
+            let labels=cluster_speakers_with_count(&vectors,Some(4)).unwrap();
+            let mut votes=[std::collections::BTreeMap::<usize,usize>::new(),std::collections::BTreeMap::new()];
+            for (&time,&label) in starts.iter().zip(&labels) {
+                for (i,(a,b)) in [(3935.0,3953.0),(4013.0,4035.0)].iter().enumerate() {
+                    if time>=*a && time+seconds<=*b {*votes[i].entry(label).or_default()+=1;}
+                }
+            }
+            let dominant:Vec<_>=votes.iter().map(|v|v.iter().max_by_key(|(_,n)|*n).map(|(&label,&n)|(label,n,v.values().sum::<usize>()))).collect();
+            println!("window={seconds}s overlap={overlap:.1} windows={} reference={dominant:?} elapsed_s={:.2}",vectors.len(),started.elapsed().as_secs_f64());
+        }
+    }
+    #[test]
+    #[ignore = "local user-authorized full-recording diarization experiment"]
+    fn experiment_full_recording() {
+        use std::time::Instant;
+        let model=std::env::var_os("GIGAAM_SPEAKER_MODEL").unwrap();
+        let audio=std::env::var_os("GIGAAM_DIARIZATION_AUDIO").unwrap();
+        let db=std::env::var_os("GIGAAM_DIARIZATION_DB").unwrap();
+        let id=std::env::var("GIGAAM_DIARIZATION_ID").unwrap();
+        let seconds: f64=std::env::var("GIGAAM_EXPERIMENT_SECONDS").unwrap().parse().unwrap();
+        let overlap: f64=std::env::var("GIGAAM_EXPERIMENT_OVERLAP").unwrap().parse().unwrap();
+        let store=crate::storage::Store::open(Path::new(&db)).unwrap(); let segments=store.segments(&id).unwrap();
+        let mut source=crate::streaming::open_audio_blocks(Path::new(&audio)).unwrap(); let rate=source.sample_rate();
+        let size=(seconds*rate as f64) as usize; let hop=(size as f64*(1.0-overlap)) as usize;
+        let mut windows=Vec::new();
+        for (index,s) in segments.iter().enumerate() {
+            let mut start=(s.start_seconds.max(0.0)*rate as f64) as usize; let end=(s.end_seconds.max(0.0)*rate as f64) as usize;
+            while start<end {let stop=(start+size).min(end); if stop-start>=rate/2 {windows.push((index,start,stop));} if stop==end {break;} start+=hop;}
+        }
+        windows.sort_by_key(|w|w.1); let mut active:Vec<(usize,Vec<f32>)>=Vec::new();let mut cursor=0;let mut sample=0;
+        let mut encoder=SpeakerEncoder::load(Path::new(&model)).unwrap();let mut vectors=Vec::new();let mut positions=Vec::new();let mut times=Vec::new();let started=Instant::now();
+        while let Some(block)=source.next_block().unwrap() {
+            let end=sample+block.len(); while cursor<windows.len()&&windows[cursor].1<end {active.push((cursor,Vec::new()));cursor+=1;}
+            for (i,data) in &mut active {let (_,lo,hi)=windows[*i];let a=lo.max(sample);let b=hi.min(end);if b>a {data.extend_from_slice(&block[a-sample..b-sample]);}}
+            let mut pending=Vec::new(); for (i,data) in active.drain(..) {let (index,start,stop)=windows[i];if stop>end {pending.push((i,data));} else {add_embedding(&mut encoder,rate,index,data,&mut positions,&mut vectors).unwrap(); times.push((start as f64/rate as f64,stop as f64/rate as f64));}} active=pending;sample=end;
+        }
+        for (i,data) in active {let(index,start,stop)=windows[i];add_embedding(&mut encoder,rate,index,data,&mut positions,&mut vectors).unwrap();times.push((start as f64/rate as f64,stop as f64/rate as f64));}
+        let labels=cluster_speakers_with_count(&vectors,Some(4)).unwrap();let dominant=dominant_speakers(segments.len(),&positions,&labels);
+        let mut counts=std::collections::BTreeMap::new();for label in dominant.iter().flatten(){*counts.entry(label).or_insert(0usize)+=1;}
+        let mut votes=[std::collections::BTreeMap::<usize,usize>::new(),std::collections::BTreeMap::new()];
+        for ((start,stop),label) in times.iter().zip(&labels) {for (i,(a,b)) in [(3935.0,3953.0),(4013.0,4035.0)].iter().enumerate(){if *start>=*a&&*stop<=*b {*votes[i].entry(*label).or_default()+=1;}}}
+        println!("window={seconds}s overlap={overlap} windows={} cluster_counts={counts:?} reference={votes:?} elapsed_s={:.2}",vectors.len(),started.elapsed().as_secs_f64());
     }
 }

@@ -62,6 +62,35 @@ function mockBackend(options: { installed?: boolean; items?: Item[] } = {}) {
 }
 
 describe('GigaAM page', () => {
+	it('Escape closes phrase editing without deselecting the recording', async () => {
+		mockBackend({ items: [historyItem] }); render(Page);
+		await fireEvent.click(await screen.findByText('meeting.wav'));
+		await fireEvent.click(await screen.findByRole('button', { name: 'Проверочный текст' }));
+		const editor = screen.getByRole('textbox', { name: '' });
+		await fireEvent.keyDown(editor, { key: 'Escape' });
+		expect(screen.getByRole('button', { name: 'Проверочный текст' })).toBeTruthy();
+		expect(screen.getByRole('button', { name: 'meeting.wav' })).toBeTruthy();
+	});
+	it('resumes a paused segment without seeking back to its start', async () => {
+		mockBackend({ items: [historyItem] }); render(Page);
+		await fireEvent.click(await screen.findByText('meeting.wav'));
+		const button = await screen.findByRole('button', { name: 'Слушать / пауза' });
+		const audio = document.querySelector('audio')!;
+		Object.defineProperty(audio, 'currentTime', { value: 1.8, writable: true, configurable: true });
+		let paused = false;
+		Object.defineProperty(audio, 'paused', { get: () => paused, configurable: true });
+		vi.spyOn(audio, 'pause').mockImplementation(() => { paused = true; });
+		const play = vi.spyOn(audio, 'play').mockResolvedValue();
+		await fireEvent.click(button);
+		await fireEvent.click(button);
+		expect(audio.currentTime).toBe(1.8); expect(play).toHaveBeenCalled();
+	});
+	it('imports an opus extension from native drag and drop', async () => {
+		mockBackend(); render(Page); await waitFor(() => expect(onDragDropEvent).toHaveBeenCalled());
+		Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => null });
+		onDragDropEvent.mock.calls.at(-1)![0]({ payload: { type: 'drop', paths: ['C:\\audio\\sample.opus'], position: { x: 1, y: 1 } } });
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('enqueue_files', { paths: ['C:\\audio\\sample.opus'] }));
+	});
 	it('highlights a grouped transcript while its audio is playing', async () => {
 		mockBackend({ items: [historyItem] });
 		render(Page);
@@ -77,7 +106,20 @@ describe('GigaAM page', () => {
 		render(Page);
 		await fireEvent.click(await screen.findByText('meeting.wav'));
 		await fireEvent.click(screen.getByText('Распознать с диаризацией', { selector: 'button' }));
+		await fireEvent.click(screen.getByRole('button', { name: 'Продолжить' }));
 		expect(await screen.findByRole('button', { name: /Загрузить модель говорящих/ })).toBeTruthy();
+		expect(invoke).not.toHaveBeenCalledWith('retry_transcription', expect.anything());
+	});
+	it('passes a chosen speaker count without retranscribing a completed recording', async () => {
+		mockBackend({ items: [historyItem] }); const backend = invoke.getMockImplementation()!;
+		invoke.mockImplementation(async (command: string, ...args: unknown[]) => command === 'installed_diarization_model' ? 'model.onnx' : backend(command, ...args));
+		render(Page); await fireEvent.click(await screen.findByText('meeting.wav'));
+		await screen.findByText('Проверочный текст');
+		await fireEvent.click(screen.getByText('Распознать с диаризацией', { selector: 'button' }));
+		await fireEvent.click(document.querySelector('summary[aria-label="Количество говорящих"]')!);
+		await fireEvent.click(screen.getByRole('button', { name: '4', hidden: true }));
+		await fireEvent.click(screen.getByRole('button', { name: 'Продолжить' }));
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('diarize_recording', { id: historyItem.id, modelPath: 'model.onnx', speakerCount: 4 }));
 		expect(invoke).not.toHaveBeenCalledWith('retry_transcription', expect.anything());
 	});
 	it('keeps microphone and system labels alongside speaker labels', async () => {
@@ -130,6 +172,44 @@ describe('GigaAM page', () => {
 		await fireEvent.click(await screen.findByText('second.wav'));
 		await waitFor(() => expect(screen.queryByText(/Время суммаризации/)).toBeNull());
 	});
+	it('persists the prompt and sends it to the selected summary runtime', async () => {
+		localStorage.removeItem('gigaam-summary-prompt');
+		mockBackend({ items: [historyItem] }); const backend = invoke.getMockImplementation()!;
+		invoke.mockImplementation(async (command: string, ...args: unknown[]) => command === 'summarize_ollama' ? 'Summary' : backend(command, ...args));
+		const first = render(Page); await fireEvent.click(await screen.findByText('meeting.wav'));
+		await fireEvent.click(await screen.findByRole('switch'));
+		await fireEvent.click(screen.getByRole('button', { name: 'Промпт' }));
+		await fireEvent.input(screen.getByLabelText('Промпт суммаризации'), { target: { value: 'Составь план' } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Суммаризовать' }));
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('summarize_ollama', expect.objectContaining({ prompt: 'Составь план' })));
+		first.unmount(); render(Page); await fireEvent.click(await screen.findByText('meeting.wav'));
+		await fireEvent.click(await screen.findByRole('switch')); await fireEvent.click(screen.getByRole('button', { name: 'Промпт' }));
+		expect((screen.getByLabelText('Промпт суммаризации') as HTMLTextAreaElement).value).toBe('Составь план');
+		localStorage.removeItem('gigaam-summary-prompt');
+	});
+	it('stops the summary belonging to the active recording', async () => {
+		mockBackend({ items: [historyItem] }); const backend = invoke.getMockImplementation()!;
+		let rejectSummary!: (error: Error) => void;
+		invoke.mockImplementation((command: string, ...args: unknown[]) => {
+			if (command === 'summarize_ollama') return new Promise((_resolve, reject) => { rejectSummary = reject; });
+			if (command === 'cancel_summary') { rejectSummary(new Error('cancelled')); return Promise.resolve(); }
+			return backend(command, ...args);
+		});
+		render(Page); await fireEvent.click(await screen.findByText('meeting.wav')); await fireEvent.click(await screen.findByRole('switch'));
+		await fireEvent.click(await screen.findByRole('button', { name: 'Суммаризовать' }));
+		await fireEvent.click(await screen.findByRole('button', { name: 'Стоп' }));
+		expect(invoke).toHaveBeenCalledWith('cancel_summary', { id: historyItem.id });
+		await waitFor(() => expect(screen.queryByRole('button', { name: 'Стоп' })).toBeNull());
+	});
+	it('clears the current summary without clearing the transcript', async () => {
+		mockBackend({ items: [historyItem] }); const backend = invoke.getMockImplementation()!;
+		invoke.mockImplementation(async (command: string, ...args: unknown[]) => command === 'load_summary' ? 'Existing summary' : backend(command, ...args));
+		render(Page); await fireEvent.click(await screen.findByText('meeting.wav'));
+		await fireEvent.click(await screen.findByRole('switch')); await screen.findByText('Existing summary');
+		await fireEvent.click(screen.getByRole('button', { name: 'Очистить' }));
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('save_summary', { id: historyItem.id, text: '' }));
+		expect(invoke).not.toHaveBeenCalledWith('clear_transcript', expect.anything());
+	});
 	it('restores a saved Ollama model without replacing it when the list loads', async () => {
 		localStorage.setItem('gigaam-summary-settings', JSON.stringify({ source: 'ollama', endpoint: 'https://example.invalid/v1', model: '', ollama: 'custom:latest', gguf: '' }));
 		mockBackend();
@@ -138,13 +218,13 @@ describe('GigaAM page', () => {
 		render(Page);
 		await fireEvent.click(await screen.findByRole('button', { name: 'Настройки' }));
 		await fireEvent.click(screen.getByRole('button', { name: 'Суммаризация' }));
-		const picker = screen.getByRole('combobox', { name: 'Модель Ollama' }) as HTMLSelectElement;
-		expect(picker.value).toBe('custom:latest');
+		const picker = screen.getByLabelText('Модель Ollama');
+		expect(picker.textContent).toContain('custom:latest');
 		await fireEvent.click(screen.getByRole('button', { name: 'Обновить' }));
 		await waitFor(() => expect(screen.getByText('other:latest')).toBeTruthy());
-		expect(picker.value).toBe('custom:latest');
+		expect(picker.textContent).toContain('custom:latest');
 		await fireEvent.input(screen.getByPlaceholderText('Поиск модели'), { target: { value: 'other' } });
-		expect(picker.value).toBe('custom:latest');
+		expect(picker.textContent).toContain('custom:latest');
 		localStorage.removeItem('gigaam-summary-settings');
 	});
 	it('saves the selected Ollama model and restores it after remount', async () => {
@@ -156,13 +236,13 @@ describe('GigaAM page', () => {
 		await fireEvent.click(screen.getByRole('button', { name: 'Суммаризация' }));
 		await fireEvent.click(screen.getByRole('button', { name: 'Обновить' }));
 		await waitFor(() => expect(screen.getByText('model-two')).toBeTruthy());
-		await fireEvent.change(screen.getByRole('combobox', { name: 'Модель Ollama' }), { target: { value: 'model-two' } });
+		await fireEvent.click(screen.getByLabelText('Модель Ollama')); await fireEvent.click(screen.getByText('model-two'));
 		await fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
 		expect(JSON.parse(localStorage.getItem('gigaam-summary-settings')!).ollama).toBe('model-two');
 		first.unmount(); render(Page);
 		await fireEvent.click(await screen.findByRole('button', { name: 'Настройки' }));
 		await fireEvent.click(screen.getByRole('button', { name: 'Суммаризация' }));
-		expect((screen.getByRole('combobox', { name: 'Модель Ollama' }) as HTMLSelectElement).value).toBe('model-two');
+		expect(screen.getByLabelText('Модель Ollama').textContent).toContain('model-two');
 		localStorage.removeItem('gigaam-summary-settings');
 	});
 	it('preserves the saved Ollama model if refresh returns no models', async () => {
@@ -174,7 +254,7 @@ describe('GigaAM page', () => {
 		await fireEvent.click(screen.getByRole('button', { name: 'Суммаризация' }));
 		await fireEvent.click(screen.getByRole('button', { name: 'Обновить' }));
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('list_summary_models'));
-		expect((screen.getByRole('combobox', { name: 'Модель Ollama' }) as HTMLSelectElement).value).toBe('saved:latest');
+		expect(screen.getByLabelText('Модель Ollama').textContent).toContain('saved:latest');
 	});
 	it('restores API settings and cancels edits without storing a secret', async () => {
 		localStorage.setItem('gigaam-summary-settings', JSON.stringify({ source: 'api', endpoint: 'https://example.invalid/v1', model: 'saved-model', ollama: 'local-model', gguf: 'local.gguf' }));
@@ -196,7 +276,7 @@ describe('GigaAM page', () => {
 		const first = render(Page);
 		await fireEvent.click(await screen.findByRole('button', { name: 'Настройки' }));
 		await fireEvent.click(screen.getByRole('button', { name: 'Суммаризация' }));
-		await fireEvent.change(screen.getByLabelText('Источник'), { target: { value: 'gguf' } });
+		await fireEvent.click(screen.getByLabelText('Источник суммаризации')); await fireEvent.click(screen.getByText('GGUF · local'));
 		await fireEvent.click(screen.getByRole('button', { name: 'Выбрать' }));
 		await waitFor(() => expect((screen.getByLabelText('Файл модели') as HTMLInputElement).value).toBe('C:\\models\\example.gguf'));
 		await fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
@@ -237,12 +317,12 @@ describe('GigaAM page', () => {
 		const first = render(Page);
 		await fireEvent.click(await screen.findByRole('button', { name: 'Настройки' }));
 		await fireEvent.click(screen.getByRole('button', { name: 'Суммаризация' }));
-		await fireEvent.change(screen.getByLabelText('Источник'), { target: { value: 'api' } });
+		await fireEvent.click(screen.getByLabelText('Источник суммаризации')); await fireEvent.click(screen.getByText('OpenAI-compatible API'));
 		await fireEvent.input(screen.getByLabelText('API URL'), { target: { value: 'https://example.invalid/v1' } });
 		await fireEvent.input(screen.getByLabelText('API key'), { target: { value: 'test-secret' } });
 		await fireEvent.click(screen.getByRole('button', { name: 'Проверить подключение и получить модели' }));
 		await waitFor(() => expect(screen.getByText('demo-model')).toBeTruthy());
-		await fireEvent.change(screen.getAllByRole('combobox').at(-1)!, { target: { value: 'demo-model' } });
+		await fireEvent.click(screen.getByLabelText('Модель API')); await fireEvent.click(screen.getByRole('button', { name: 'demo-model', hidden: true }));
 		await fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_summary_api_key', { key: 'test-secret', endpoint: 'https://example.invalid/v1' }));
 		expect(localStorage.getItem('gigaam-summary-settings')).not.toContain('test-secret');
@@ -250,7 +330,7 @@ describe('GigaAM page', () => {
 		await fireEvent.click(await screen.findByRole('button', { name: 'Настройки' }));
 		await fireEvent.click(screen.getByRole('button', { name: 'Суммаризация' }));
 		expect((screen.getByLabelText('API URL') as HTMLInputElement).value).toBe('https://example.invalid/v1');
-		expect((screen.getByText('demo-model') as HTMLOptionElement).selected).toBe(true);
+		expect(screen.getByLabelText('Модель API').textContent).toContain('demo-model');
 	});
 	it('filters API models without changing the selected model', async () => {
 		localStorage.setItem('gigaam-summary-settings', JSON.stringify({ source: 'api', endpoint: 'https://example.invalid/v1', model: 'model-a', ollama: 'local', gguf: '' }));
@@ -263,7 +343,7 @@ describe('GigaAM page', () => {
 		await fireEvent.click(screen.getByRole('button', { name: 'Проверить подключение и получить модели' }));
 		await waitFor(() => expect(screen.getByText('model-b')).toBeTruthy());
 		await fireEvent.input(screen.getByPlaceholderText('Поиск модели'), { target: { value: 'model-b' } });
-		expect((screen.getByText('model-a') as HTMLOptionElement).selected).toBe(true);
+		expect(screen.getByLabelText('Модель API').textContent).toContain('model-a');
 	});
 	it('does not replace a saved API model missing from a refreshed list', async () => {
 		localStorage.setItem('gigaam-summary-settings', JSON.stringify({ source: 'api', endpoint: 'https://example.invalid/v1', model: 'previous-model', ollama: 'local', gguf: '' }));
@@ -274,7 +354,7 @@ describe('GigaAM page', () => {
 		await fireEvent.click(screen.getByRole('button', { name: 'Суммаризация' }));
 		await fireEvent.click(screen.getByRole('button', { name: 'Проверить подключение и получить модели' }));
 		await waitFor(() => expect(screen.getByText('another-model')).toBeTruthy());
-		expect((screen.getByText('previous-model') as HTMLOptionElement).selected).toBe(true);
+		expect(screen.getByLabelText('Модель API').textContent).toContain('previous-model');
 	});
 	it('ignores a late API model response after settings are cancelled', async () => {
 		localStorage.setItem('gigaam-summary-settings', JSON.stringify({ source: 'api', endpoint: 'https://example.invalid/v1', model: 'saved-model', ollama: 'local', gguf: '' }));
@@ -289,7 +369,7 @@ describe('GigaAM page', () => {
 		resolveModels(['late-model']);
 		await fireEvent.click(screen.getByRole('button', { name: 'Настройки' }));
 		expect(screen.queryByText('late-model')).toBeNull();
-		expect((screen.getByText('saved-model') as HTMLOptionElement).selected).toBe(true);
+		expect(screen.getByLabelText('Модель API').textContent).toContain('saved-model');
 	});
 	it('shows both concurrent Drive branches without overwriting automatically', async () => {
 		vi.spyOn(window, 'confirm').mockReturnValue(true);
@@ -549,7 +629,7 @@ describe('GigaAM page', () => {
 		render(Page);
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('model_status'));
 		await fireEvent.click(await screen.findByRole('button', { name: /^Записать$/ }));
-		await fireEvent.change(screen.getByRole('combobox', { name: 'Формат записи' }), { target: { value: 'ogg' } });
+		await fireEvent.click(screen.getByLabelText('Формат записи')); await fireEvent.click(screen.getByRole('button', { name: 'Ogg/Opus · 48 kbit/s', hidden: true }));
 		await fireEvent.click(screen.getByRole('button', { name: /●\s*Запись/ }));
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('start_live', expect.objectContaining({ archiveFormat: 'ogg' })));
 	});
@@ -560,7 +640,7 @@ describe('GigaAM page', () => {
 		try {
 			render(Page);
 			await fireEvent.click(await screen.findByRole('button', { name: /^Записать$/ }));
-			expect((screen.getByRole('combobox', { name: 'Формат записи' }) as HTMLSelectElement).value).toBe('flac');
+			expect(screen.getByLabelText('Формат записи').textContent).toContain('FLAC');
 		} finally { localStorage.removeItem('gigaam.archive-format'); }
 	});
 
@@ -590,6 +670,16 @@ describe('GigaAM page', () => {
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('enqueue_files', { paths: ['C:\\audio\\sample.wav'] }));
 		expect(open).toHaveBeenCalledWith(expect.objectContaining({ multiple: true, directory: false }));
 	});
+	it('accepts a native dropped media file even when the model is not installed', async () => {
+		const backend = invoke.getMockImplementation()!;
+		invoke.mockImplementation((command: string, ...args: unknown[]) => command === 'model_status' ? Promise.resolve({ installed: false, downloading: false, downloaded_bytes: 0, total_bytes: 0 }) : backend(command, ...args));
+		render(Page);
+		await waitFor(() => expect(onDragDropEvent).toHaveBeenCalled());
+		const handler = onDragDropEvent.mock.calls.at(-1)![0];
+		Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => null });
+		handler({ payload: { type: 'drop', paths: ['C:\\audio\\sample.wav'], position: { x: 1, y: 1 } } });
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('enqueue_files', { paths: ['C:\\audio\\sample.wav'] }));
+	});
 
 	it('starts live recording with the chosen source and archive format', async () => {
 		render(Page);
@@ -602,8 +692,16 @@ describe('GigaAM page', () => {
 			source: 'system_and_microphone',
 			microphone: 'Test microphone',
 			archiveFormat: 'ogg',
-			micGain: 3
+			micGain: 1
 		})));
+	});
+	it('updates microphone gain while recording', async () => {
+		render(Page);
+		await fireEvent.click(await screen.findByRole('button', { name: 'Записать' }));
+		await fireEvent.click(await screen.findByRole('button', { name: '●Запись' }));
+		const gain = screen.getByRole('slider', { name: 'Усиление микрофона' });
+		await fireEvent.input(gain, { target: { value: '2' } });
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('set_mic_gain', { micGain: 2 }));
 	});
 
 	it('keeps the UI responsive while stop acknowledgement is pending', async () => {

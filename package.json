@@ -1,7 +1,8 @@
 {
 	"name": "gigaam-ui",
 	"private": true,
-	"version": "0.2.1",
+	"version": "0.2.2",
+	"overrides": { "@toast-ui/editor": { "dompurify": "^3.4.17" } },
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
@@ -41,6 +42,7 @@
 		"@tauri-apps/api": "^2.12.0",
 		"@tauri-apps/plugin-dialog": "^2.8.1",
 		"@tauri-apps/plugin-fs": "^2.6.0",
-		"@tauri-apps/plugin-opener": "^2.7.0"
+		"@tauri-apps/plugin-opener": "^2.7.0",
+		"@toast-ui/editor": "^3.2.2"
 	}
 }

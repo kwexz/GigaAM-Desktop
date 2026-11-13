@@ -39,6 +39,45 @@ use tauri::Manager;
 use tauri::Emitter;
 
 static ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static SUMMARY_TASK: Mutex<Option<(String, Arc<AtomicBool>, Option<tokio::sync::oneshot::Sender<()>>)>> = Mutex::new(None);
+
+fn begin_summary(id: &str) -> Result<(Arc<AtomicBool>, tokio::sync::oneshot::Receiver<()>), String> {
+    let mut task = SUMMARY_TASK.lock().map_err(|_| "Ошибка суммаризации")?;
+    if task.is_some() { return Err("Суммаризация уже выполняется".into()); }
+    let cancel = Arc::new(AtomicBool::new(false)); let (tx, rx) = tokio::sync::oneshot::channel();
+    *task = Some((id.to_owned(), cancel.clone(), Some(tx))); Ok((cancel, rx))
+}
+fn end_summary() { if let Ok(mut task) = SUMMARY_TASK.lock() { *task = None; } }
+#[tauri::command]
+fn cancel_summary(id: String) -> Result<(), String> {
+    let mut task = SUMMARY_TASK.lock().map_err(|_| "Ошибка суммаризации")?;
+    if let Some((active, cancel, signal)) = task.as_mut() {
+        if active == &id { cancel.store(true, Ordering::Release); if let Some(signal) = signal.take() { let _ = signal.send(()); } }
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod summary_task_tests {
+    #[test]
+    fn cancellation_is_scoped_and_blocks_restart_until_cleanup() {
+        let (cancel, mut rx) = super::begin_summary("one").unwrap();
+        super::cancel_summary("other".into()).unwrap();
+        assert!(!cancel.load(std::sync::atomic::Ordering::Acquire));
+        super::cancel_summary("one".into()).unwrap();
+        assert!(cancel.load(std::sync::atomic::Ordering::Acquire));
+        assert!(rx.try_recv().is_ok());
+        assert!(super::begin_summary("two").is_err());
+        super::end_summary();
+        assert!(super::begin_summary("two").is_ok());
+        super::end_summary();
+    }
+    #[test]
+    fn cancelled_gguf_does_not_start_runtime() {
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+        let result = crate::gguf_runtime::summarize_cancellable(std::path::Path::new("."), std::path::Path::new("missing.gguf"), "text", "prompt", &cancel);
+        assert_eq!(result.unwrap_err(), "Суммаризация остановлена");
+    }
+}
 
 #[tauri::command]
 async fn download_summary_model(app:tauri::AppHandle)->Result<String,String>{let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;tauri::async_runtime::spawn_blocking(move||gguf_runtime::download_model(&root,|downloaded,total|{let _=app.emit("summary-model-progress",serde_json::json!({"downloaded":downloaded,"total":total}));})).await.map_err(|_|"Model download failed")?}
@@ -47,10 +86,12 @@ async fn download_summary_model(app:tauri::AppHandle)->Result<String,String>{let
 async fn installed_summary_model(app:tauri::AppHandle)->Result<Option<String>,String>{let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;tauri::async_runtime::spawn_blocking(move||gguf_runtime::managed_model(&root)).await.map_err(|_|"Model check failed".into())}
 
 #[tauri::command]
-async fn summarize_gguf(id:String,model_path:String,app:tauri::AppHandle,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
+async fn summarize_gguf(id:String,model_path:String,prompt:String,app:tauri::AppHandle,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
     let text=lock_store(&state)?.segments(&id).map_err(|_|"Расшифровка недоступна")?.into_iter().map(|s|s.text).collect::<Vec<_>>().join("\n");
     let root=app.path().app_data_dir().map_err(|_|"App data unavailable")?;
-    tauri::async_runtime::spawn_blocking(move||gguf_runtime::summarize(&root,std::path::Path::new(&model_path),&text)).await.map_err(|_|"GGUF task failed")?
+    let (cancel, _rx)=begin_summary(&id)?;
+    let result=tauri::async_runtime::spawn_blocking(move||gguf_runtime::summarize_cancellable(&root,std::path::Path::new(&model_path),&text,&prompt,&cancel)).await.map_err(|_|"GGUF task failed".to_owned());
+    end_summary(); result?
 }
 
 #[tauri::command]
@@ -64,9 +105,11 @@ fn set_summary_api_key(key:String,endpoint:String)->Result<(),String>{
     if key.is_empty(){match entry.delete_credential(){Ok(())|Err(keyring::Error::NoEntry)=>Ok(()),Err(_)=>Err("Не удалось удалить ключ".into())}}else{entry.set_password(&key).map_err(|_|"Не удалось сохранить ключ".into())}
 }
 #[tauri::command]
-async fn summarize_api(id:String,endpoint:String,model:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
+async fn summarize_api(id:String,endpoint:String,model:String,prompt:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
     let text=lock_store(&state)?.segments(&id).map_err(|_|"Расшифровка недоступна")?.into_iter().map(|s|s.text).collect::<Vec<_>>().join("\n");
-    tauri::async_runtime::spawn_blocking(move||summarization::summarize_openai(&text,&endpoint,&model)).await.map_err(|_|"Ошибка API задачи")?
+    let (_,rx)=begin_summary(&id)?;
+    let result=tokio::select! { result=summarization::summarize_http_async(&text,&endpoint,&model,&prompt,false)=>result, _=rx=>Err("Суммаризация остановлена".into()) };
+    end_summary(); result
 }
 
 #[tauri::command]
@@ -82,10 +125,12 @@ fn save_summary(id:String,text:String,state:tauri::State<'_,Arc<Mutex<Store>>>)-
 fn save_summary_export(id:String,path:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<(),String>{let text=lock_store(&state)?.load_summary(&id).map_err(|e|e.to_string())?;std::fs::write(path,text).map_err(|e|e.to_string())}
 
 #[tauri::command]
-async fn summarize_ollama(id:String,model:Option<String>,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
+async fn summarize_ollama(id:String,model:Option<String>,prompt:String,state:tauri::State<'_,Arc<Mutex<Store>>>)->Result<String,String>{
     let text=lock_store(&state)?.segments(&id).map_err(|_|"Не удалось прочитать расшифровку")?
         .into_iter().map(|segment|segment.text).collect::<Vec<_>>().join("\n");
-    tauri::async_runtime::spawn_blocking(move||summarization::summarize_with_ollama_model(&text,model.as_deref().unwrap_or("qwen3.5:4b"))).await.map_err(|_|"Ошибка задачи суммаризации")?
+    let (_,rx)=begin_summary(&id)?;
+    let result=tokio::select! { result=summarization::summarize_http_async(&text,"",model.as_deref().unwrap_or("qwen3.5:4b"),&prompt,true)=>result, _=rx=>Err("Суммаризация остановлена".into()) };
+    end_summary(); result
 }
 
 #[tauri::command]
@@ -455,7 +500,7 @@ async fn download_diarization_model(app: tauri::AppHandle) -> Result<String, Str
 }
 
 #[tauri::command]
-async fn diarize_recording(id: String, model_path: String, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(), String> {
+async fn diarize_recording(id: String, model_path: String, speaker_count: Option<usize>, state: tauri::State<'_, Arc<Mutex<Store>>>) -> Result<(), String> {
     let store = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         diarization::verify_speaker_model(Path::new(&model_path)).map_err(|_| "Модель говорящих не прошла проверку; загрузите поддерживаемую модель".to_owned())?;
@@ -467,7 +512,7 @@ async fn diarize_recording(id: String, model_path: String, state: tauri::State<'
             (record, segments)
         };
         let path = record.audio_path.as_deref().unwrap_or(&record.source_path);
-        let speakers = diarization::analyze_file(Path::new(path), Path::new(&model_path), &segments).map_err(|error| format!("Диаризация не выполнена: {error}"))?;
+        let speakers = diarization::analyze_file_with_count(Path::new(path), Path::new(&model_path), &segments, speaker_count).map_err(|error| format!("Диаризация не выполнена: {error}"))?;
         let mut db = store.lock().map_err(|_| "database unavailable")?;
         if !db.set_speakers_if_unchanged(&segments, &speakers).map_err(|_| "could not save speaker labels")? {
             return Err("Транскрипт изменился во время обработки; повторите попытку".to_owned());
@@ -1633,6 +1678,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             summarize_ollama,
+            cancel_summary,
             list_summary_models,
             install_summary_runtime,
             download_summary_model,

@@ -12,16 +12,17 @@ Release assets include a Windows x64 installer and portable executable. A signed
 
 ## What is implemented
 
-- Import WAV, MP3, FLAC, OGG, M4A, MP4, MKV, AVI, and MOV files or drag them into the app.
+- Import supported audio and video, including Ogg/Opus (`.opus`), WAV, MP3, FLAC, WebM and MP4, or drag files into the app. Support depends on the container and audio codec.
 - Record the microphone, system audio, or both as separate tracks; pause/resume, adjust microphone gain, and archive audio as Ogg/Opus, FLAC, WAV, or MP3.
 - Run Silero VAD, chunking, and int8 GigaAM v3 E2E CTC locally through ONNX Runtime, with punctuation and text normalization.
 - Keep a durable SQLite queue and searchable history; interrupted jobs are marked and can be retried.
 - Play from transcript timestamps, group adjacent phrases, edit a group or individual segment, copy the transcript, and re-run recognition. Phrase timestamps are approximate model-frame boundaries; grouping and editing do not alter source audio.
 - Export TXT, SRT, WebVTT, or JSON while preserving microphone/system track labels.
 - Historical audio codec comparisons and their limitations: [Ogg/Opus measurements](docs/OGG_MEASUREMENTS.md).
-- Optionally run **experimental two-speaker diarization** on a completed Desktop recording. Download the separate ~27 MB WeSpeaker model explicitly in recognition settings, then choose **Transcribe with diarization**. Speaker names can be edited. It may refuse uncertain results or assign speakers incorrectly; overlapping speech and real-meeting accuracy remain unverified. [Experiment details](docs/DIARIZATION_RESEARCH.md).
+- Optionally run **experimental speaker diarization** on a completed Desktop recording. Download the separate ~27 MB WeSpeaker model explicitly in recognition settings, then choose **Transcribe with diarization** and automatic or 1–12 speakers. Existing transcripts are not re-recognized. A whole transcript segment receives its dominant window's speaker; overlapping speakers and short turns may be mislabeled. Review and edit speaker names. Accuracy is not established; [window experiment](docs/diarization-window-experiment.md).
 - Switch the application UI between Russian and English.
-- Generate summaries with a locally configured Ollama or GGUF backend, or an explicitly configured OpenAI-compatible API. API summarization sends transcript text to the selected endpoint; local transcription does not require it.
+- Generate summaries with a locally configured Ollama or GGUF backend, or an explicitly configured OpenAI-compatible API. Edit the prompt, use visual or Markdown editing, and stop generation. API summarization sends transcript text to the selected endpoint; stopping a request cannot guarantee a remote provider stops processing.
+- Organize recordings in folders by dragging, and stop file recognition without deleting the audio.
 - Optionally queue Google Drive snapshots and restore them as separate local copies. A discovered snapshot is not proof that subsequent local edits are synchronized.
 - Check for a newer stable GitHub release in the background at startup; the notification links to the release and does not install anything automatically. Offline use is unaffected.
 

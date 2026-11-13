@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "GigaAM Desktop",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "identifier": "ru.gigaam.desktop",
   "build": {
     "frontendDist": "../build",
@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' asset: http://asset.localhost; connect-src 'self' https://api.github.com; style-src 'self' 'unsafe-inline'; media-src 'self' asset: http://asset.localhost",
+      "csp": "default-src 'self' asset: http://asset.localhost; connect-src 'self' https://api.github.com; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; media-src 'self' asset: http://asset.localhost",
       "assetProtocol": { "enable": true, "scope": ["**"] }
     }
   },

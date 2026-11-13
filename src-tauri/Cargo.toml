@@ -1,12 +1,13 @@
 [package]
 name = "gigaam-desktop"
-version = "0.2.1"
+version = "0.2.2"
 description = "Local GigaAM transcription desktop application"
 authors = []
 license = "MIT"
 repository = "https://github.com/kwexz/GigaAM-Desktop"
 edition = "2024"
 rust-version = "1.90"
+default-run = "gigaam-desktop"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

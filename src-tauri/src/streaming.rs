@@ -546,7 +546,7 @@ impl BlockResampler {
 mod tests {
     #[test]
     fn opus_archive_decoder_trims_padding_to_exact_source_length() {
-        let path = std::env::temp_dir().join(format!("gigaam-opus-decode-{}.ogg", std::process::id()));
+        let path = std::env::temp_dir().join(format!("gigaam-opus-decode-{}.opus", std::process::id()));
         crate::live::encode_mono_48k(&vec![0.1; 48123], &path, crate::live::ArchiveFormat::Ogg).unwrap();
         let mut source = super::open_audio_blocks(&path).unwrap();
         let mut total = 0;
