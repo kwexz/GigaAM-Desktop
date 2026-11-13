@@ -1,7 +1,7 @@
 {
 	"name": "gigaam-ui",
 	"private": true,
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"overrides": { "@toast-ui/editor": { "dompurify": "^3.4.17" } },
 	"type": "module",
 	"scripts": {
