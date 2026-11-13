@@ -29,6 +29,13 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+      - name: Load bilingual release notes
+        id: release-notes
+        shell: pwsh
+        run: |
+          $notes = [System.IO.File]::ReadAllText("docs/releases/${{ github.ref_name }}.md", [System.Text.Encoding]::UTF8)
+          $delimiter = "NOTES_$([guid]::NewGuid().ToString('N'))"
+          "body<<$delimiter`n$notes`n$delimiter" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -38,23 +45,7 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: false
-          releaseBody: |
-            ## English
-
-            GigaAM Desktop transcribes imported media and live microphone/system audio locally with GigaAM v3 and Silero VAD. After a one-time verified model download (~227 MB), recognition works offline.
-
-            Windows x64: NSIS installer and portable executable (currently unsigned; SmartScreen may warn).
-            macOS 15+ arm64: signed and notarized DMG/app when the macOS release job completes.
-
-            ## Русский
-
-            GigaAM Desktop локально транскрибирует файлы и запись микрофона и системного звука с GigaAM v3 и Silero VAD. После загрузки моделей (~227 МБ) распознавание работает без интернета.
-
-            Windows x64: установщик NSIS и portable EXE без подписи; SmartScreen может предупредить.
-            macOS 15+ arm64: подписанные и нотариально заверенные DMG и приложение после завершения сборки macOS.
-
-            Documentation: https://github.com/kwexz/GigaAM-Desktop#readme
-            Third-party licenses: https://github.com/kwexz/GigaAM-Desktop/blob/main/docs/THIRD_PARTY_NOTICES.md
+          releaseBody: ${{ steps.release-notes.outputs.body }}
           args: --bundles nsis
       - name: Attach portable exe to release
         shell: pwsh
@@ -81,6 +72,14 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm test
+      - name: Load bilingual release notes
+        id: release-notes
+        shell: bash
+        run: |
+          delimiter="NOTES_$(uuidgen | tr -d '-')"
+          printf 'body<<%s\n' "$delimiter" >> "$GITHUB_OUTPUT"
+          cat "docs/releases/${{ github.ref_name }}.md" >> "$GITHUB_OUTPUT"
+          printf '\n%s\n' "$delimiter" >> "$GITHUB_OUTPUT"
       # Unit tests already run on the Windows job. The macOS test harness
       # cannot start here: its Swift-linked binary fails dyld lookup for
       # libswift_Concurrency (screencapturekit), unrelated to our code.
@@ -99,20 +98,4 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: false
-          releaseBody: |
-            ## English
-
-            GigaAM Desktop transcribes imported media and live microphone/system audio locally with GigaAM v3 and Silero VAD. After a one-time verified model download (~227 MB), recognition works offline.
-
-            Windows x64: NSIS installer and portable executable (currently unsigned; SmartScreen may warn).
-            macOS 15+ arm64: signed and notarized DMG/app when the macOS release job completes.
-
-            ## Русский
-
-            GigaAM Desktop локально транскрибирует файлы и запись микрофона и системного звука с GigaAM v3 и Silero VAD. После загрузки моделей (~227 МБ) распознавание работает без интернета.
-
-            Windows x64: установщик NSIS и portable EXE без подписи; SmartScreen может предупредить.
-            macOS 15+ arm64: подписанные и нотариально заверенные DMG и приложение после завершения сборки macOS.
-
-            Documentation: https://github.com/kwexz/GigaAM-Desktop#readme
-            Third-party licenses: https://github.com/kwexz/GigaAM-Desktop/blob/main/docs/THIRD_PARTY_NOTICES.md
+          releaseBody: ${{ steps.release-notes.outputs.body }}
